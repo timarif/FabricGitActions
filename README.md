@@ -181,3 +181,17 @@ The Phase 2 client implements:
 Create and update methods are intentionally not exposed through action `apply`
 mode yet. Approval binding, destructive safeguards, checkpoints, and recovery
 artifacts are required before enabling mutations.
+
+## Live test workflow
+
+The repository includes a manual `Live Fabric Plan` workflow. It uses GitHub
+OIDC and the following repository variables:
+
+```text
+FABRIC_TENANT_ID
+FABRIC_CLIENT_ID
+FABRIC_WORKSPACE_ID
+```
+
+The workflow performs read-only discovery and uploads the generated plan. It
+does not create or update Fabric items.

@@ -1,0 +1,48 @@
+name: Live Fabric Plan
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Plan against Fabric
+        id: fabric-plan
+        uses: ./
+        with:
+          mode: plan
+          manifest: examples/basic/fabric/deployment.yaml
+          environment: live-test
+          workspace-id: ${{ vars.FABRIC_WORKSPACE_ID }}
+          auth-mode: oidc
+          tenant-id: ${{ vars.FABRIC_TENANT_ID }}
+          client-id: ${{ vars.FABRIC_CLIENT_ID }}
+          plan-file: live-output/fabric-plan.json
+
+      - name: Verify live Lakehouse classification
+        shell: bash
+        run: |
+          test "${{ steps.fabric-plan.outputs.item-count }}" = "5"
+          jq -e '
+            .items[]
+            | select(.type == "Lakehouse")
+            | .action == "create"
+              or .action == "update"
+              or .action == "no-op"
+              or .action == "blocked"
+          ' live-output/fabric-plan.json
+
+      - name: Upload live plan
+        uses: actions/upload-artifact@v4
+        with:
+          name: live-fabric-plan
+          path: live-output/fabric-plan.json
+          if-no-files-found: error
