@@ -1,0 +1,52 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+
+      - run: npm ci
+      - run: npm run check
+      - run: npm run package
+      - name: Verify committed distribution
+        run: git diff --exit-code -- dist
+
+      - name: Exercise packaged action in plan mode
+        id: plan
+        uses: ./
+        with:
+          mode: plan
+          manifest: examples/basic/fabric/deployment.yaml
+          environment: ci
+          workspace-id: 00000000-0000-0000-0000-000000000001
+          plan-file: test-output/fabric-plan.json
+
+      - name: Verify packaged action outputs
+        shell: bash
+        run: |
+          test "${{ steps.plan.outputs.status }}" = "planned"
+          test "${{ steps.plan.outputs.item-count }}" = "5"
+          test -s test-output/fabric-plan.json
+
+      - name: Exercise packaged action in validate mode
+        uses: ./
+        with:
+          mode: validate
+          manifest: examples/basic/fabric/deployment.yaml
+          workspace-id: 00000000-0000-0000-0000-000000000001

@@ -1,0 +1,24 @@
+{
+  "name": "fabric-deploy-action",
+  "version": "0.1.0",
+  "private": true,
+  "description": "GitHub Action for planning and deploying Microsoft Fabric data engineering items.",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc --noEmit",
+    "test": "vitest run",
+    "check": "npm run build && npm run test",
+    "package": "ncc build src/main.ts -o dist --minify"
+  },
+  "dependencies": {
+    "@actions/core": "^1.11.1",
+    "ajv": "^8.17.1",
+    "yaml": "^2.8.1"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "@vercel/ncc": "^0.38.3",
+    "typescript": "^5.8.3",
+    "vitest": "^3.2.4"
+  }
+}

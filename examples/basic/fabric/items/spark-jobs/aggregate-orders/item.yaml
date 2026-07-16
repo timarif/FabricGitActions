@@ -1,0 +1,6 @@
+displayName: Aggregate Orders
+desiredState: present
+
+references:
+  defaultLakehouse: bronzeLakehouse
+  environment: defaultSpark

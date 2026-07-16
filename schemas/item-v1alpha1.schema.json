@@ -1,0 +1,53 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Microsoft Fabric deployment item",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["displayName"],
+  "properties": {
+    "displayName": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "description": {
+      "type": "string",
+      "maxLength": 256
+    },
+    "desiredState": {
+      "const": "present"
+    },
+    "folderId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "enableSchemas": {
+      "const": true
+    },
+    "references": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "bindings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["target", "valueFrom"],
+        "properties": {
+          "target": {
+            "type": "string",
+            "pattern": "^/"
+          },
+          "valueFrom": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    }
+  }
+}

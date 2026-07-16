@@ -1,0 +1,81 @@
+name: Microsoft Fabric Deploy
+description: Validate and plan declarative Microsoft Fabric data engineering deployments.
+author: Microsoft Fabric community
+
+branding:
+  icon: upload-cloud
+  color: blue
+
+inputs:
+  mode:
+    description: Operation to perform. Supported values are validate and plan.
+    required: false
+    default: plan
+  manifest:
+    description: Path to the Fabric deployment manifest.
+    required: false
+    default: fabric/deployment.yaml
+  environment:
+    description: Logical deployment environment, such as dev, test, or prod.
+    required: false
+    default: dev
+  workspace-id:
+    description: Target Fabric workspace ID. Overrides workspace.id in the manifest.
+    required: false
+  variables:
+    description: JSON object containing non-sensitive values used by ${var.NAME} substitutions.
+    required: false
+    default: "{}"
+  auth-mode:
+    description: Authentication mode. Supported values are none, oidc, and service-principal-secret.
+    required: false
+    default: none
+  tenant-id:
+    description: Microsoft Entra tenant ID used for Fabric authentication.
+    required: false
+  client-id:
+    description: Microsoft Entra application client ID used for Fabric authentication.
+    required: false
+  client-secret:
+    description: Client secret used only when auth-mode is service-principal-secret.
+    required: false
+  authority-host:
+    description: Microsoft Entra authority host.
+    required: false
+    default: https://login.microsoftonline.com
+  fabric-api-endpoint:
+    description: Fabric REST API endpoint, configurable for private-network environments.
+    required: false
+    default: https://api.fabric.microsoft.com
+  onelake-endpoint:
+    description: OneLake DFS endpoint reserved for future artifact staging.
+    required: false
+    default: https://onelake.dfs.fabric.microsoft.com
+  plan-file:
+    description: Path where the machine-readable deployment plan is written.
+    required: false
+    default: fabric-plan.json
+
+outputs:
+  status:
+    description: Validation or planning result.
+  plan-file:
+    description: Path to the generated JSON plan.
+  plan-hash:
+    description: SHA-256 hash identifying the generated plan.
+  source-hash:
+    description: SHA-256 hash of the unresolved source manifest.
+  item-count:
+    description: Number of Fabric items in the deployment.
+  create-count:
+    description: Number of items planned for creation.
+  update-count:
+    description: Number of items planned for update.
+  noop-count:
+    description: Number of items with no detected changes.
+  unknown-count:
+    description: Number of items not yet supported by online discovery.
+
+runs:
+  using: node24
+  main: dist/index.js

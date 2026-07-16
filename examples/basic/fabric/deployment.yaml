@@ -1,0 +1,35 @@
+apiVersion: fabric.deploy/v1alpha1
+kind: FabricDeployment
+
+metadata:
+  deploymentId: sample-data-platform
+
+items:
+  - logicalId: bronzeLakehouse
+    type: Lakehouse
+    path: items/lakehouses/bronze
+
+  - logicalId: defaultSpark
+    type: Environment
+    path: items/environments/default-spark
+
+  - logicalId: ingestOrders
+    type: Notebook
+    path: items/notebooks/ingest-orders
+    dependsOn:
+      - bronzeLakehouse
+      - defaultSpark
+
+  - logicalId: aggregateOrders
+    type: SparkJobDefinition
+    path: items/spark-jobs/aggregate-orders
+    dependsOn:
+      - bronzeLakehouse
+      - defaultSpark
+
+  - logicalId: bronzeToSilver
+    type: DataPipeline
+    path: items/pipelines/bronze-to-silver
+    dependsOn:
+      - ingestOrders
+      - aggregateOrders
