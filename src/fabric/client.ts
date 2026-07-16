@@ -68,6 +68,13 @@ export class FabricApiError extends Error {
   }
 }
 
+export class FabricOperationFailedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "FabricOperationFailedError";
+  }
+}
+
 export class FabricClient {
   private readonly options: Required<
     Pick<
@@ -127,7 +134,7 @@ export class FabricClient {
         ),
         "Fabric API token acquisition timed out.",
       );
-      let response: Response;
+      let response: Response | undefined;
       let body: unknown;
       const controller = new AbortController();
       const timeout = setTimeout(
@@ -172,8 +179,20 @@ export class FabricClient {
           );
         }
       } catch (error) {
-        if (!retryable || attempt >= this.options.maxRetries) {
-          throw error;
+        const requestError =
+          response &&
+          !(
+            requestOptions.acceptedStatuses?.includes(response.status) ??
+            response.ok
+          )
+            ? createFabricApiError(response, undefined)
+            : error;
+        if (
+          !retryable ||
+          attempt >= this.options.maxRetries ||
+          (response !== undefined && !isTransientStatus(response.status))
+        ) {
+          throw requestError;
         }
         await this.sleepWithinDeadline(
           this.backoffDelay(attempt),
@@ -185,6 +204,9 @@ export class FabricClient {
         clearTimeout(timeout);
       }
 
+      if (!response) {
+        throw new Error("Fabric API request completed without a response.");
+      }
       if (
         retryable &&
         isTransientStatus(response.status) &&
@@ -309,7 +331,7 @@ export class FabricClient {
       }
 
       if (status === "Failed") {
-        throw new Error(
+        throw new FabricOperationFailedError(
           `Fabric long-running operation failed: ${safeOperationError(
             poll.body?.error,
           )}`,

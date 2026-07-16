@@ -7,7 +7,7 @@ export const FABRIC_ITEM_TYPES = [
 ] as const;
 
 export type FabricItemType = (typeof FABRIC_ITEM_TYPES)[number];
-export type ActionMode = "validate" | "plan";
+export type ActionMode = "validate" | "plan" | "apply";
 export type PlannedAction = "create" | "update" | "no-op" | "blocked" | "unknown";
 
 export interface ItemBinding {
@@ -76,10 +76,82 @@ export interface DeploymentPlan {
   deploymentId: string;
   environment: string;
   workspaceId: string;
+  sourceCommit?: string;
   sourceHash: string;
   resolvedHash: string;
   planHash: string;
   generatedAt: string;
   stages: string[][];
   items: PlannedItem[];
+}
+
+export type ApplyItemStatus =
+  | "created"
+  | "updated"
+  | "verified"
+  | "resumed"
+  | "failed";
+
+export interface ApplyItemResult {
+  logicalId: string;
+  type: FabricItemType;
+  action: PlannedAction;
+  status: ApplyItemStatus;
+  physicalId?: string;
+  durationMs: number;
+  error?: string;
+}
+
+export interface ApplyResult {
+  schemaVersion: "1";
+  status: "in_progress" | "succeeded" | "failed";
+  deploymentId: string;
+  workspaceId: string;
+  environment: string;
+  planHash: string;
+  sourceCommit?: string;
+  startedAt: string;
+  completedAt: string;
+  items: ApplyItemResult[];
+}
+
+export interface ApplyCheckpointItem {
+  logicalId: string;
+  action: PlannedAction;
+  physicalId: string;
+  completedAt: string;
+}
+
+export interface ApplyCheckpointOperation {
+  logicalId: string;
+  action: "create";
+  operationId?: string;
+  location?: string;
+  acceptedAt: string;
+}
+
+export interface ApplyCheckpointCreateIntent {
+  logicalId: string;
+  action: "create";
+  submittedAt: string;
+}
+
+export interface ApplyCheckpointUpdateIntent {
+  logicalId: string;
+  action: "update";
+  physicalId: string;
+  submittedAt: string;
+}
+
+export interface ApplyCheckpoint {
+  schemaVersion: "1";
+  deploymentId: string;
+  workspaceId: string;
+  environment: string;
+  planHash: string;
+  sourceCommit?: string;
+  completedItems: Record<string, ApplyCheckpointItem>;
+  pendingOperations: Record<string, ApplyCheckpointOperation>;
+  pendingCreates: Record<string, ApplyCheckpointCreateIntent>;
+  pendingUpdates: Record<string, ApplyCheckpointUpdateIntent>;
 }

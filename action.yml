@@ -1,5 +1,5 @@
 name: Microsoft Fabric Deploy
-description: Validate and plan declarative Microsoft Fabric data engineering deployments.
+description: Plan and deploy declarative Microsoft Fabric data engineering workloads.
 author: Microsoft Fabric community
 
 branding:
@@ -8,7 +8,7 @@ branding:
 
 inputs:
   mode:
-    description: Operation to perform. Supported values are validate and plan.
+    description: Operation to perform. Supported values are validate, plan, and apply.
     required: false
     default: plan
   manifest:
@@ -52,17 +52,38 @@ inputs:
     required: false
     default: https://onelake.dfs.fabric.microsoft.com
   plan-file:
-    description: Path where the machine-readable deployment plan is written.
+    description: Path where the current machine-readable deployment plan is written.
     required: false
     default: fabric-plan.json
+  approved-plan-file:
+    description: Previously generated plan required when mode is apply.
+    required: false
+  checkpoint-file:
+    description: Resumable apply checkpoint path.
+    required: false
+    default: fabric-checkpoint.json
+  result-file:
+    description: Apply result path.
+    required: false
+    default: fabric-result.json
+  allow-create:
+    description: Allow apply mode to create Fabric items.
+    required: false
+    default: "false"
+  allow-update:
+    description: Allow apply mode to update Fabric items.
+    required: false
+    default: "false"
 
 outputs:
   status:
-    description: Validation or planning result.
+    description: Validation, planning, or apply result.
   plan-file:
     description: Path to the generated JSON plan.
   plan-hash:
     description: SHA-256 hash identifying the generated plan.
+  approved-plan-hash:
+    description: SHA-256 hash of the approved plan used by apply mode.
   source-hash:
     description: SHA-256 hash of the unresolved source manifest.
   item-count:
@@ -75,6 +96,14 @@ outputs:
     description: Number of items with no detected changes.
   unknown-count:
     description: Number of items not yet supported by online discovery.
+  result-file:
+    description: Path to the apply result JSON.
+  checkpoint-file:
+    description: Path to the resumable apply checkpoint.
+  applied-count:
+    description: Number of items created, updated, or verified by apply.
+  resumed-count:
+    description: Number of previously completed items verified from a checkpoint.
 
 runs:
   using: node24

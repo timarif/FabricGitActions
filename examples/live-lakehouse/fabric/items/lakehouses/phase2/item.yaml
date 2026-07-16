@@ -1,0 +1,3 @@
+displayName: FabricGitActions Phase 2 Lakehouse
+description: ${var.LAKEHOUSE_DESCRIPTION}
+desiredState: present

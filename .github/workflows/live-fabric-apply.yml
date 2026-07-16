@@ -1,0 +1,187 @@
+name: Live Fabric Lakehouse Apply
+
+on:
+  workflow_dispatch:
+    inputs:
+      lakehouse_description:
+        description: Desired Lakehouse description used to test create, no-op, and update.
+        required: true
+        default: Phase 2 live validation v1
+        type: string
+      confirmation:
+        description: Type APPLY to run the apply job after planning.
+        required: true
+        default: PLAN_ONLY
+        type: string
+      allow_create:
+        description: Permit creation when the approved plan requires it.
+        required: true
+        default: false
+        type: boolean
+      allow_update:
+        description: Permit update when the approved plan requires it.
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: live-fabric-lakehouse-${{ vars.FABRIC_WORKSPACE_ID }}
+  cancel-in-progress: false
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      approved-plan-artifact: ${{ steps.plan-artifact.outputs.name }}
+      approved-plan-attempt: ${{ steps.plan-artifact.outputs.attempt }}
+      create-count: ${{ steps.fabric-plan.outputs.create-count }}
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Build deployment variables
+        id: deployment-vars
+        shell: bash
+        env:
+          LAKEHOUSE_DESCRIPTION: ${{ inputs.lakehouse_description }}
+        run: |
+          echo "json=$(jq -cn \
+            --arg description "$LAKEHOUSE_DESCRIPTION" \
+            '{LAKEHOUSE_DESCRIPTION: $description}')" >> "$GITHUB_OUTPUT"
+
+      - name: Create approved Fabric plan
+        id: fabric-plan
+        uses: ./
+        with:
+          mode: plan
+          manifest: examples/live-lakehouse/fabric/deployment.yaml
+          environment: live-test
+          workspace-id: ${{ vars.FABRIC_WORKSPACE_ID }}
+          variables: ${{ steps.deployment-vars.outputs.json }}
+          auth-mode: oidc
+          tenant-id: ${{ vars.FABRIC_TENANT_ID }}
+          client-id: ${{ vars.FABRIC_CLIENT_ID }}
+          plan-file: approved-plan/fabric-plan.json
+
+      - name: Verify approved plan
+        shell: bash
+        run: |
+          test "${{ steps.fabric-plan.outputs.item-count }}" = "1"
+          jq -e '
+            .mode == "plan"
+            and (.items | length == 1)
+            and (.items[0].type == "Lakehouse")
+            and (
+              .items[0].action == "create"
+              or .items[0].action == "update"
+              or .items[0].action == "no-op"
+            )
+          ' approved-plan/fabric-plan.json
+
+      - name: Record approved plan artifact
+        id: plan-artifact
+        shell: bash
+        run: |
+          echo "name=approved-fabric-plan-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
+            >> "$GITHUB_OUTPUT"
+          echo "attempt=${GITHUB_RUN_ATTEMPT}" >> "$GITHUB_OUTPUT"
+
+      - name: Upload approved plan
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.plan-artifact.outputs.name }}
+          path: approved-plan/fabric-plan.json
+          if-no-files-found: error
+          retention-days: 7
+
+  apply:
+    if: ${{ inputs.confirmation == 'APPLY' }}
+    needs: plan
+    runs-on: ubuntu-latest
+    environment: fabric-live-apply
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Download approved plan
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ needs.plan.outputs.approved-plan-artifact }}
+          path: approved-plan
+
+      - name: Build deployment variables
+        id: deployment-vars
+        shell: bash
+        env:
+          LAKEHOUSE_DESCRIPTION: ${{ inputs.lakehouse_description }}
+        run: |
+          echo "json=$(jq -cn \
+            --arg description "$LAKEHOUSE_DESCRIPTION" \
+            '{LAKEHOUSE_DESCRIPTION: $description}')" >> "$GITHUB_OUTPUT"
+
+      - name: Identify prior apply attempt
+        if: >-
+          ${{
+            github.run_attempt > 1
+            && (
+              needs.plan.outputs.approved-plan-attempt != github.run_attempt
+              || needs.plan.outputs.create-count != '0'
+            )
+          }}
+        id: prior-attempt
+        shell: bash
+        run: echo "number=$((GITHUB_RUN_ATTEMPT - 1))" >> "$GITHUB_OUTPUT"
+
+      - name: Download prior apply artifacts
+        if: ${{ steps.prior-attempt.outputs.number != '' }}
+        uses: actions/download-artifact@v4
+        with:
+          name: fabric-apply-result-${{ github.run_id }}-${{ steps.prior-attempt.outputs.number }}
+          path: prior-apply
+
+      - name: Restore prior checkpoint
+        if: ${{ steps.prior-attempt.outputs.number != '' }}
+        shell: bash
+        run: |
+          checkpoint="$(find prior-apply -type f -name checkpoint.json -print -quit)"
+          if [[ -z "$checkpoint" ]]; then
+            echo "::error::The reused approved plan requires its prior checkpoint."
+            exit 1
+          fi
+          mkdir -p apply-output
+          cp "$checkpoint" apply-output/checkpoint.json
+
+      - name: Apply approved Fabric plan
+        id: fabric-apply
+        uses: ./
+        with:
+          mode: apply
+          manifest: examples/live-lakehouse/fabric/deployment.yaml
+          environment: live-test
+          workspace-id: ${{ vars.FABRIC_WORKSPACE_ID }}
+          variables: ${{ steps.deployment-vars.outputs.json }}
+          auth-mode: oidc
+          tenant-id: ${{ vars.FABRIC_TENANT_ID }}
+          client-id: ${{ vars.FABRIC_CLIENT_ID }}
+          approved-plan-file: approved-plan/fabric-plan.json
+          allow-create: ${{ inputs.allow_create }}
+          allow-update: ${{ inputs.allow_update }}
+          plan-file: apply-output/current-plan.json
+          checkpoint-file: apply-output/checkpoint.json
+          result-file: apply-output/result.json
+
+      - name: Upload apply artifacts
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: fabric-apply-result-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            apply-output/current-plan.json
+            apply-output/checkpoint.json
+            apply-output/result.json
+          if-no-files-found: warn
+          retention-days: 14

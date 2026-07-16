@@ -1,6 +1,7 @@
 import type { ItemDefinition, PlannedAction } from "../types";
 import { sha256, stableJson } from "../hash";
 import {
+  FabricApiError,
   FabricClient,
   type FabricResponse,
 } from "./client";
@@ -20,6 +21,11 @@ export interface LakehousePlanResult {
   reason: string;
   physicalId?: string;
   observedStateHash: string;
+}
+
+export interface LakehouseOperationReference {
+  operationId?: string;
+  location?: string;
 }
 
 export class LakehouseAdapter {
@@ -107,6 +113,10 @@ export class LakehouseAdapter {
   async create(
     workspaceId: string,
     desired: ItemDefinition,
+    onMutationAccepted?: (physicalId: string) => void,
+    onOperationAccepted?: (operation: LakehouseOperationReference) => void,
+    onCreateSubmitting?: () => void,
+    onCreateRejected?: () => void,
   ): Promise<Lakehouse> {
     const body: Record<string, unknown> = {
       displayName: desired.displayName,
@@ -121,24 +131,62 @@ export class LakehouseAdapter {
       body.creationPayload = { enableSchemas: true };
     }
 
-    const response = await this.client.request<Lakehouse>(
-      "POST",
-      `/v1/workspaces/${encodeURIComponent(workspaceId)}/lakehouses`,
-      {
-        body,
-        retryable: false,
-        acceptedStatuses: [201, 202],
-      },
-    );
-    const created =
-      response.status === 202
-        ? await this.client.waitForOperation<Lakehouse>(
-            response as FabricResponse<unknown>,
-          )
-        : response.body;
+    onCreateSubmitting?.();
+    let response: FabricResponse<Lakehouse>;
+    try {
+      response = await this.client.request<Lakehouse>(
+        "POST",
+        `/v1/workspaces/${encodeURIComponent(workspaceId)}/lakehouses`,
+        {
+          body,
+          retryable: false,
+          acceptedStatuses: [201, 202],
+        },
+      );
+    } catch (error) {
+      if (isDefinitiveRejection(error)) {
+        onCreateRejected?.();
+      }
+      throw error;
+    }
+    let created: Lakehouse | undefined;
+    if (response.status === 202) {
+      onOperationAccepted?.(readOperationReference(response));
+      created = await this.client.waitForOperation<Lakehouse>(
+        response as FabricResponse<unknown>,
+      );
+    } else {
+      created = response.body;
+    }
     if (!created?.id) {
       throw new Error("Fabric Create Lakehouse response is missing the item ID.");
     }
+    onMutationAccepted?.(created.id);
+    return this.verify(workspaceId, created.id, desired);
+  }
+
+  async resumeCreate(
+    workspaceId: string,
+    desired: ItemDefinition,
+    operation: LakehouseOperationReference,
+    onMutationAccepted?: (physicalId: string) => void,
+  ): Promise<Lakehouse> {
+    const headers = new Headers();
+    if (operation.operationId) {
+      headers.set("x-ms-operation-id", operation.operationId);
+    }
+    if (operation.location) {
+      headers.set("location", operation.location);
+    }
+    const created = await this.client.waitForOperation<Lakehouse>({
+      status: 202,
+      headers,
+      body: undefined,
+    });
+    if (!created?.id) {
+      throw new Error("Fabric Create Lakehouse operation result is missing the item ID.");
+    }
+    onMutationAccepted?.(created.id);
     return this.verify(workspaceId, created.id, desired);
   }
 
@@ -146,6 +194,9 @@ export class LakehouseAdapter {
     workspaceId: string,
     lakehouseId: string,
     desired: ItemDefinition,
+    onMutationAccepted?: (physicalId: string) => void,
+    onUpdateSubmitting?: () => void,
+    onUpdateRejected?: () => void,
   ): Promise<Lakehouse> {
     const body: Record<string, unknown> = {
       displayName: desired.displayName,
@@ -154,17 +205,26 @@ export class LakehouseAdapter {
       body.description = desired.description;
     }
 
-    await this.client.request<Lakehouse>(
-      "PATCH",
-      `/v1/workspaces/${encodeURIComponent(
-        workspaceId,
-      )}/lakehouses/${encodeURIComponent(lakehouseId)}`,
-      {
-        body,
-        retryable: false,
-        acceptedStatuses: [200],
-      },
-    );
+    onUpdateSubmitting?.();
+    try {
+      await this.client.request<Lakehouse>(
+        "PATCH",
+        `/v1/workspaces/${encodeURIComponent(
+          workspaceId,
+        )}/lakehouses/${encodeURIComponent(lakehouseId)}`,
+        {
+          body,
+          retryable: false,
+          acceptedStatuses: [200],
+        },
+      );
+    } catch (error) {
+      if (isDefinitiveRejection(error)) {
+        onUpdateRejected?.();
+      }
+      throw error;
+    }
+    onMutationAccepted?.(lakehouseId);
     return this.verify(workspaceId, lakehouseId, desired);
   }
 
@@ -218,6 +278,32 @@ export class LakehouseAdapter {
     }
     return matches[0];
   }
+}
+
+function isDefinitiveRejection(error: unknown): boolean {
+  return (
+    error instanceof FabricApiError &&
+    error.status >= 400 &&
+    error.status < 500 &&
+    error.status !== 408 &&
+    error.status !== 429
+  );
+}
+
+function readOperationReference(
+  response: FabricResponse<unknown>,
+): LakehouseOperationReference {
+  const operationId = response.headers.get("x-ms-operation-id") || undefined;
+  const location = response.headers.get("location") || undefined;
+  if (!operationId && !location) {
+    throw new Error(
+      "Fabric Create Lakehouse response is missing Location and x-ms-operation-id.",
+    );
+  }
+  return {
+    ...(operationId ? { operationId } : {}),
+    ...(location ? { location } : {}),
+  };
 }
 
 function normalizeDescription(value: string | undefined): string {

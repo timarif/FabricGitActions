@@ -8,7 +8,7 @@
     "build": "tsc --noEmit",
     "test": "vitest run",
     "check": "npm run build && npm run test",
-    "package": "ncc build src/main.ts -o dist --minify"
+    "package": "ncc build src/index.ts -o dist --minify"
   },
   "dependencies": {
     "@actions/core": "^1.11.1",

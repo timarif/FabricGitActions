@@ -4,3 +4,8 @@ lib/
 *.log
 *.tmp
 fabric-plan.json
+fabric-checkpoint.json
+fabric-result.json
+approved-plan/
+apply-output/
+live-output/

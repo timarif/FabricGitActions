@@ -11,6 +11,7 @@ export interface BuildPlanOptions {
   mode: ActionMode;
   environment: string;
   workspaceId?: string;
+  sourceCommit?: string;
   now?: Date;
 }
 
@@ -48,6 +49,7 @@ export function buildPlan(
     deploymentId: loadedManifest.manifest.metadata.deploymentId,
     environment: options.environment,
     workspaceId,
+    ...(options.sourceCommit ? { sourceCommit: options.sourceCommit } : {}),
     sourceHash: loadedManifest.sourceHash,
     resolvedHash: loadedManifest.resolvedHash,
     stages,
@@ -66,6 +68,7 @@ export function rehashPlan(plan: DeploymentPlan): DeploymentPlan {
     deploymentId: plan.deploymentId,
     environment: plan.environment,
     workspaceId: plan.workspaceId,
+    sourceCommit: plan.sourceCommit,
     sourceHash: plan.sourceHash,
     resolvedHash: plan.resolvedHash,
     stages: plan.stages,

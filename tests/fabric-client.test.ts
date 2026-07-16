@@ -167,6 +167,7 @@ describe("Fabric API client", () => {
       fetchImpl,
       requestTimeoutMs: 1,
       maxRetries: 0,
+      now: () => 0,
     });
 
     await expect(client.request("GET", "/v1/test")).rejects.toMatchObject({
@@ -195,6 +196,31 @@ describe("Fabric API client", () => {
     await expect(client.request("GET", "/v1/test")).rejects.toThrow(
       "response body timed out",
     );
+  });
+
+  it("preserves a definitive HTTP status when its error body stalls", async () => {
+    const client = new FabricClient({
+      endpoint: "https://api.fabric.microsoft.com",
+      scope: "scope",
+      tokenProvider,
+      fetchImpl: async () =>
+        new Response(
+          new ReadableStream({
+            start() {
+              // Intentionally leave the error stream open.
+            },
+          }),
+          { status: 403 },
+        ),
+      requestTimeoutMs: 5,
+      maxRetries: 0,
+      now: () => 0,
+    });
+
+    await expect(client.request("POST", "/v1/test")).rejects.toMatchObject({
+      name: "FabricApiError",
+      status: 403,
+    });
   });
 
   it("does not let Retry-After exceed the LRO deadline", async () => {

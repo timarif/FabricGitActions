@@ -1,0 +1,10 @@
+apiVersion: fabric.deploy/v1alpha1
+kind: FabricDeployment
+
+metadata:
+  deploymentId: live-lakehouse-validation
+
+items:
+  - logicalId: phase2Lakehouse
+    type: Lakehouse
+    path: items/lakehouses/phase2

@@ -1,10 +1,10 @@
-import { mkdirSync, mkdtempSync } from "node:fs";
+import { mkdirSync, mkdtempSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
 import { describe, expect, it } from "vitest";
 
-import { writePlan } from "../src/reporting";
+import { assertDistinctFilePaths, writePlan } from "../src/reporting";
 import type { DeploymentPlan } from "../src/types";
 
 const plan: DeploymentPlan = {
@@ -44,5 +44,39 @@ describe("plan reporting", () => {
         itemDirectory,
       ]),
     ).toThrow("Plan file must not be written inside a deployable item directory");
+  });
+
+  it("rejects deployment artifacts that resolve to the same path", () => {
+    const root = mkdtempSync(path.join(tmpdir(), "fabric-deploy-"));
+    const artifact = path.join(root, "artifact.json");
+
+    expect(() =>
+      assertDistinctFilePaths([
+        { label: "Approved plan file", filePath: artifact },
+        { label: "Current plan file", filePath: artifact },
+      ]),
+    ).toThrow("must not use the same path");
+  });
+
+  it("rejects dangling symbolic links in output paths", () => {
+    const root = mkdtempSync(path.join(tmpdir(), "fabric-deploy-"));
+    const linkPath = path.join(root, "plan-link.json");
+    const missingTarget = path.join(root, "missing", "plan.json");
+    try {
+      symlinkSync(missingTarget, linkPath, "file");
+    } catch (error) {
+      if (
+        error instanceof Error &&
+        "code" in error &&
+        (error as NodeJS.ErrnoException).code === "EPERM"
+      ) {
+        return;
+      }
+      throw error;
+    }
+
+    expect(() => writePlan(plan, linkPath)).toThrow(
+      "contains a dangling symbolic link",
+    );
   });
 });

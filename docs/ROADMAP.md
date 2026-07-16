@@ -22,7 +22,10 @@
 - [x] Fabric HTTP client with retries and long-running-operation polling
 - [x] Lakehouse discovery, create, update, and read-back verification primitives
 - [x] Real Lakehouse create/update/no-op classification during authenticated plans
-- [ ] Guarded `apply` mode wiring for Lakehouse mutations
+- [x] Approved-plan integrity, source binding, and Fabric drift detection
+- [x] Full-plan preflight and explicit create/update safeguards
+- [x] Guarded `apply` mode wiring for Lakehouse mutations
+- [x] Checkpoint and result artifacts
 - [ ] Live sandbox validation with OIDC
 
 ## Phase 3: core data engineering adapters
@@ -36,7 +39,6 @@
 ## Phase 4: production hardening
 
 - [ ] Explicit deletion and Lakehouse data-loss guard
-- [ ] Checkpoint and recovery artifacts
 - [ ] OneLake staging for supported libraries
 - [ ] Live sandbox E2E suite
 - [ ] Reusable dev/test/prod workflow
