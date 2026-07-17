@@ -1,5 +1,5 @@
 name: Microsoft Fabric Deploy
-description: Plan and deploy declarative Microsoft Fabric data engineering workloads.
+description: Plan and deploy Microsoft Fabric workspaces and data engineering workloads.
 author: Microsoft Fabric community
 
 branding:
@@ -74,6 +74,18 @@ inputs:
     description: Allow apply mode to update Fabric items.
     required: false
     default: "false"
+  allow-workspace-create:
+    description: Allow apply mode to create the managed Fabric workspace.
+    required: false
+    default: "false"
+  allow-workspace-update:
+    description: Allow apply mode to update managed Fabric workspace metadata.
+    required: false
+    default: "false"
+  allow-capacity-assignment:
+    description: Allow apply mode to assign the managed workspace to a Fabric capacity.
+    required: false
+    default: "false"
   return-livy-api-endpoint:
     description: Return deployed Lakehouse Livy API endpoints during apply.
     required: false
@@ -100,6 +112,12 @@ outputs:
     description: Number of items with no detected changes.
   unknown-count:
     description: Number of items not yet supported by online discovery.
+  workspace-id:
+    description: Physical ID of the resolved or provisioned Fabric workspace.
+  workspace-action:
+    description: Planned action for the managed workspace.
+  requires-item-replan:
+    description: True when a new workspace was provisioned and child items require a fresh approved plan.
   result-file:
     description: Path to the apply result JSON.
   checkpoint-file:

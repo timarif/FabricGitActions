@@ -6,6 +6,76 @@ import { rehashPlan } from "../src/planner";
 import type { LoadedManifest } from "../src/types";
 
 describe("online Fabric planning", () => {
+  it("plans workspace creation before blocking child item planning", async () => {
+    const loaded: LoadedManifest = {
+      manifestPath: "deployment.yaml",
+      manifestDirectory: ".",
+      sourceHash: "source",
+      resolvedHash: "resolved",
+      itemContentHashes: { lakehouse: "content" },
+      itemDirectories: { lakehouse: "items/lakehouse" },
+      itemDefinitions: {
+        lakehouse: { displayName: "Bronze" },
+      },
+      environmentDefinitions: {},
+      notebookDefinitions: {},
+      sparkJobDefinitions: {},
+      pipelineDefinitions: {},
+      sparkCustomPoolDefinitions: {},
+      manifest: {
+        apiVersion: "fabric.deploy/v1alpha1",
+        kind: "FabricDeployment",
+        metadata: { deploymentId: "managed-workspace" },
+        workspace: {
+          displayName: "tva-Analytics",
+          capacityId: "capacity-1",
+        },
+        items: [
+          {
+            logicalId: "lakehouse",
+            type: "Lakehouse",
+            path: "items/lakehouse",
+          },
+        ],
+      },
+    };
+    const offline = buildPlan(loaded, {
+      mode: "plan",
+      environment: "dev",
+    });
+    const fail = async () => {
+      throw new Error("Item adapter should not be called.");
+    };
+
+    const online = await enrichPlanWithFabric(offline, loaded, {
+      workspace: {
+        plan: async () => ({
+          action: "create" as const,
+          reason: "missing",
+          observedStateHash: "absent",
+          managedMetadataMatches: false,
+          capacityAssignmentRequired: true,
+        }),
+      },
+      lakehouse: { plan: fail },
+      environment: { plan: fail },
+      notebook: { plan: fail },
+      sparkJob: { plan: fail },
+      pipeline: { plan: fail },
+      sparkCustomPool: { plan: fail },
+    });
+
+    expect(online.workspace).toMatchObject({
+      action: "create",
+      capacityAssignmentRequired: true,
+    });
+    expect(online.workspaceId).toMatch(/^pending:/);
+    expect(online.items[0]?.action).toBe("blocked");
+    expect(online.items[0]?.reason).toContain(
+      "separate apply",
+    );
+  });
+
   it("classifies Fabric workloads and Spark custom pools online", async () => {
     const loaded: LoadedManifest = {
       manifestPath: "deployment.yaml",

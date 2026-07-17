@@ -5,6 +5,24 @@ export const deploymentSchema = {
   type: "object",
   additionalProperties: false,
   required: ["apiVersion", "kind", "metadata", "items"],
+  allOf: [
+    {
+      anyOf: [
+        {
+          properties: {
+            items: { minItems: 1 },
+          },
+        },
+        {
+          properties: {
+            workspace: {
+              required: ["displayName"],
+            },
+          },
+        },
+      ],
+    },
+  ],
   properties: {
     apiVersion: { const: "fabric.deploy/v1alpha1" },
     kind: { const: "FabricDeployment" },
@@ -23,13 +41,44 @@ export const deploymentSchema = {
     workspace: {
       type: "object",
       additionalProperties: false,
+      minProperties: 1,
+      anyOf: [
+        { required: ["id"] },
+        { required: ["displayName"] },
+      ],
+      allOf: [
+        {
+          if: {
+            anyOf: [
+              { required: ["description"] },
+              { required: ["capacityId"] },
+            ],
+          },
+          then: {
+            required: ["displayName"],
+          },
+        },
+      ],
       properties: {
         id: { type: "string", minLength: 1 },
+        displayName: {
+          type: "string",
+          minLength: 1,
+          maxLength: 256,
+        },
+        description: {
+          type: "string",
+          maxLength: 4000,
+        },
+        capacityId: {
+          type: "string",
+          minLength: 1,
+        },
       },
     },
     items: {
       type: "array",
-      minItems: 1,
+      minItems: 0,
       items: {
         type: "object",
         additionalProperties: false,

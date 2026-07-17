@@ -78,4 +78,25 @@ describe("approved plan loading", () => {
 
     expect(() => loadApprovedPlan(planPath)).toThrow("invalid structure");
   });
+
+  it("rejects a managed workspace changed after approval", () => {
+    const root = mkdtempSync(path.join(tmpdir(), "fabric-plan-"));
+    const planPath = path.join(root, "plan.json");
+    const plan = createPlan();
+    plan.workspace = {
+      displayName: "Managed",
+      contentHash: "a".repeat(64),
+      action: "no-op",
+      reason: "matches",
+      physicalId: "workspace",
+      observedStateHash: "state",
+    };
+    const approved = rehashPlan(plan);
+    approved.workspace!.displayName = "Tampered";
+    writeFileSync(planPath, JSON.stringify(approved), "utf8");
+
+    expect(() => loadApprovedPlan(planPath)).toThrow(
+      "Approved plan hash is invalid",
+    );
+  });
 });

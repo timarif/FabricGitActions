@@ -1,0 +1,12 @@
+apiVersion: fabric.deploy/v1alpha1
+kind: FabricDeployment
+
+metadata:
+  deploymentId: managed-workspace
+
+workspace:
+  displayName: ${var.WORKSPACE_NAME}
+  description: Managed by the Microsoft Fabric Deploy action
+  capacityId: ${var.FABRIC_CAPACITY_ID}
+
+items: []

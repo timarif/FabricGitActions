@@ -7,6 +7,7 @@ import {
   type DeploymentPlan,
   type PlannedAction,
   type PlannedItem,
+  type PlannedWorkspace,
 } from "./types";
 
 const PLANNED_ACTIONS = new Set<PlannedAction>([
@@ -57,6 +58,8 @@ function isDeploymentPlan(value: unknown): value is DeploymentPlan {
     typeof plan.deploymentId === "string" &&
     typeof plan.environment === "string" &&
     typeof plan.workspaceId === "string" &&
+    (plan.workspace === undefined ||
+      isPlannedWorkspace(plan.workspace)) &&
     typeof plan.sourceHash === "string" &&
     typeof plan.resolvedHash === "string" &&
     typeof plan.planHash === "string" &&
@@ -68,6 +71,7 @@ function isDeploymentPlan(value: unknown): value is DeploymentPlan {
     if (!items.every(isPlannedItem)) {
       return false;
     }
+
     const itemIds = items.map((item) => (item as PlannedItem).logicalId);
     const stagedIds: string[] = [];
     for (const stage of plan.stages as unknown[]) {
@@ -89,6 +93,30 @@ function isDeploymentPlan(value: unknown): value is DeploymentPlan {
     );
   }
   return false;
+}
+
+function isPlannedWorkspace(
+  value: unknown,
+): value is PlannedWorkspace {
+  if (value === null || typeof value !== "object") {
+    return false;
+  }
+  const workspace = value as Partial<PlannedWorkspace>;
+  return (
+    typeof workspace.displayName === "string" &&
+    typeof workspace.contentHash === "string" &&
+    /^[a-f0-9]{64}$/.test(workspace.contentHash) &&
+    PLANNED_ACTIONS.has(workspace.action as PlannedAction) &&
+    typeof workspace.reason === "string" &&
+    (workspace.physicalId === undefined ||
+      typeof workspace.physicalId === "string") &&
+    (workspace.observedStateHash === undefined ||
+      typeof workspace.observedStateHash === "string") &&
+    (workspace.metadataUpdateRequired === undefined ||
+      typeof workspace.metadataUpdateRequired === "boolean") &&
+    (workspace.capacityAssignmentRequired === undefined ||
+      typeof workspace.capacityAssignmentRequired === "boolean")
+  );
 }
 
 function isPlannedItem(value: unknown): value is PlannedItem {

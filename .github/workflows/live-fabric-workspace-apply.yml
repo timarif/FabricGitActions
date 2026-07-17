@@ -1,0 +1,168 @@
+name: Live Fabric Workspace Apply
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        description: Type APPLY to provision the managed workspace.
+        required: true
+        default: PLAN_ONLY
+        type: string
+      workspace_name:
+        description: Tenant-unique workspace display name.
+        required: true
+        default: tva-FabricGitActions Workspace Provisioning Test
+        type: string
+      allow_create:
+        description: Permit managed workspace creation.
+        required: true
+        default: false
+        type: boolean
+      allow_update:
+        description: Permit managed workspace metadata updates.
+        required: true
+        default: false
+        type: boolean
+      allow_capacity_assignment:
+        description: Permit assignment to FABRIC_CAPACITY_ID.
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: live-fabric-workspace-${{ inputs.workspace_name }}
+  cancel-in-progress: false
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      approved-plan-artifact: ${{ steps.plan-artifact.outputs.name }}
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Build workspace variables
+        id: workspace-vars
+        shell: bash
+        env:
+          WORKSPACE_NAME: ${{ inputs.workspace_name }}
+          FABRIC_CAPACITY_ID: ${{ vars.FABRIC_CAPACITY_ID }}
+        run: |
+          test -n "$FABRIC_CAPACITY_ID"
+          jq -cn \
+            --arg workspaceName "$WORKSPACE_NAME" \
+            --arg capacityId "$FABRIC_CAPACITY_ID" \
+            '{WORKSPACE_NAME:$workspaceName,FABRIC_CAPACITY_ID:$capacityId}' \
+            > workspace-variables.json
+          echo "json=$(jq -c . workspace-variables.json)" >> "$GITHUB_OUTPUT"
+
+      - name: Create approved workspace plan
+        id: fabric-plan
+        uses: ./
+        with:
+          mode: plan
+          manifest: examples/workspace/fabric/deployment.yaml
+          environment: live-workspace
+          variables: ${{ steps.workspace-vars.outputs.json }}
+          auth-mode: oidc
+          tenant-id: ${{ vars.FABRIC_TENANT_ID }}
+          client-id: ${{ vars.FABRIC_CLIENT_ID }}
+          plan-file: approved-plan/fabric-plan.json
+
+      - name: Verify approved workspace plan
+        shell: bash
+        run: |
+          test "${{ steps.fabric-plan.outputs.item-count }}" = "0"
+          jq -e '
+            (.items | length) == 0
+            and (
+              .workspace.action == "create"
+              or .workspace.action == "update"
+              or .workspace.action == "no-op"
+            )
+          ' approved-plan/fabric-plan.json
+
+      - name: Record approved plan artifact
+        id: plan-artifact
+        shell: bash
+        run: |
+          echo "name=approved-workspace-plan-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
+            >> "$GITHUB_OUTPUT"
+
+      - name: Upload approved plan
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.plan-artifact.outputs.name }}
+          path: approved-plan/fabric-plan.json
+          if-no-files-found: error
+          retention-days: 7
+
+  apply:
+    if: ${{ inputs.confirmation == 'APPLY' }}
+    needs: plan
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Download approved plan
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ needs.plan.outputs.approved-plan-artifact }}
+          path: approved-plan
+
+      - name: Build workspace variables
+        id: workspace-vars
+        shell: bash
+        env:
+          WORKSPACE_NAME: ${{ inputs.workspace_name }}
+          FABRIC_CAPACITY_ID: ${{ vars.FABRIC_CAPACITY_ID }}
+        run: |
+          jq -cn \
+            --arg workspaceName "$WORKSPACE_NAME" \
+            --arg capacityId "$FABRIC_CAPACITY_ID" \
+            '{WORKSPACE_NAME:$workspaceName,FABRIC_CAPACITY_ID:$capacityId}' \
+            > workspace-variables.json
+          echo "json=$(jq -c . workspace-variables.json)" >> "$GITHUB_OUTPUT"
+
+      - name: Apply approved workspace plan
+        id: fabric-apply
+        uses: ./
+        with:
+          mode: apply
+          manifest: examples/workspace/fabric/deployment.yaml
+          environment: live-workspace
+          variables: ${{ steps.workspace-vars.outputs.json }}
+          auth-mode: oidc
+          tenant-id: ${{ vars.FABRIC_TENANT_ID }}
+          client-id: ${{ vars.FABRIC_CLIENT_ID }}
+          approved-plan-file: approved-plan/fabric-plan.json
+          allow-workspace-create: ${{ inputs.allow_create }}
+          allow-workspace-update: ${{ inputs.allow_update }}
+          allow-capacity-assignment: ${{ inputs.allow_capacity_assignment }}
+          plan-file: apply-output/current-plan.json
+          checkpoint-file: apply-output/checkpoint.json
+          result-file: apply-output/result.json
+
+      - name: Verify workspace apply outputs
+        shell: bash
+        run: |
+          test -n "${{ steps.fabric-apply.outputs.workspace-id }}"
+          test "${{ steps.fabric-apply.outputs.workspace-action }}" != "unknown"
+
+      - name: Upload workspace apply artifacts
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: workspace-apply-result-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            apply-output/current-plan.json
+            apply-output/checkpoint.json
+            apply-output/result.json
+          if-no-files-found: warn
+          retention-days: 14

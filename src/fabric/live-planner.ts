@@ -1,13 +1,20 @@
 import { rehashPlan } from "../planner";
-import type { DeploymentPlan, LoadedManifest } from "../types";
+import { sha256, stableJson } from "../hash";
+import type {
+  DeploymentPlan,
+  LoadedManifest,
+  PlannedItem,
+} from "../types";
 import type { EnvironmentAdapter } from "./environment";
 import type { LakehouseAdapter } from "./lakehouse";
 import type { NotebookAdapter } from "./notebook";
 import type { PipelineAdapter } from "./pipeline";
 import type { SparkCustomPoolAdapter } from "./spark-custom-pool";
 import type { SparkJobAdapter } from "./spark-job";
+import type { WorkspaceAdapter } from "./workspace";
 
 export interface FabricPlanAdapters {
+  workspace?: Pick<WorkspaceAdapter, "plan">;
   lakehouse: Pick<LakehouseAdapter, "plan">;
   environment: Pick<EnvironmentAdapter, "plan">;
   notebook: Pick<NotebookAdapter, "plan">;
@@ -21,7 +28,75 @@ export async function enrichPlanWithFabric(
   loadedManifest: LoadedManifest,
   adapters: FabricPlanAdapters,
 ): Promise<DeploymentPlan> {
-  const plannedItems = [];
+  let workspaceId = plan.workspaceId;
+  let plannedWorkspace = plan.workspace;
+  if (plannedWorkspace) {
+    const desiredWorkspace = loadedManifest.manifest.workspace;
+    if (!desiredWorkspace?.displayName) {
+      throw new Error(
+        "The managed workspace definition is missing displayName.",
+      );
+    }
+    if (!adapters.workspace) {
+      throw new Error(
+        "Online managed workspace planning requires a workspace adapter.",
+      );
+    }
+    const workspaceResult = await adapters.workspace.plan({
+      ...desiredWorkspace,
+      displayName: desiredWorkspace.displayName,
+    });
+    plannedWorkspace = {
+      ...plannedWorkspace,
+      action: workspaceResult.action,
+      reason: workspaceResult.reason,
+      observedStateHash: workspaceResult.observedStateHash,
+      ...(workspaceResult.physicalId
+        ? { physicalId: workspaceResult.physicalId }
+        : {}),
+      ...(workspaceResult.capacityAssignmentRequired === undefined
+        ? {}
+        : {
+            capacityAssignmentRequired:
+              workspaceResult.capacityAssignmentRequired,
+          }),
+      ...(workspaceResult.managedMetadataMatches === undefined
+        ? {}
+        : {
+            metadataUpdateRequired:
+              !workspaceResult.managedMetadataMatches,
+          }),
+    };
+    if (workspaceResult.physicalId) {
+      workspaceId = workspaceResult.physicalId;
+    }
+    if (
+      workspaceResult.action === "create" ||
+      workspaceResult.action === "blocked"
+    ) {
+      return rehashPlan({
+        ...plan,
+        workspaceId,
+        workspace: plannedWorkspace,
+        items: plan.items.map((item) =>
+          blockItemUntilWorkspaceExists(
+            item,
+            loadedManifest,
+            workspaceResult.action === "create"
+              ? "create"
+              : "blocked",
+          ),
+        ),
+      });
+    }
+    if (!workspaceResult.physicalId) {
+      throw new Error(
+        `Managed workspace planning returned '${workspaceResult.action}' without a physical ID.`,
+      );
+    }
+  }
+
+  const plannedItems: PlannedItem[] = [];
   for (const item of plan.items) {
     if (
       item.type !== "Lakehouse" &&
@@ -47,38 +122,25 @@ export async function enrichPlanWithFabric(
       });
       continue;
     }
-    if (
-      item.type === "SparkJobDefinition" &&
-      (Object.keys(desired.references ?? {}).length > 0 ||
-        (desired.bindings?.length ?? 0) > 0)
-    ) {
+    const bindingBlockReason = unsupportedBindingReason(
+      item.type,
+      desired,
+    );
+    if (bindingBlockReason) {
       plannedItems.push({
         ...item,
         action: "blocked" as const,
-        reason:
-          "Spark Job Definition logical references and bindings require the Phase 3 reference resolver; use explicit artifact IDs in SparkJobDefinitionV1.json until it is implemented.",
-      });
-      continue;
-    }
-    if (
-      item.type !== "SparkJobDefinition" &&
-      (Object.keys(desired.references ?? {}).length > 0 ||
-        (desired.bindings?.length ?? 0) > 0)
-    ) {
-      plannedItems.push({
-        ...item,
-        action: "blocked" as const,
-        reason: `${item.type} logical references and bindings are not supported and cannot be ignored.`,
+        reason: bindingBlockReason,
       });
       continue;
     }
 
     const result =
       item.type === "Lakehouse"
-        ? await adapters.lakehouse.plan(plan.workspaceId, desired)
+        ? await adapters.lakehouse.plan(workspaceId, desired)
         : item.type === "Environment"
           ? await adapters.environment.plan(
-              plan.workspaceId,
+              workspaceId,
               desired,
               requireEnvironmentDefinition(
                 loadedManifest,
@@ -87,7 +149,7 @@ export async function enrichPlanWithFabric(
             )
           : item.type === "SparkCustomPool"
             ? await adapters.sparkCustomPool.plan(
-                plan.workspaceId,
+                workspaceId,
                 desired,
                 requireSparkCustomPoolDefinition(
                   loadedManifest,
@@ -96,7 +158,7 @@ export async function enrichPlanWithFabric(
               )
           : item.type === "Notebook"
             ? await adapters.notebook.plan(
-                plan.workspaceId,
+                workspaceId,
                 desired,
                 requireNotebookDefinition(
                   loadedManifest,
@@ -105,7 +167,7 @@ export async function enrichPlanWithFabric(
               )
             : item.type === "SparkJobDefinition"
               ? await adapters.sparkJob.plan(
-                  plan.workspaceId,
+                  workspaceId,
                   desired,
                   requireSparkJobDefinition(
                     loadedManifest,
@@ -113,7 +175,7 @@ export async function enrichPlanWithFabric(
                   ),
                 )
               : await adapters.pipeline.plan(
-                  plan.workspaceId,
+                  workspaceId,
                   desired,
                   requirePipelineDefinition(
                     loadedManifest,
@@ -188,8 +250,60 @@ export async function enrichPlanWithFabric(
 
   return rehashPlan({
     ...plan,
+    workspaceId,
+    ...(plannedWorkspace ? { workspace: plannedWorkspace } : {}),
     items: plannedItems,
   });
+}
+
+function blockItemUntilWorkspaceExists(
+  item: PlannedItem,
+  loadedManifest: LoadedManifest,
+  workspaceAction: "create" | "blocked",
+): PlannedItem {
+  const desired = loadedManifest.itemDefinitions[item.logicalId];
+  if (!desired) {
+    return {
+      ...item,
+      action: "blocked",
+      reason: `The resolved ${item.type} item definition is missing.`,
+    };
+  }
+  const bindingBlockReason = unsupportedBindingReason(
+    item.type,
+    desired,
+  );
+  if (bindingBlockReason) {
+    return {
+      ...item,
+      action: "blocked",
+      reason: bindingBlockReason,
+    };
+  }
+  return {
+    ...item,
+    action: "blocked",
+    reason:
+      workspaceAction === "create"
+        ? "The managed workspace must be provisioned and approved in a separate apply before workspace items can be planned."
+        : "The managed workspace plan is blocked.",
+    observedStateHash: sha256(stableJson(null)),
+  };
+}
+
+function unsupportedBindingReason(
+  itemType: PlannedItem["type"],
+  desired: NonNullable<LoadedManifest["itemDefinitions"][string]>,
+): string | undefined {
+  const hasDeclarations =
+    Object.keys(desired.references ?? {}).length > 0 ||
+    (desired.bindings?.length ?? 0) > 0;
+  if (!hasDeclarations) {
+    return undefined;
+  }
+  return itemType === "SparkJobDefinition"
+    ? "Spark Job Definition logical references and bindings require the Phase 3 reference resolver; use explicit artifact IDs in SparkJobDefinitionV1.json until it is implemented."
+    : `${itemType} logical references and bindings are not supported and cannot be ignored.`;
 }
 
 function requireEnvironmentDefinition(

@@ -40,6 +40,7 @@ import type {
   SparkJobAdapter,
   SparkJobOperationReference,
 } from "./fabric/spark-job";
+import type { WorkspaceAdapter } from "./fabric/workspace";
 import {
   hashSparkJobDefinition,
   sparkJobIncludesPlatformPart,
@@ -51,10 +52,12 @@ import {
   writeApplyResult,
   writeCheckpoint,
 } from "./checkpoint";
+import { applyManagedWorkspace } from "./workspace-apply";
 import type {
   ApplyCheckpoint,
   ApplyItemResult,
   ApplyResult,
+  ApplyWorkspaceResult,
   DefinitionItemUpdateRecoveryState,
   DeploymentPlan,
   ItemDefinition,
@@ -91,8 +94,15 @@ export interface ApplyPlanOptions {
     SparkCustomPoolAdapter,
     "create" | "update" | "verify" | "plan"
   >;
+  workspaceAdapter?: Pick<
+    WorkspaceAdapter,
+    "create" | "resumeCreate" | "update" | "resumeUpdate" | "verify"
+  >;
   allowCreate: boolean;
   allowUpdate: boolean;
+  allowWorkspaceCreate?: boolean;
+  allowWorkspaceUpdate?: boolean;
+  allowCapacityAssignment?: boolean;
   checkpointFile: string;
   resultFile: string;
   itemDirectories?: string[];
@@ -126,6 +136,9 @@ export async function applyApprovedPlan(
     options.currentPlan.items.map((item) => [item.logicalId, item]),
   );
   let resultWritable = false;
+  let workspaceResult: ApplyWorkspaceResult | undefined;
+  let runtimeWorkspaceId = options.approvedPlan.workspaceId;
+  let requiresItemReplan = false;
 
   try {
     writeApplyResult(
@@ -144,28 +157,74 @@ export async function applyApprovedPlan(
       loadCheckpoint(options.checkpointFile, options.approvedPlan) ??
       createCheckpoint(options.approvedPlan);
     writeCheckpoint(options.checkpointFile, checkpoint);
-    preflightBeforeRecovery(
-      options,
+    if (options.approvedPlan.workspace?.action !== "create") {
+      preflightBeforeRecovery(
+        options,
+        checkpoint,
+        approvedItems,
+        currentItems,
+      );
+    }
+    const workspaceOutcome = await applyManagedWorkspace({
+      approvedPlan: options.approvedPlan,
+      currentPlan: options.currentPlan,
+      desired: options.loadedManifest.manifest.workspace,
+      adapter: options.workspaceAdapter,
       checkpoint,
-      approvedItems,
-      currentItems,
-    );
+      checkpointFile: options.checkpointFile,
+      allowWorkspaceCreate:
+        options.allowWorkspaceCreate ?? false,
+      allowWorkspaceUpdate:
+        options.allowWorkspaceUpdate ?? false,
+      allowCapacityAssignment:
+        options.allowCapacityAssignment ?? false,
+      now,
+    });
+    runtimeWorkspaceId = workspaceOutcome.workspaceId;
+    workspaceResult = workspaceOutcome.result;
+    requiresItemReplan =
+      workspaceOutcome.requiresItemReplan;
+    if (requiresItemReplan) {
+      const result = buildResult(
+        options.approvedPlan,
+        "succeeded",
+        startedAt,
+        now(),
+        [],
+        runtimeWorkspaceId,
+        workspaceResult,
+        true,
+      );
+      writeApplyResult(options.resultFile, result);
+      return result;
+    }
+    const runtimeOptions: ApplyPlanOptions = {
+      ...options,
+      approvedPlan: {
+        ...options.approvedPlan,
+        workspaceId: runtimeWorkspaceId,
+      },
+      currentPlan: {
+        ...options.currentPlan,
+        workspaceId: runtimeWorkspaceId,
+      },
+    };
     const recoveredUpdates = await reconcilePendingUpdates(
-      options,
+      runtimeOptions,
       checkpoint,
       approvedItems,
       currentItems,
       now,
     );
     const recoveredCreates = await reconcilePendingCreates(
-      options,
+      runtimeOptions,
       checkpoint,
       approvedItems,
       currentItems,
       now,
     );
     const resumedOperations = await resumePendingOperations(
-      options,
+      runtimeOptions,
       checkpoint,
       approvedItems,
       currentItems,
@@ -177,20 +236,20 @@ export async function applyApprovedPlan(
       ...resumedOperations,
     ]);
     preflightPlan(
-      options,
+      runtimeOptions,
       checkpoint,
       approvedItems,
       currentItems,
       trustedResumes,
     );
     const resumedDurations = await verifyCheckpointedItems(
-      options,
+      runtimeOptions,
       checkpoint,
       approvedItems,
       now,
     );
 
-    for (const stage of options.approvedPlan.stages) {
+    for (const stage of runtimeOptions.approvedPlan.stages) {
       for (const logicalId of stage) {
         const approvedItem = approvedItems.get(logicalId);
         const currentItem = currentItems.get(logicalId);
@@ -212,11 +271,14 @@ export async function applyApprovedPlan(
           continue;
         }
 
-        await assertFreshItemHasNotDrifted(options, approvedItem);
+        await assertFreshItemHasNotDrifted(
+          runtimeOptions,
+          approvedItem,
+        );
         let result: ApplyItemResult;
         try {
           result = await applyItem(
-            options,
+            runtimeOptions,
             approvedItem,
             itemStartedAt,
             now,
@@ -256,7 +318,7 @@ export async function applyApprovedPlan(
             },
             (state) =>
               recordPendingUpdate(
-                options,
+                runtimeOptions,
                 checkpoint,
                 approvedItem,
                 state,
@@ -273,7 +335,7 @@ export async function applyApprovedPlan(
             approvedItem.action === "create"
           ) {
             const reconciled = await reconcileInitialTerminalCreate(
-              options,
+              runtimeOptions,
               checkpoint,
               approvedItem,
               itemStartedAt,
@@ -309,6 +371,9 @@ export async function applyApprovedPlan(
       startedAt,
       now(),
       results,
+      runtimeWorkspaceId,
+      workspaceResult,
+      false,
     );
     writeApplyResult(options.resultFile, result);
     return result;
@@ -328,6 +393,9 @@ export async function applyApprovedPlan(
       startedAt,
       now(),
       results,
+      runtimeWorkspaceId,
+      workspaceResult,
+      requiresItemReplan,
     );
     if (resultWritable) {
       try {
@@ -453,7 +521,12 @@ function assertPlanIdentity(
   }
   const approvedIdentity = {
     deploymentId: approvedPlan.deploymentId,
-    workspaceId: approvedPlan.workspaceId,
+    workspaceTarget: approvedPlan.workspace
+      ? {
+          displayName: approvedPlan.workspace.displayName,
+          contentHash: approvedPlan.workspace.contentHash,
+        }
+      : { workspaceId: approvedPlan.workspaceId },
     environment: approvedPlan.environment,
     sourceCommit: approvedPlan.sourceCommit,
     sourceHash: approvedPlan.sourceHash,
@@ -462,7 +535,12 @@ function assertPlanIdentity(
   };
   const currentIdentity = {
     deploymentId: currentPlan.deploymentId,
-    workspaceId: currentPlan.workspaceId,
+    workspaceTarget: currentPlan.workspace
+      ? {
+          displayName: currentPlan.workspace.displayName,
+          contentHash: currentPlan.workspace.contentHash,
+        }
+      : { workspaceId: currentPlan.workspaceId },
     environment: currentPlan.environment,
     sourceCommit: currentPlan.sourceCommit,
     sourceHash: currentPlan.sourceHash,
@@ -2004,17 +2082,24 @@ function buildResult(
   startedAt: number,
   completedAt: number,
   items: ApplyItemResult[],
+  workspaceId: string = plan.workspaceId,
+  workspace?: ApplyWorkspaceResult,
+  requiresItemReplan = false,
 ): ApplyResult {
   return {
     schemaVersion: "1",
     status,
     deploymentId: plan.deploymentId,
-    workspaceId: plan.workspaceId,
+    workspaceId,
     environment: plan.environment,
     planHash: plan.planHash,
     ...(plan.sourceCommit ? { sourceCommit: plan.sourceCommit } : {}),
     startedAt: new Date(startedAt).toISOString(),
     completedAt: new Date(completedAt).toISOString(),
+    ...(workspace ? { workspace } : {}),
+    ...(requiresItemReplan
+      ? { requiresItemReplan: true }
+      : {}),
     items,
   };
 }

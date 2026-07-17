@@ -84,4 +84,35 @@ describe("deployment planner", () => {
 
     expect(first.planHash).not.toBe(second.planHash);
   });
+
+  it("builds a deterministic pending target for a managed workspace", () => {
+    const managed: LoadedManifest = {
+      ...loadedManifest,
+      manifest: {
+        ...loadedManifest.manifest,
+        workspace: {
+          displayName: "tva-Analytics",
+          description: "Managed workspace",
+          capacityId: "capacity-1",
+        },
+        items: [],
+      },
+      itemContentHashes: {},
+      itemDirectories: {},
+      itemDefinitions: {},
+    };
+
+    const plan = buildPlan(managed, {
+      mode: "plan",
+      environment: "dev",
+    });
+
+    expect(plan.workspaceId).toMatch(/^pending:[a-f0-9]{64}$/);
+    expect(plan.workspace).toMatchObject({
+      displayName: "tva-Analytics",
+      action: "unknown",
+    });
+    expect(plan.stages).toEqual([]);
+    expect(plan.items).toEqual([]);
+  });
 });

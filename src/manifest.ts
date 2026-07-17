@@ -55,6 +55,7 @@ export function loadManifest(
   }
 
   const manifest = resolved as DeploymentManifest;
+  validateWorkspaceDefinition(manifest);
   validateLogicalIds(manifest);
   validateDependencies(manifest);
 
@@ -188,6 +189,25 @@ export function loadManifest(
     pipelineDefinitions,
     sparkCustomPoolDefinitions,
   };
+}
+
+function validateWorkspaceDefinition(
+  manifest: DeploymentManifest,
+): void {
+  const workspace = manifest.workspace;
+  if (!workspace?.displayName) {
+    return;
+  }
+  if (workspace.displayName.trim() === "") {
+    throw new Error(
+      "Managed workspace displayName must contain non-whitespace characters.",
+    );
+  }
+  if (workspace.displayName.toLowerCase() === "admin monitoring") {
+    throw new Error(
+      "Managed workspace displayName cannot use the reserved name 'Admin monitoring'.",
+    );
+  }
 }
 
 function validatePipelinePlatformMetadata(

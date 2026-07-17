@@ -22,6 +22,7 @@ import { NotebookAdapter } from "./fabric/notebook";
 import { PipelineAdapter } from "./fabric/pipeline";
 import { SparkCustomPoolAdapter } from "./fabric/spark-custom-pool";
 import { SparkJobAdapter } from "./fabric/spark-job";
+import { WorkspaceAdapter } from "./fabric/workspace";
 import { loadManifest } from "./manifest";
 import { loadApprovedPlan } from "./plan-artifact";
 import { buildPlan } from "./planner";
@@ -137,6 +138,7 @@ export async function run(): Promise<void> {
     let sparkJobAdapter: SparkJobAdapter | undefined;
     let pipelineAdapter: PipelineAdapter | undefined;
     let sparkCustomPoolAdapter: SparkCustomPoolAdapter | undefined;
+    let workspaceAdapter: WorkspaceAdapter | undefined;
     if ((mode === "plan" || mode === "apply") && authMode !== "none") {
       const clientSecret = core.getInput("client-secret") || undefined;
       if (clientSecret) {
@@ -167,7 +169,9 @@ export async function run(): Promise<void> {
       sparkJobAdapter = new SparkJobAdapter(client);
       pipelineAdapter = new PipelineAdapter(client);
       sparkCustomPoolAdapter = new SparkCustomPoolAdapter(client);
+      workspaceAdapter = new WorkspaceAdapter(client);
       plan = await enrichPlanWithFabric(plan, loadedManifest, {
+        workspace: workspaceAdapter,
         lakehouse: lakehouseAdapter,
         environment: environmentAdapter,
         notebook: notebookAdapter,
@@ -203,6 +207,16 @@ export async function run(): Promise<void> {
       "unknown-count",
       String(plan.items.filter((item) => item.action === "unknown").length),
     );
+    core.setOutput(
+      "workspace-id",
+      plan.workspace?.physicalId ??
+        (plan.workspace ? "" : plan.workspaceId),
+    );
+    core.setOutput(
+      "workspace-action",
+      plan.workspace?.action ?? "target",
+    );
+    core.setOutput("requires-item-replan", "false");
     await writeJobSummary(plan);
 
     if (mode === "apply") {
@@ -215,7 +229,8 @@ export async function run(): Promise<void> {
         !notebookAdapter ||
         !sparkJobAdapter ||
         !pipelineAdapter ||
-        !sparkCustomPoolAdapter
+        !sparkCustomPoolAdapter ||
+        !workspaceAdapter
       ) {
         throw new Error("Fabric adapters were not initialized for apply mode.");
       }
@@ -229,14 +244,33 @@ export async function run(): Promise<void> {
         sparkJobAdapter,
         pipelineAdapter,
         sparkCustomPoolAdapter,
+        workspaceAdapter,
         allowCreate: readBooleanInput("allow-create"),
         allowUpdate: readBooleanInput("allow-update"),
+        allowWorkspaceCreate: readBooleanInput(
+          "allow-workspace-create",
+        ),
+        allowWorkspaceUpdate: readBooleanInput(
+          "allow-workspace-update",
+        ),
+        allowCapacityAssignment: readBooleanInput(
+          "allow-capacity-assignment",
+        ),
         checkpointFile,
         resultFile,
         itemDirectories: Object.values(loadedManifest.itemDirectories),
       });
       core.setOutput("status", "applied");
       core.setOutput("approved-plan-hash", approvedPlan.planHash);
+      core.setOutput("workspace-id", result.workspaceId);
+      core.setOutput(
+        "workspace-action",
+        approvedPlan.workspace?.action ?? "target",
+      );
+      core.setOutput(
+        "requires-item-replan",
+        String(result.requiresItemReplan === true),
+      );
       core.setOutput(
         "applied-count",
         String(result.items.filter((item) => item.status !== "resumed").length),

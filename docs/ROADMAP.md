@@ -30,6 +30,7 @@
 
 ## Phase 3: core data engineering adapters
 
+- [x] Managed workspace provisioning and capacity assignment
 - [x] Environment definition and publish
 - [x] Notebook definition deployment
 - [ ] Lakehouse table DDL deployment

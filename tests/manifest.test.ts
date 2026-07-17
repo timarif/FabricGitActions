@@ -22,6 +22,79 @@ items:
 `;
 
 describe("manifest loading", () => {
+  it("supports a workspace-only managed manifest", () => {
+    const root = mkdtempSync(path.join(tmpdir(), "fabric-deploy-"));
+    const manifestPath = path.join(root, "deployment.yaml");
+    writeFileSync(
+      manifestPath,
+      `
+apiVersion: fabric.deploy/v1alpha1
+kind: FabricDeployment
+metadata:
+  deploymentId: workspace-only
+workspace:
+  displayName: tva-Analytics
+  description: Managed workspace
+  capacityId: capacity-1
+items: []
+`,
+      "utf8",
+    );
+
+    const loaded = loadManifest(manifestPath);
+
+    expect(loaded.manifest.workspace).toEqual({
+      displayName: "tva-Analytics",
+      description: "Managed workspace",
+      capacityId: "capacity-1",
+    });
+    expect(loaded.manifest.items).toEqual([]);
+  });
+
+  it("rejects an empty deployment without a managed workspace", () => {
+    const root = mkdtempSync(path.join(tmpdir(), "fabric-deploy-"));
+    const manifestPath = path.join(root, "deployment.yaml");
+    writeFileSync(
+      manifestPath,
+      `
+apiVersion: fabric.deploy/v1alpha1
+kind: FabricDeployment
+metadata:
+  deploymentId: empty
+workspace:
+  id: workspace-1
+items: []
+`,
+      "utf8",
+    );
+
+    expect(() => loadManifest(manifestPath)).toThrow(
+      "Invalid deployment manifest",
+    );
+  });
+
+  it("rejects reserved managed workspace names", () => {
+    const root = mkdtempSync(path.join(tmpdir(), "fabric-deploy-"));
+    const manifestPath = path.join(root, "deployment.yaml");
+    writeFileSync(
+      manifestPath,
+      `
+apiVersion: fabric.deploy/v1alpha1
+kind: FabricDeployment
+metadata:
+  deploymentId: reserved
+workspace:
+  displayName: Admin monitoring
+items: []
+`,
+      "utf8",
+    );
+
+    expect(() => loadManifest(manifestPath)).toThrow(
+      "reserved name 'Admin monitoring'",
+    );
+  });
+
   it("substitutes environment variables and validates the manifest", () => {
     const root = mkdtempSync(path.join(tmpdir(), "fabric-deploy-"));
     const manifestPath = createFixture(root, VALID_MANIFEST);

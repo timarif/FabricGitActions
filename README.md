@@ -4,15 +4,16 @@ A GitHub Marketplace action for declarative Microsoft Fabric deployments, with
 an initial focus on Data Engineering workloads.
 
 > **Current status:** Phases 1 and 2 are complete. Phase 3 now includes
-> Environment, Notebook, Spark Job Definition, Data Pipeline, and workspace
-> custom Spark pool deployment in addition to Lakehouse deployment. These
-> adapters support authenticated planning and guarded create/update/no-op apply
-> with approved-plan binding, drift detection, checkpoints, and result
-> artifacts. See
+> managed workspace provisioning plus Environment, Notebook, Spark Job
+> Definition, Data Pipeline, and workspace custom Spark pool deployment in
+> addition to Lakehouse deployment. These adapters support authenticated
+> planning and guarded create/update/no-op apply with approved-plan binding,
+> drift detection, checkpoints, and result artifacts. See
 > [the roadmap](docs/ROADMAP.md).
 
 ## Initial workload scope
 
+- Workspace
 - Lakehouse
 - Lakehouse table DDL
 - Environment
@@ -41,6 +42,58 @@ steps:
 The action writes a machine-readable plan and a GitHub job summary. The plan
 contains the validated deployment order, observed Fabric state, source commit,
 and a deterministic hash used to bind approval to an exact deployment.
+
+## Managed workspace provisioning
+
+To create or manage the target workspace, declare its desired properties at
+the top level instead of supplying only an ID:
+
+```yaml
+workspace:
+  displayName: tva-Analytics
+  description: Managed by Fabric Deploy
+  capacityId: ${var.FABRIC_CAPACITY_ID}
+
+items: []
+```
+
+The `workspace-id` action input remains authoritative when supplied. An
+explicit ID is never replaced by name discovery, and a missing explicit ID is
+blocked rather than recreated.
+
+Workspace creation is a separate approved bootstrap. The first plan/apply
+creates the workspace, verifies any capacity assignment, returns
+`workspace-id`, and sets `requires-item-replan` to `true`. Generate and approve
+a fresh plan to deploy child items into that immutable physical workspace ID.
+Existing managed workspaces can update metadata or capacity and deploy child
+items in the same approved apply.
+
+```yaml
+- id: provision
+  uses: your-organization/fabric-deploy@v1
+  with:
+    mode: apply
+    manifest: fabric/deployment.yaml
+    approved-plan-file: approved/fabric-plan.json
+    auth-mode: oidc
+    tenant-id: ${{ vars.FABRIC_TENANT_ID }}
+    client-id: ${{ vars.FABRIC_CLIENT_ID }}
+    variables: >-
+      {"FABRIC_CAPACITY_ID":"${{ vars.FABRIC_CAPACITY_ID }}"}
+    allow-workspace-create: "true"
+    allow-capacity-assignment: "true"
+```
+
+Workspace safeguards are independent and default to `false`:
+
+- `allow-workspace-create`
+- `allow-workspace-update`
+- `allow-capacity-assignment`
+
+The deployment identity needs the tenant setting that permits workspace
+creation. Capacity assignment additionally requires Workspace Admin plus
+contributor or administrator permission on the target capacity. Workspace
+deletion and capacity unassignment are intentionally unsupported.
 
 Without authentication, `plan` is offline and reports item actions as
 `unknown`. With Fabric authentication configured, Lakehouses, Environments, Notebooks,
@@ -120,6 +173,10 @@ Apply recomputes the current authenticated plan and rejects:
 - Fabric state drift after approval
 - Creates or updates without their explicit allow flag
 - Blocked, unknown, deletion, or unsupported workload actions
+
+When the approved workspace action is `create`, blocked child items are not
+mutated; the successful workspace bootstrap explicitly requires a fresh item
+plan.
 
 All items are preflighted before the first mutation. A create intent is
 checkpointed before POST; accepted `202` operations and returned physical IDs
@@ -275,6 +332,7 @@ Changing the endpoint does not change the OAuth audience.
 The action currently implements:
 
 - Fabric API bearer-token authentication through GitHub OIDC or client secret
+- Managed workspace discovery, create, metadata update, capacity assignment, and read-back verification
 - Same-origin pagination
 - Transient GET retries with `Retry-After`
 - Long-running-operation polling and result retrieval

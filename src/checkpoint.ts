@@ -132,6 +132,29 @@ function assertCheckpointMatchesPlan(
       "Checkpoint does not match the approved deployment plan and cannot be resumed.",
     );
   }
+  if (checkpoint.workspace) {
+    const planned = plan.workspace;
+    if (
+      !planned ||
+      (planned.action !== "create" &&
+        planned.action !== "update" &&
+        planned.action !== "no-op") ||
+      checkpoint.workspace.action !== planned.action
+    ) {
+      throw new Error(
+        "Checkpoint workspace does not match the approved deployment plan.",
+      );
+    }
+    if (
+      (planned.action === "update" ||
+        planned.action === "no-op") &&
+      checkpoint.workspace.physicalId !== planned.physicalId
+    ) {
+      throw new Error(
+        "Checkpoint workspace physical ID does not match the approved deployment plan.",
+      );
+    }
+  }
   const plannedItems = new Map(
     plan.items.map((item) => [item.logicalId, item]),
   );
@@ -227,6 +250,8 @@ function isCheckpoint(value: unknown): value is ApplyCheckpoint {
       (checkpoint.pendingUpdates !== null &&
         typeof checkpoint.pendingUpdates === "object" &&
         !Array.isArray(checkpoint.pendingUpdates))) &&
+    (checkpoint.workspace === undefined ||
+      isCheckpointWorkspace(checkpoint.workspace)) &&
     (checkpoint.sourceCommit === undefined ||
       typeof checkpoint.sourceCommit === "string")
   ) {
@@ -329,6 +354,59 @@ function isCheckpoint(value: unknown): value is ApplyCheckpoint {
     );
   }
   return false;
+}
+
+function isCheckpointWorkspace(value: unknown): boolean {
+  if (value === null || typeof value !== "object") {
+    return false;
+  }
+  const workspace = value as Partial<
+    NonNullable<ApplyCheckpoint["workspace"]>
+  >;
+  const validState =
+    workspace.state === "create-submitting" ||
+    workspace.state === "create-accepted" ||
+    workspace.state === "metadata-update-submitting" ||
+    workspace.state === "metadata-update-accepted" ||
+    workspace.state === "capacity-assignment-submitting" ||
+    workspace.state === "capacity-assignment-accepted" ||
+    workspace.state === "completed";
+  const requiresPhysicalId =
+    workspace.state === "create-accepted" ||
+    workspace.state === "metadata-update-submitting" ||
+    workspace.state === "metadata-update-accepted" ||
+    workspace.state === "capacity-assignment-submitting" ||
+    workspace.state === "capacity-assignment-accepted" ||
+    workspace.state === "completed";
+  const actionStateMatches =
+    (workspace.action === "create" &&
+      (workspace.state === "create-submitting" ||
+        workspace.state === "create-accepted" ||
+        workspace.state === "capacity-assignment-submitting" ||
+        workspace.state === "capacity-assignment-accepted" ||
+        workspace.state === "completed")) ||
+    (workspace.action === "update" &&
+      (workspace.state === "metadata-update-submitting" ||
+        workspace.state === "metadata-update-accepted" ||
+        workspace.state === "capacity-assignment-submitting" ||
+        workspace.state === "capacity-assignment-accepted" ||
+        workspace.state === "completed")) ||
+    (workspace.action === "no-op" &&
+      workspace.state === "completed");
+  return (
+    (workspace.action === "create" ||
+      workspace.action === "update" ||
+      workspace.action === "no-op") &&
+    validState &&
+    actionStateMatches &&
+    (!requiresPhysicalId ||
+      (typeof workspace.physicalId === "string" &&
+        workspace.physicalId.length > 0)) &&
+    (workspace.physicalId === undefined ||
+      typeof workspace.physicalId === "string") &&
+    typeof workspace.updatedAt === "string" &&
+    !Number.isNaN(Date.parse(workspace.updatedAt))
+  );
 }
 
 function isCheckpointItem(logicalId: string, value: unknown): boolean {

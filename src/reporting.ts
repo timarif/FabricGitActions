@@ -168,8 +168,21 @@ export async function writeJobSummary(plan: DeploymentPlan): Promise<void> {
       [
         plan.deploymentId,
         plan.environment,
-        plan.workspaceId,
+        plan.workspace?.displayName ?? plan.workspaceId,
         String(plan.items.length),
+      ],
+    ])
+    .addHeading("Workspace", 2)
+    .addTable([
+      [
+        { data: "Display name", header: true },
+        { data: "Action", header: true },
+        { data: "Reason", header: true },
+      ],
+      [
+        plan.workspace?.displayName ?? plan.workspaceId,
+        plan.workspace?.action ?? "target",
+        plan.workspace?.reason ?? "Existing workspace ID target.",
       ],
     ])
     .addHeading("Deployment stages", 2);

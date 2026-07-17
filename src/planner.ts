@@ -5,6 +5,8 @@ import type {
   DeploymentPlan,
   LoadedManifest,
   PlannedItem,
+  PlannedWorkspace,
+  WorkspaceDefinition,
 } from "./types";
 
 export interface BuildPlanOptions {
@@ -19,7 +21,11 @@ export function buildPlan(
   loadedManifest: LoadedManifest,
   options: BuildPlanOptions,
 ): DeploymentPlan {
-  const workspaceId = options.workspaceId || loadedManifest.manifest.workspace?.id;
+  const workspaceDefinition = loadedManifest.manifest.workspace;
+  const workspaceId =
+    options.workspaceId ||
+    workspaceDefinition?.id ||
+    pendingWorkspaceId(workspaceDefinition);
   if (!workspaceId) {
     throw new Error(
       "A target workspace ID is required through the workspace-id input or workspace.id.",
@@ -49,6 +55,13 @@ export function buildPlan(
     deploymentId: loadedManifest.manifest.metadata.deploymentId,
     environment: options.environment,
     workspaceId,
+    ...(workspaceDefinition?.displayName
+      ? {
+          workspace: buildOfflineWorkspacePlan(
+            workspaceDefinition,
+          ),
+        }
+      : {}),
     ...(options.sourceCommit ? { sourceCommit: options.sourceCommit } : {}),
     sourceHash: loadedManifest.sourceHash,
     resolvedHash: loadedManifest.resolvedHash,
@@ -68,6 +81,7 @@ export function rehashPlan(plan: DeploymentPlan): DeploymentPlan {
     deploymentId: plan.deploymentId,
     environment: plan.environment,
     workspaceId: plan.workspaceId,
+    workspace: plan.workspace,
     sourceCommit: plan.sourceCommit,
     sourceHash: plan.sourceHash,
     resolvedHash: plan.resolvedHash,
@@ -80,4 +94,26 @@ export function rehashPlan(plan: DeploymentPlan): DeploymentPlan {
     schemaVersion: "1",
     planHash: sha256(stableJson(hashInput)),
   };
+}
+
+function buildOfflineWorkspacePlan(
+  workspace: WorkspaceDefinition,
+): PlannedWorkspace {
+  return {
+    displayName: workspace.displayName!,
+    contentHash: sha256(stableJson(workspace)),
+    ...(workspace.id ? { physicalId: workspace.id } : {}),
+    action: "unknown",
+    reason:
+      "Online Fabric workspace discovery is disabled because authentication is not configured.",
+  };
+}
+
+function pendingWorkspaceId(
+  workspace: WorkspaceDefinition | undefined,
+): string | undefined {
+  if (!workspace?.displayName) {
+    return undefined;
+  }
+  return `pending:${sha256(stableJson(workspace))}`;
 }

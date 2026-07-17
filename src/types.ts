@@ -37,15 +37,20 @@ export interface DeploymentItem {
   desiredState?: "present";
 }
 
+export interface WorkspaceDefinition {
+  id?: string;
+  displayName?: string;
+  description?: string;
+  capacityId?: string;
+}
+
 export interface DeploymentManifest {
   apiVersion: "fabric.deploy/v1alpha1";
   kind: "FabricDeployment";
   metadata: {
     deploymentId: string;
   };
-  workspace?: {
-    id?: string;
-  };
+  workspace?: WorkspaceDefinition;
   items: DeploymentItem[];
 }
 
@@ -82,12 +87,24 @@ export interface PlannedItem {
   reason: string;
 }
 
+export interface PlannedWorkspace {
+  displayName: string;
+  contentHash: string;
+  physicalId?: string;
+  observedStateHash?: string;
+  metadataUpdateRequired?: boolean;
+  capacityAssignmentRequired?: boolean;
+  action: PlannedAction;
+  reason: string;
+}
+
 export interface DeploymentPlan {
   schemaVersion: "1";
   mode: ActionMode;
   deploymentId: string;
   environment: string;
   workspaceId: string;
+  workspace?: PlannedWorkspace;
   sourceCommit?: string;
   sourceHash: string;
   resolvedHash: string;
@@ -124,7 +141,17 @@ export interface ApplyResult {
   sourceCommit?: string;
   startedAt: string;
   completedAt: string;
+  workspace?: ApplyWorkspaceResult;
+  requiresItemReplan?: boolean;
   items: ApplyItemResult[];
+}
+
+export interface ApplyWorkspaceResult {
+  action: PlannedAction;
+  status: ApplyItemStatus;
+  physicalId: string;
+  durationMs: number;
+  error?: string;
 }
 
 export interface ApplyCheckpointItem {
@@ -180,8 +207,23 @@ export interface ApplyCheckpoint {
   environment: string;
   planHash: string;
   sourceCommit?: string;
+  workspace?: ApplyCheckpointWorkspace;
   completedItems: Record<string, ApplyCheckpointItem>;
   pendingOperations: Record<string, ApplyCheckpointOperation>;
   pendingCreates: Record<string, ApplyCheckpointCreateIntent>;
   pendingUpdates: Record<string, ApplyCheckpointUpdateIntent>;
+}
+
+export interface ApplyCheckpointWorkspace {
+  action: Extract<PlannedAction, "create" | "update" | "no-op">;
+  state:
+    | "create-submitting"
+    | "create-accepted"
+    | "metadata-update-submitting"
+    | "metadata-update-accepted"
+    | "capacity-assignment-submitting"
+    | "capacity-assignment-accepted"
+    | "completed";
+  physicalId?: string;
+  updatedAt: string;
 }
