@@ -4,8 +4,8 @@ A GitHub Marketplace action for declarative Microsoft Fabric deployments, with
 an initial focus on Data Engineering workloads.
 
 > **Current status:** Phases 1 and 2 are complete. Phase 3 now includes
-> Environment definition deployment and publish in addition to Lakehouse
-> deployment. Both adapters support authenticated planning and guarded
+> Environment and Notebook definition deployment in addition to Lakehouse
+> deployment. These adapters support authenticated planning and guarded
 > create/update/no-op apply with approved-plan binding, drift detection,
 > checkpoints, and result artifacts. See [the roadmap](docs/ROADMAP.md).
 
@@ -39,9 +39,9 @@ contains the validated deployment order, observed Fabric state, source commit,
 and a deterministic hash used to bind approval to an exact deployment.
 
 Without authentication, `plan` is offline and reports item actions as
-`unknown`. With Fabric authentication configured, Lakehouses and Environments
-are classified as `create`, `update`, `no-op`, or `blocked`; later workload
-adapters remain `unknown`.
+`unknown`. With Fabric authentication configured, Lakehouses, Environments,
+and Notebooks are classified as `create`, `update`, `no-op`, or `blocked`;
+later workload adapters remain `unknown`.
 
 ## Authenticated Fabric plan with GitHub OIDC
 
@@ -78,7 +78,7 @@ with:
   client-secret: ${{ secrets.FABRIC_CLIENT_SECRET }}
 ```
 
-## Guarded Lakehouse and Environment apply
+## Guarded Lakehouse, Environment, and Notebook apply
 
 Generate an authenticated plan, preserve it as an immutable artifact, then pass
 that exact file to a separate apply job:
@@ -124,7 +124,9 @@ the exact approved pre-state or proves that the staged definition marker,
 staged definition hash, and managed item metadata all still match the approved
 deployment. Environment updates additionally checkpoint metadata, definition,
 publish, and marker-cleanup phases so retries can validate the exact
-intermediate state before continuing.
+intermediate state before continuing. Notebook definition updates checkpoint
+their metadata and definition phases and fail closed when an interrupted
+update cannot be proven safe to resume.
 `plan-hash` identifies the freshly generated `plan-file`;
 `approved-plan-hash` identifies the plan authorized for apply. Deletion is not
 implemented.
@@ -170,7 +172,7 @@ Definition-bearing workloads are structurally validated:
 | --- | --- |
 | Lakehouse | `item.yaml` |
 | Environment | `definition/environment.yml`; optional `Sparkcompute.yml`, `.platform`, and custom libraries |
-| Notebook | Exactly one `.py` or `.ipynb` file under `definition/` |
+| Notebook | Exactly one `.py`, `.scala`, `.r`, `.sql`, or `.ipynb` file under `definition/`; optional `.platform` |
 | Spark Job Definition | Exactly one `definition/main.py` or `definition/main.scala` |
 | Data Pipeline | Valid JSON object at `definition/pipeline-content.json` |
 
@@ -181,6 +183,12 @@ marker binds the effective Fabric publish to the complete approved Environment
 definition, including custom-library bytes, and is removed from staging after
 the staged and published definitions are verified. Cleanup revalidates staging
 before removing only the reserved marker so concurrent changes fail closed.
+
+Notebook source files are mapped to the Fabric `fabricGitSource` or `ipynb`
+public-definition formats. When `.platform` is managed, `item.yaml` must
+explicitly define the description so metadata updates remain deterministic.
+Sensitivity labels are intentionally rejected in `.platform` until the
+dedicated Fabric sensitivity-label contract is implemented.
 
 Optional non-sensitive deployment variables can be passed explicitly:
 
@@ -238,16 +246,17 @@ The action currently implements:
 - Long-running-operation polling and result retrieval
 - Lakehouse list/get/create/update/read-back verification
 - Environment definition mapping, create/update, publish, and read-back verification
+- Notebook source/ipynb mapping, create/update, and read-back verification
 - Published Environment definition proof and target-version advancement checks
 - Regional Fabric long-running-operation polling for trusted operation URLs
 - Authenticated create/update/no-op planning
 - Approved-plan integrity and source-commit binding
 - Pre-mutation drift and authorization checks
-- Lakehouse and Environment create/update/no-op apply
+- Lakehouse, Environment, and Notebook create/update/no-op apply
 - Checkpoint and result artifacts
 
-Notebook, Spark Job Definition, and Data Pipeline apply remain blocked until
-their Phase 3 adapters are implemented.
+Spark Job Definition and Data Pipeline apply remain blocked until their Phase
+3 adapters are implemented.
 
 ## Live test workflow
 

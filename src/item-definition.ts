@@ -1,7 +1,6 @@
 import {
   existsSync,
   readFileSync,
-  readdirSync,
   statSync,
 } from "node:fs";
 import path from "node:path";
@@ -10,6 +9,7 @@ import Ajv, { type ErrorObject } from "ajv";
 import { parse } from "yaml";
 
 import { loadEnvironmentDefinition } from "./fabric/definition";
+import { loadNotebookDefinition } from "./fabric/notebook-definition";
 import { substituteVariables } from "./substitution";
 import type {
   DeploymentItem,
@@ -174,7 +174,8 @@ function validateTypeSpecificDefinition(
       loadEnvironmentDefinition(itemDirectory);
       return;
     case "Notebook":
-      requireNotebookDefinition(item, itemDirectory);
+      definitionDirectory(item, itemDirectory);
+      loadNotebookDefinition(itemDirectory);
       return;
     case "SparkJobDefinition":
       requireSparkJobDefinition(item, itemDirectory);
@@ -195,25 +196,6 @@ function definitionDirectory(item: DeploymentItem, itemDirectory: string): strin
     );
   }
   return directory;
-}
-
-function requireNotebookDefinition(
-  item: DeploymentItem,
-  itemDirectory: string,
-): void {
-  const directory = definitionDirectory(item, itemDirectory);
-  const candidates = listFiles(directory).filter((file) =>
-    [".py", ".ipynb"].includes(path.extname(file).toLowerCase()),
-  );
-  if (candidates.length !== 1) {
-    throw new Error(
-      `Item '${item.logicalId}' requires exactly one .py or .ipynb notebook definition.`,
-    );
-  }
-
-  if (path.extname(candidates[0] ?? "").toLowerCase() === ".ipynb") {
-    parseJsonObject(candidates[0] ?? "", item.logicalId, "notebook");
-  }
 }
 
 function requireSparkJobDefinition(
@@ -266,19 +248,6 @@ function parseJsonObject(
       `Item '${logicalId}' ${description} definition must be a JSON object.`,
     );
   }
-}
-
-function listFiles(directory: string): string[] {
-  const files: string[] = [];
-  for (const entry of readdirSync(directory, { withFileTypes: true })) {
-    const entryPath = path.join(directory, entry.name);
-    if (entry.isDirectory()) {
-      files.push(...listFiles(entryPath));
-    } else if (entry.isFile()) {
-      files.push(entryPath);
-    }
-  }
-  return files;
 }
 
 function assertNever(value: FabricItemType): never {

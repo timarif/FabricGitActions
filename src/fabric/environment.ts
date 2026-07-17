@@ -1,5 +1,5 @@
 import type {
-  ApplyCheckpointUpdateIntent,
+  DefinitionItemUpdateRecoveryState,
   ItemDefinition,
   PlannedAction,
 } from "../types";
@@ -60,13 +60,8 @@ export interface EnvironmentOperationReference {
   location?: string;
 }
 
-export interface EnvironmentUpdateRecoveryState {
-  phase: NonNullable<ApplyCheckpointUpdateIntent["phase"]>;
-  stagedDefinitionHash: string;
-  stagedDeploymentMarker?: string;
-  publishState?: string;
-  targetVersion?: string;
-}
+export type EnvironmentUpdateRecoveryState =
+  DefinitionItemUpdateRecoveryState;
 
 export interface EnvironmentAdapterOptions {
   publishTimeoutMs?: number;

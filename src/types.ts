@@ -57,6 +57,7 @@ export interface LoadedManifest {
   itemDirectories: Record<string, string>;
   itemDefinitions: Record<string, ItemDefinition>;
   environmentDefinitions: Record<string, FabricDefinition>;
+  notebookDefinitions: Record<string, FabricDefinition>;
 }
 
 export interface PlannedItem {
@@ -151,6 +152,14 @@ export interface ApplyCheckpointUpdateIntent {
     | "published"
     | "marker-cleaned";
   stagedDefinitionHash?: string;
+  stagedDeploymentMarker?: string;
+  publishState?: string;
+  targetVersion?: string;
+}
+
+export interface DefinitionItemUpdateRecoveryState {
+  phase: NonNullable<ApplyCheckpointUpdateIntent["phase"]>;
+  stagedDefinitionHash: string;
   stagedDeploymentMarker?: string;
   publishState?: string;
   targetVersion?: string;

@@ -14,6 +14,7 @@ import { parse } from "yaml";
 
 import { compareCanonicalStrings, sha256, stableJson } from "./hash";
 import { loadEnvironmentDefinition } from "./fabric/definition";
+import { loadNotebookDefinition } from "./fabric/notebook-definition";
 import { loadAndValidateItemDefinition } from "./item-definition";
 import { deploymentSchema } from "./schema";
 import { substituteVariables } from "./substitution";
@@ -79,10 +80,25 @@ export function loadManifest(
         ),
       ]),
   );
+  const notebookDefinitions = Object.fromEntries(
+    manifest.items
+      .filter((item) => item.type === "Notebook")
+      .map((item) => [
+        item.logicalId,
+        loadNotebookDefinition(
+          itemContent.directories[item.logicalId] ?? "",
+        ),
+      ]),
+  );
   validateEnvironmentPlatformMetadata(
     manifest,
     itemDefinitions,
     environmentDefinitions,
+  );
+  validateNotebookPlatformMetadata(
+    manifest,
+    itemDefinitions,
+    notebookDefinitions,
   );
   assertItemContentUnchanged(
     manifest,
@@ -101,6 +117,8 @@ export function loadManifest(
           resolvedDefinition: itemDefinitions[item.logicalId],
           capturedEnvironmentDefinition:
             environmentDefinitions[item.logicalId] ?? null,
+          capturedNotebookDefinition:
+            notebookDefinitions[item.logicalId] ?? null,
         }),
       ),
     ]),
@@ -116,7 +134,34 @@ export function loadManifest(
     itemDirectories: itemContent.directories,
     itemDefinitions,
     environmentDefinitions,
+    notebookDefinitions,
   };
+}
+
+function validateNotebookPlatformMetadata(
+  manifest: DeploymentManifest,
+  definitions: LoadedManifest["itemDefinitions"],
+  notebookDefinitions: LoadedManifest["notebookDefinitions"],
+): void {
+  for (const item of manifest.items) {
+    if (item.type !== "Notebook") {
+      continue;
+    }
+    const desired = definitions[item.logicalId];
+    const fabricDefinition = notebookDefinitions[item.logicalId];
+    const platformPart = fabricDefinition?.parts.find(
+      (part) => part.path === ".platform",
+    );
+    if (!desired || !platformPart) {
+      continue;
+    }
+    validatePlatformMetadata(
+      item.logicalId,
+      "Notebook",
+      desired,
+      platformPart.payload,
+    );
+  }
 }
 
 function validateEnvironmentPlatformMetadata(
@@ -136,55 +181,94 @@ function validateEnvironmentPlatformMetadata(
     if (!desired || !platformPart) {
       continue;
     }
-
-    let platform: unknown;
-    try {
-      platform = JSON.parse(
-        Buffer.from(platformPart.payload, "base64").toString("utf8"),
-      );
-    } catch {
-      throw new Error(
-        `Environment item '${item.logicalId}' has an invalid .platform JSON definition.`,
-      );
-    }
-    if (
-      platform === null ||
-      typeof platform !== "object" ||
-      Array.isArray(platform)
-    ) {
-      throw new Error(
-        `Environment item '${item.logicalId}' .platform definition must be a JSON object.`,
-      );
-    }
-    const metadata = (platform as Record<string, unknown>).metadata;
-    if (
-      metadata === null ||
-      typeof metadata !== "object" ||
-      Array.isArray(metadata)
-    ) {
-      throw new Error(
-        `Environment item '${item.logicalId}' .platform metadata must be a JSON object.`,
-      );
-    }
-    const values = metadata as Record<string, unknown>;
-    if (values.type !== "Environment") {
-      throw new Error(
-        `Environment item '${item.logicalId}' .platform metadata.type must be 'Environment'.`,
-      );
-    }
-    if (values.displayName !== desired.displayName) {
-      throw new Error(
-        `Environment item '${item.logicalId}' .platform displayName must match item.yaml.`,
-      );
-    }
-    if (
-      (values.description ?? "") !== (desired.description ?? "")
-    ) {
-      throw new Error(
-        `Environment item '${item.logicalId}' .platform description must match item.yaml.`,
-      );
-    }
+    validatePlatformMetadata(
+      item.logicalId,
+      "Environment",
+      desired,
+      platformPart.payload,
+    );
   }
+}
+
+function validatePlatformMetadata(
+  logicalId: string,
+  type: "Environment" | "Notebook",
+  desired: LoadedManifest["itemDefinitions"][string],
+  payload: string,
+): void {
+  let platform: unknown;
+  try {
+    platform = JSON.parse(
+      Buffer.from(payload, "base64").toString("utf8"),
+    );
+  } catch {
+    throw new Error(
+      `${type} item '${logicalId}' has an invalid .platform JSON definition.`,
+    );
+  }
+  if (
+    platform === null ||
+    typeof platform !== "object" ||
+    Array.isArray(platform)
+  ) {
+    throw new Error(
+      `${type} item '${logicalId}' .platform definition must be a JSON object.`,
+    );
+  }
+  const metadata = (platform as Record<string, unknown>).metadata;
+  if (
+    metadata === null ||
+    typeof metadata !== "object" ||
+    Array.isArray(metadata)
+  ) {
+    throw new Error(
+      `${type} item '${logicalId}' .platform metadata must be a JSON object.`,
+    );
+  }
+  const values = metadata as Record<string, unknown>;
+  if (containsProperty(platform, "sensitivityLabelId")) {
+    throw new Error(
+      `${type} item '${logicalId}' .platform sensitivity labels are not supported; manage the label outside the definition deployment.`,
+    );
+  }
+  if (values.type !== type) {
+    throw new Error(
+      `${type} item '${logicalId}' .platform metadata.type must be '${type}'.`,
+    );
+  }
+  if (values.displayName !== desired.displayName) {
+    throw new Error(
+      `${type} item '${logicalId}' .platform displayName must match item.yaml.`,
+    );
+  }
+  if (desired.description === undefined) {
+    throw new Error(
+      `${type} item '${logicalId}' must define item.yaml description when .platform metadata is managed.`,
+    );
+  }
+  if ((values.description ?? "") !== (desired.description ?? "")) {
+    throw new Error(
+      `${type} item '${logicalId}' .platform description must match item.yaml.`,
+    );
+  }
+}
+
+function containsProperty(value: unknown, propertyName: string): boolean {
+  if (value === null || typeof value !== "object") {
+    return false;
+  }
+  if (Array.isArray(value)) {
+    return value.some((entry) =>
+      containsProperty(entry, propertyName),
+    );
+  }
+  const record = value as Record<string, unknown>;
+  return (
+    Object.hasOwn(record, propertyName) ||
+    Object.values(record).some((entry) =>
+      containsProperty(entry, propertyName),
+    )
+  );
 }
 
 function validateUniqueDesiredIdentities(
@@ -192,14 +276,19 @@ function validateUniqueDesiredIdentities(
   definitions: LoadedManifest["itemDefinitions"],
 ): void {
   const identities = new Map<
-    "Lakehouse" | "Environment",
+    "Lakehouse" | "Environment" | "Notebook",
     Map<string, string>
   >([
     ["Lakehouse", new Map()],
     ["Environment", new Map()],
+    ["Notebook", new Map()],
   ]);
   for (const item of manifest.items) {
-    if (item.type !== "Lakehouse" && item.type !== "Environment") {
+    if (
+      item.type !== "Lakehouse" &&
+      item.type !== "Environment" &&
+      item.type !== "Notebook"
+    ) {
       continue;
     }
     const definition = definitions[item.logicalId];

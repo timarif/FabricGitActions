@@ -55,6 +55,7 @@ runtime_version: 1.3
       ],
     },
   },
+  notebookDefinitions: {},
   manifest: {
     apiVersion: "fabric.deploy/v1alpha1",
     kind: "FabricDeployment",
@@ -326,24 +327,24 @@ describe("guarded Environment apply", () => {
       ...loaded,
       itemContentHashes: {
         ...loaded.itemContentHashes,
-        notebook: "notebook-content",
+        sparkJob: "spark-job-content",
       },
       itemDirectories: {
         ...loaded.itemDirectories,
-        notebook: "items/notebook",
+        sparkJob: "items/spark-job",
       },
       itemDefinitions: {
         ...loaded.itemDefinitions,
-        notebook: { displayName: "Notebook" },
+        sparkJob: { displayName: "Spark Job" },
       },
       manifest: {
         ...loaded.manifest,
         items: [
           ...loaded.manifest.items,
           {
-            logicalId: "notebook",
-            type: "Notebook",
-            path: "items/notebook",
+            logicalId: "sparkJob",
+            type: "SparkJobDefinition",
+            path: "items/spark-job",
           },
         ],
       },

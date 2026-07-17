@@ -6,7 +6,7 @@ import { rehashPlan } from "../src/planner";
 import type { LoadedManifest } from "../src/types";
 
 describe("online Fabric planning", () => {
-  it("classifies Lakehouses and Environments while leaving later adapters unknown", async () => {
+  it("classifies Lakehouses, Environments, and Notebooks online", async () => {
     const loaded: LoadedManifest = {
       manifestPath: "deployment.yaml",
       manifestDirectory: ".",
@@ -33,6 +33,18 @@ describe("online Fabric planning", () => {
             {
               path: "Libraries/PublicLibraries/environment.yml",
               payload: Buffer.from("dependencies: []\n").toString("base64"),
+              payloadType: "InlineBase64",
+            },
+          ],
+        },
+      },
+      notebookDefinitions: {
+        notebook: {
+          format: "fabricGitSource",
+          parts: [
+            {
+              path: "notebook-content.py",
+              payload: Buffer.from("print('hello')\n").toString("base64"),
               payloadType: "InlineBase64",
             },
           ],
@@ -82,17 +94,27 @@ describe("online Fabric planning", () => {
         observedStateHash: "environment-state",
       }),
     };
+    const notebookAdapter = {
+      plan: async () => ({
+        action: "update" as const,
+        reason: "definition differs",
+        physicalId: "notebook-1",
+        observedStateHash: "notebook-state",
+      }),
+    };
 
     const online = await enrichPlanWithFabric(offline, loaded, {
       lakehouse: adapter,
       environment: environmentAdapter,
+      notebook: notebookAdapter,
     });
 
     expect(online.items[0]?.action).toBe("create");
     expect(online.items[0]?.observedStateHash).toBe("absent");
     expect(online.items[1]?.action).toBe("no-op");
     expect(online.items[1]?.physicalId).toBe("environment-1");
-    expect(online.items[2]?.action).toBe("unknown");
+    expect(online.items[2]?.action).toBe("update");
+    expect(online.items[2]?.physicalId).toBe("notebook-1");
     expect(online.planHash).not.toBe(offline.planHash);
 
     const savedPlan = JSON.parse(JSON.stringify(online));

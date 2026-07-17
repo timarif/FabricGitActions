@@ -10,13 +10,20 @@ import type {
 import type {
   EnvironmentAdapter,
   EnvironmentOperationReference,
-  EnvironmentUpdateRecoveryState,
 } from "./fabric/environment";
 import {
   getFabricDeploymentMarker,
   hashFabricDefinition,
   includesPlatformPart,
 } from "./fabric/definition";
+import type {
+  NotebookAdapter,
+  NotebookOperationReference,
+} from "./fabric/notebook";
+import {
+  hashNotebookDefinition,
+  notebookIncludesPlatformPart,
+} from "./fabric/notebook-definition";
 import { FabricOperationFailedError } from "./fabric/client";
 import {
   createCheckpoint,
@@ -28,6 +35,7 @@ import type {
   ApplyCheckpoint,
   ApplyItemResult,
   ApplyResult,
+  DefinitionItemUpdateRecoveryState,
   DeploymentPlan,
   ItemDefinition,
   LoadedManifest,
@@ -45,6 +53,10 @@ export interface ApplyPlanOptions {
   >;
   environmentAdapter?: Pick<
     EnvironmentAdapter,
+    "create" | "update" | "verify" | "resumeCreate" | "plan"
+  >;
+  notebookAdapter?: Pick<
+    NotebookAdapter,
     "create" | "update" | "verify" | "resumeCreate" | "plan"
   >;
   allowCreate: boolean;
@@ -523,7 +535,11 @@ function assertSupportedApplyItem(
   options: ApplyPlanOptions,
   item: PlannedItem,
 ): void {
-  if (item.type !== "Lakehouse" && item.type !== "Environment") {
+  if (
+    item.type !== "Lakehouse" &&
+    item.type !== "Environment" &&
+    item.type !== "Notebook"
+  ) {
     throw new Error(
       `Apply is not implemented for item '${item.logicalId}' of type ${item.type}.`,
     );
@@ -531,6 +547,11 @@ function assertSupportedApplyItem(
   if (item.type === "Environment" && !options.environmentAdapter) {
     throw new Error(
       `Environment adapter was not initialized for item '${item.logicalId}'.`,
+    );
+  }
+  if (item.type === "Notebook" && !options.notebookAdapter) {
+    throw new Error(
+      `Notebook adapter was not initialized for item '${item.logicalId}'.`,
     );
   }
 }
@@ -586,7 +607,8 @@ async function resumePendingOperations(
       if (
         !approvedItem ||
         (approvedItem.type !== "Lakehouse" &&
-          approvedItem.type !== "Environment")
+          approvedItem.type !== "Environment" &&
+          approvedItem.type !== "Notebook")
       ) {
         throw new Error(
           `Pending operation item '${logicalId}' is missing or unsupported.`,
@@ -738,7 +760,8 @@ async function reconcilePendingCreates(
       if (
         !approvedItem ||
         (approvedItem.type !== "Lakehouse" &&
-          approvedItem.type !== "Environment") ||
+          approvedItem.type !== "Environment" &&
+          approvedItem.type !== "Notebook") ||
         !currentItem
       ) {
         throw new Error(
@@ -818,7 +841,8 @@ async function reconcilePendingUpdates(
       if (
         !approvedItem ||
         (approvedItem.type !== "Lakehouse" &&
-          approvedItem.type !== "Environment") ||
+          approvedItem.type !== "Environment" &&
+          approvedItem.type !== "Notebook") ||
         approvedItem.action !== "update" ||
         !currentItem
       ) {
@@ -833,15 +857,22 @@ async function reconcilePendingUpdates(
       }
       const live = await planDesiredItem(options, approvedItem, desired);
       if (
-        approvedItem.type === "Environment" &&
         live.action === "update" &&
         live.physicalId === intent.physicalId &&
-        hasEnvironmentRecoveryProof(
-          options,
-          approvedItem,
-          live,
-          intent,
-        )
+        ((approvedItem.type === "Environment" &&
+          hasEnvironmentRecoveryProof(
+            options,
+            approvedItem,
+            live,
+            intent,
+          )) ||
+          (approvedItem.type === "Notebook" &&
+            hasNotebookRecoveryProof(
+              options,
+              approvedItem,
+              live,
+              intent,
+            )))
       ) {
         const verified = await updateDesiredItem(
           options,
@@ -1023,16 +1054,23 @@ async function applyItem(
   now: () => number,
   onMutationAccepted: (physicalId: string) => void,
   onOperationAccepted: (
-    operation: LakehouseOperationReference | EnvironmentOperationReference,
+    operation:
+      | LakehouseOperationReference
+      | EnvironmentOperationReference
+      | NotebookOperationReference,
   ) => void,
   onCreateSubmitting: () => void,
   onCreateRejected: () => void,
   onUpdateSubmitting: (
-    state?: EnvironmentUpdateRecoveryState,
+    state?: DefinitionItemUpdateRecoveryState,
   ) => void,
   onUpdateRejected: () => void,
 ): Promise<ApplyItemResult> {
-  if (item.type !== "Lakehouse" && item.type !== "Environment") {
+  if (
+    item.type !== "Lakehouse" &&
+    item.type !== "Environment" &&
+    item.type !== "Notebook"
+  ) {
     throw new Error(
       `Apply is not implemented for item '${item.logicalId}' of type ${item.type}.`,
     );
@@ -1125,7 +1163,11 @@ async function resumeCompletedItem(
   item: PlannedItem,
   physicalId: string,
 ): Promise<void> {
-  if (item.type !== "Lakehouse" && item.type !== "Environment") {
+  if (
+    item.type !== "Lakehouse" &&
+    item.type !== "Environment" &&
+    item.type !== "Notebook"
+  ) {
     throw new Error(
       `Checkpoint resume is not implemented for type ${item.type}.`,
     );
@@ -1160,6 +1202,13 @@ async function planDesiredItem(
       requireEnvironmentDefinition(options, item.logicalId),
     );
   }
+  if (item.type === "Notebook") {
+    return requireNotebookAdapter(options, item.logicalId).plan(
+      options.approvedPlan.workspaceId,
+      desired,
+      requireNotebookDefinition(options, item.logicalId),
+    );
+  }
   throw new Error(
     `Fabric planning is not implemented for item '${item.logicalId}' of type ${item.type}.`,
   );
@@ -1171,7 +1220,10 @@ async function createDesiredItem(
   desired: ItemDefinition,
   onMutationAccepted: (physicalId: string) => void,
   onOperationAccepted: (
-    operation: LakehouseOperationReference | EnvironmentOperationReference,
+    operation:
+      | LakehouseOperationReference
+      | EnvironmentOperationReference
+      | NotebookOperationReference,
   ) => void,
   onCreateSubmitting: () => void,
   onCreateRejected: () => void,
@@ -1197,6 +1249,17 @@ async function createDesiredItem(
       onCreateRejected,
     );
   }
+  if (item.type === "Notebook") {
+    return requireNotebookAdapter(options, item.logicalId).create(
+      options.approvedPlan.workspaceId,
+      desired,
+      requireNotebookDefinition(options, item.logicalId),
+      onMutationAccepted,
+      onOperationAccepted,
+      onCreateSubmitting,
+      onCreateRejected,
+    );
+  }
   throw new Error(
     `Create is not implemented for item '${item.logicalId}' of type ${item.type}.`,
   );
@@ -1206,7 +1269,10 @@ async function resumeCreateDesiredItem(
   options: ApplyPlanOptions,
   item: PlannedItem,
   desired: ItemDefinition,
-  operation: LakehouseOperationReference | EnvironmentOperationReference,
+  operation:
+    | LakehouseOperationReference
+    | EnvironmentOperationReference
+    | NotebookOperationReference,
   onMutationAccepted: (physicalId: string) => void,
 ) {
   if (item.type === "Lakehouse") {
@@ -1226,6 +1292,15 @@ async function resumeCreateDesiredItem(
       onMutationAccepted,
     );
   }
+  if (item.type === "Notebook") {
+    return requireNotebookAdapter(options, item.logicalId).resumeCreate(
+      options.approvedPlan.workspaceId,
+      desired,
+      requireNotebookDefinition(options, item.logicalId),
+      operation,
+      onMutationAccepted,
+    );
+  }
   throw new Error(
     `Create resume is not implemented for item '${item.logicalId}' of type ${item.type}.`,
   );
@@ -1238,7 +1313,7 @@ async function updateDesiredItem(
   desired: ItemDefinition,
   onMutationAccepted?: (physicalId: string) => void,
   onUpdateSubmitting?: (
-    state?: EnvironmentUpdateRecoveryState,
+    state?: DefinitionItemUpdateRecoveryState,
   ) => void,
   onUpdateRejected?: () => void,
 ) {
@@ -1258,6 +1333,17 @@ async function updateDesiredItem(
       physicalId,
       desired,
       requireEnvironmentDefinition(options, item.logicalId),
+      onMutationAccepted,
+      onUpdateSubmitting,
+      onUpdateRejected,
+    );
+  }
+  if (item.type === "Notebook") {
+    return requireNotebookAdapter(options, item.logicalId).update(
+      options.approvedPlan.workspaceId,
+      physicalId,
+      desired,
+      requireNotebookDefinition(options, item.logicalId),
       onMutationAccepted,
       onUpdateSubmitting,
       onUpdateRejected,
@@ -1289,6 +1375,14 @@ async function verifyDesiredItem(
       requireEnvironmentDefinition(options, item.logicalId),
     );
   }
+  if (item.type === "Notebook") {
+    return requireNotebookAdapter(options, item.logicalId).verify(
+      options.approvedPlan.workspaceId,
+      physicalId,
+      desired,
+      requireNotebookDefinition(options, item.logicalId),
+    );
+  }
   throw new Error(
     `Verification is not implemented for item '${item.logicalId}' of type ${item.type}.`,
   );
@@ -1315,6 +1409,32 @@ function requireEnvironmentDefinition(
   if (!definition) {
     throw new Error(
       `Environment definition snapshot is missing for '${logicalId}'.`,
+    );
+  }
+  return definition;
+}
+
+function requireNotebookAdapter(
+  options: ApplyPlanOptions,
+  logicalId: string,
+): NonNullable<ApplyPlanOptions["notebookAdapter"]> {
+  if (!options.notebookAdapter) {
+    throw new Error(
+      `Notebook adapter was not initialized for item '${logicalId}'.`,
+    );
+  }
+  return options.notebookAdapter;
+}
+
+function requireNotebookDefinition(
+  options: ApplyPlanOptions,
+  logicalId: string,
+) {
+  const definition =
+    options.loadedManifest.notebookDefinitions[logicalId];
+  if (!definition) {
+    throw new Error(
+      `Notebook definition snapshot is missing for '${logicalId}'.`,
     );
   }
   return definition;
@@ -1372,11 +1492,55 @@ function hasEnvironmentRecoveryProof(
   );
 }
 
+function hasNotebookRecoveryProof(
+  options: ApplyPlanOptions,
+  item: PlannedItem,
+  live: {
+    action: PlannedAction;
+    observedStateHash: string;
+    stagedDefinitionHash?: string;
+    managedMetadataMatches?: boolean;
+  },
+  intent?: ApplyCheckpoint["pendingUpdates"][string],
+): boolean {
+  if (item.type !== "Notebook") {
+    return false;
+  }
+  if (live.observedStateHash === item.observedStateHash) {
+    return true;
+  }
+  const desiredDefinition = requireNotebookDefinition(
+    options,
+    item.logicalId,
+  );
+  const expectedDefinitionHash = hashNotebookDefinition(
+    desiredDefinition,
+    notebookIncludesPlatformPart(desiredDefinition),
+  );
+  if (
+    live.managedMetadataMatches === true &&
+    live.stagedDefinitionHash === expectedDefinitionHash
+  ) {
+    return true;
+  }
+  if (
+    !intent ||
+    (intent.phase !== "metadata-submitting" &&
+      intent.phase !== "metadata-updated")
+  ) {
+    return false;
+  }
+  return (
+    live.managedMetadataMatches === true &&
+    live.stagedDefinitionHash === intent.stagedDefinitionHash
+  );
+}
+
 function recordPendingUpdate(
   options: ApplyPlanOptions,
   checkpoint: ApplyCheckpoint,
   item: PlannedItem,
-  state: EnvironmentUpdateRecoveryState | undefined,
+  state: DefinitionItemUpdateRecoveryState | undefined,
   now: () => number,
 ): void {
   if (!item.physicalId) {

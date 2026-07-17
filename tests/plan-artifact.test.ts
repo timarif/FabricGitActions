@@ -18,6 +18,7 @@ function createPlan() {
     itemDirectories: { lakehouse: "items/lakehouse" },
     itemDefinitions: { lakehouse: { displayName: "Bronze" } },
     environmentDefinitions: {},
+    notebookDefinitions: {},
     manifest: {
       apiVersion: "fabric.deploy/v1alpha1",
       kind: "FabricDeployment",

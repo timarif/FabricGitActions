@@ -16,6 +16,7 @@ const loadedManifest: LoadedManifest = {
     },
   },
   environmentDefinitions: {},
+  notebookDefinitions: {},
   manifest: {
     apiVersion: "fabric.deploy/v1alpha1",
     kind: "FabricDeployment",

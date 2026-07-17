@@ -245,6 +245,101 @@ items:
     );
   });
 
+  it("requires an explicit description when Notebook platform metadata is managed", () => {
+    const root = mkdtempSync(path.join(tmpdir(), "fabric-deploy-"));
+    const manifestPath = createFixture(
+      root,
+      `
+apiVersion: fabric.deploy/v1alpha1
+kind: FabricDeployment
+metadata:
+  deploymentId: sample
+workspace:
+  id: workspace-1
+items:
+  - logicalId: notebook
+    type: Notebook
+    path: items/notebook
+`,
+      ["items/notebook"],
+    );
+    const itemDirectory = path.join(root, "items/notebook");
+    writeFileSync(
+      path.join(itemDirectory, "item.yaml"),
+      "displayName: Hello\n",
+      "utf8",
+    );
+    mkdirSync(path.join(itemDirectory, "definition"));
+    writeFileSync(
+      path.join(itemDirectory, "definition/notebook-content.py"),
+      "print('hello')\n",
+      "utf8",
+    );
+    writeFileSync(
+      path.join(itemDirectory, "definition/.platform"),
+      JSON.stringify({
+        metadata: {
+          type: "Notebook",
+          displayName: "Hello",
+          description: "",
+        },
+      }),
+      "utf8",
+    );
+
+    expect(() => loadManifest(manifestPath)).toThrow(
+      "must define item.yaml description when .platform metadata is managed",
+    );
+  });
+
+  it("rejects sensitivity labels in managed platform definitions", () => {
+    const root = mkdtempSync(path.join(tmpdir(), "fabric-deploy-"));
+    const manifestPath = createFixture(
+      root,
+      `
+apiVersion: fabric.deploy/v1alpha1
+kind: FabricDeployment
+metadata:
+  deploymentId: sample
+workspace:
+  id: workspace-1
+items:
+  - logicalId: notebook
+    type: Notebook
+    path: items/notebook
+`,
+      ["items/notebook"],
+    );
+    const itemDirectory = path.join(root, "items/notebook");
+    writeFileSync(
+      path.join(itemDirectory, "item.yaml"),
+      "displayName: Hello\ndescription: Managed\n",
+      "utf8",
+    );
+    mkdirSync(path.join(itemDirectory, "definition"));
+    writeFileSync(
+      path.join(itemDirectory, "definition/notebook-content.py"),
+      "print('hello')\n",
+      "utf8",
+    );
+    writeFileSync(
+      path.join(itemDirectory, "definition/.platform"),
+      JSON.stringify({
+        metadata: {
+          type: "Notebook",
+          displayName: "Hello",
+          description: "Managed",
+          sensitivityLabelId: "11111111-1111-1111-1111-111111111111",
+        },
+      }),
+      "utf8",
+    );
+
+    expect(() => loadManifest(manifestPath)).toThrow(
+      ".platform sensitivity labels are not supported",
+    );
+  });
+
   it("rejects item paths outside the manifest directory", () => {
     const root = mkdtempSync(path.join(tmpdir(), "fabric-deploy-"));
     const manifestPath = createFixture(

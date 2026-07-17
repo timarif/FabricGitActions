@@ -17,6 +17,7 @@ import { parseFabricEndpoints } from "./fabric/config";
 import { EnvironmentAdapter } from "./fabric/environment";
 import { LakehouseAdapter } from "./fabric/lakehouse";
 import { enrichPlanWithFabric } from "./fabric/live-planner";
+import { NotebookAdapter } from "./fabric/notebook";
 import { loadManifest } from "./manifest";
 import { loadApprovedPlan } from "./plan-artifact";
 import { buildPlan } from "./planner";
@@ -120,6 +121,7 @@ export async function run(): Promise<void> {
     }
     let lakehouseAdapter: LakehouseAdapter | undefined;
     let environmentAdapter: EnvironmentAdapter | undefined;
+    let notebookAdapter: NotebookAdapter | undefined;
     if ((mode === "plan" || mode === "apply") && authMode !== "none") {
       const clientSecret = core.getInput("client-secret") || undefined;
       if (clientSecret) {
@@ -146,9 +148,11 @@ export async function run(): Promise<void> {
       });
       lakehouseAdapter = new LakehouseAdapter(client);
       environmentAdapter = new EnvironmentAdapter(client);
+      notebookAdapter = new NotebookAdapter(client);
       plan = await enrichPlanWithFabric(plan, loadedManifest, {
         lakehouse: lakehouseAdapter,
         environment: environmentAdapter,
+        notebook: notebookAdapter,
       });
     } else if (mode === "apply") {
       throw new Error("apply mode requires Fabric authentication.");
@@ -186,7 +190,8 @@ export async function run(): Promise<void> {
         !checkpointFile ||
         !resultFile ||
         !lakehouseAdapter ||
-        !environmentAdapter
+        !environmentAdapter ||
+        !notebookAdapter
       ) {
         throw new Error("Fabric adapters were not initialized for apply mode.");
       }
@@ -196,6 +201,7 @@ export async function run(): Promise<void> {
         loadedManifest,
         lakehouseAdapter,
         environmentAdapter,
+        notebookAdapter,
         allowCreate: readBooleanInput("allow-create"),
         allowUpdate: readBooleanInput("allow-update"),
         checkpointFile,

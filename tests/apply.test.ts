@@ -31,6 +31,7 @@ const loaded: LoadedManifest = {
     lakehouse: { displayName: "Bronze", description: "Desired" },
   },
   environmentDefinitions: {},
+  notebookDefinitions: {},
   manifest: {
     apiVersion: "fabric.deploy/v1alpha1",
     kind: "FabricDeployment",
@@ -339,11 +340,11 @@ describe("guarded apply", () => {
       },
       itemDirectories: {
         ...loaded.itemDirectories,
-        zzzUnsupported: "items/notebook",
+        zzzUnsupported: "items/spark-job",
       },
       itemDefinitions: {
         ...loaded.itemDefinitions,
-        zzzUnsupported: { displayName: "Notebook" },
+        zzzUnsupported: { displayName: "Spark Job" },
       },
       manifest: {
         ...loaded.manifest,
@@ -351,8 +352,8 @@ describe("guarded apply", () => {
           ...loaded.manifest.items,
           {
             logicalId: "zzzUnsupported",
-            type: "Notebook",
-            path: "items/notebook",
+            type: "SparkJobDefinition",
+            path: "items/spark-job",
           },
         ],
       },
