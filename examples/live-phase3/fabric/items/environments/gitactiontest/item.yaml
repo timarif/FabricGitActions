@@ -1,3 +1,3 @@
-displayName: GitActionTest Environment
+displayName: tva-GitActionTest Environment
 description: Environment deployed by the FabricGitActions Phase 3 live workflow
 desiredState: present
