@@ -14,6 +14,7 @@ import {
 } from "./fabric/auth";
 import { FabricClient } from "./fabric/client";
 import { parseFabricEndpoints } from "./fabric/config";
+import { EnvironmentAdapter } from "./fabric/environment";
 import { LakehouseAdapter } from "./fabric/lakehouse";
 import { enrichPlanWithFabric } from "./fabric/live-planner";
 import { loadManifest } from "./manifest";
@@ -118,6 +119,7 @@ export async function run(): Promise<void> {
       ]);
     }
     let lakehouseAdapter: LakehouseAdapter | undefined;
+    let environmentAdapter: EnvironmentAdapter | undefined;
     if ((mode === "plan" || mode === "apply") && authMode !== "none") {
       const clientSecret = core.getInput("client-secret") || undefined;
       if (clientSecret) {
@@ -143,7 +145,11 @@ export async function run(): Promise<void> {
         tokenProvider,
       });
       lakehouseAdapter = new LakehouseAdapter(client);
-      plan = await enrichPlanWithFabric(plan, loadedManifest, lakehouseAdapter);
+      environmentAdapter = new EnvironmentAdapter(client);
+      plan = await enrichPlanWithFabric(plan, loadedManifest, {
+        lakehouse: lakehouseAdapter,
+        environment: environmentAdapter,
+      });
     } else if (mode === "apply") {
       throw new Error("apply mode requires Fabric authentication.");
     }
@@ -179,15 +185,17 @@ export async function run(): Promise<void> {
         !approvedPlan ||
         !checkpointFile ||
         !resultFile ||
-        !lakehouseAdapter
+        !lakehouseAdapter ||
+        !environmentAdapter
       ) {
-        throw new Error("Lakehouse adapter was not initialized for apply mode.");
+        throw new Error("Fabric adapters were not initialized for apply mode.");
       }
       const result = await applyApprovedPlan({
         approvedPlan,
         currentPlan: plan,
         loadedManifest,
         lakehouseAdapter,
+        environmentAdapter,
         allowCreate: readBooleanInput("allow-create"),
         allowUpdate: readBooleanInput("allow-update"),
         checkpointFile,

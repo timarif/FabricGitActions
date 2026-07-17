@@ -1,3 +1,5 @@
+import type { FabricDefinition } from "./fabric/definition";
+
 export const FABRIC_ITEM_TYPES = [
   "Lakehouse",
   "Environment",
@@ -54,6 +56,7 @@ export interface LoadedManifest {
   itemContentHashes: Record<string, string>;
   itemDirectories: Record<string, string>;
   itemDefinitions: Record<string, ItemDefinition>;
+  environmentDefinitions: Record<string, FabricDefinition>;
 }
 
 export interface PlannedItem {
@@ -141,6 +144,16 @@ export interface ApplyCheckpointUpdateIntent {
   action: "update";
   physicalId: string;
   submittedAt: string;
+  phase?:
+    | "metadata-submitting"
+    | "metadata-updated"
+    | "definition-staged"
+    | "published"
+    | "marker-cleaned";
+  stagedDefinitionHash?: string;
+  stagedDeploymentMarker?: string;
+  publishState?: string;
+  targetVersion?: string;
 }
 
 export interface ApplyCheckpoint {

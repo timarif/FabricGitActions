@@ -3,10 +3,11 @@
 A GitHub Marketplace action for declarative Microsoft Fabric deployments, with
 an initial focus on Data Engineering workloads.
 
-> **Current status:** Phase 1 is complete. Phase 2 implements authenticated
-> Lakehouse planning and guarded create/update/no-op apply with approved-plan
-> binding, drift detection, checkpoints, and result artifacts. Live mutation
-> validation remains pending. See [the roadmap](docs/ROADMAP.md).
+> **Current status:** Phases 1 and 2 are complete. Phase 3 now includes
+> Environment definition deployment and publish in addition to Lakehouse
+> deployment. Both adapters support authenticated planning and guarded
+> create/update/no-op apply with approved-plan binding, drift detection,
+> checkpoints, and result artifacts. See [the roadmap](docs/ROADMAP.md).
 
 ## Initial workload scope
 
@@ -38,10 +39,11 @@ contains the validated deployment order, observed Fabric state, source commit,
 and a deterministic hash used to bind approval to an exact deployment.
 
 Without authentication, `plan` is offline and reports item actions as
-`unknown`. With Fabric authentication configured, Lakehouses are classified as
-`create`, `update`, or `no-op`; later workload adapters remain `unknown`.
+`unknown`. With Fabric authentication configured, Lakehouses and Environments
+are classified as `create`, `update`, `no-op`, or `blocked`; later workload
+adapters remain `unknown`.
 
-## Authenticated Lakehouse plan with GitHub OIDC
+## Authenticated Fabric plan with GitHub OIDC
 
 Configure a federated credential on the deployment application's Entra service
 principal, enable service principals for Fabric APIs, and grant the application
@@ -76,7 +78,7 @@ with:
   client-secret: ${{ secrets.FABRIC_CLIENT_SECRET }}
 ```
 
-## Guarded Lakehouse apply
+## Guarded Lakehouse and Environment apply
 
 Generate an authenticated plan, preserve it as an immutable artifact, then pass
 that exact file to a separate apply job:
@@ -115,8 +117,14 @@ reconciled without repeating an ambiguously completed update. Expired operation
 references reconcile against live state. The result file is initialized before
 Fabric operations and finalized for failures that occur during authentication
 or discovery. Explicitly failed create operations are cleared only after fresh
-discovery confirms the Lakehouse is still absent; ambiguous timeouts remain
-checkpointed.
+discovery confirms the item is still absent; ambiguous timeouts remain
+checkpointed. Environment recovery also resumes interrupted definition updates
+and publishes against the discovered physical item. Recovery either requires
+the exact approved pre-state or proves that the staged definition marker,
+staged definition hash, and managed item metadata all still match the approved
+deployment. Environment updates additionally checkpoint metadata, definition,
+publish, and marker-cleanup phases so retries can validate the exact
+intermediate state before continuing.
 `plan-hash` identifies the freshly generated `plan-file`;
 `approved-plan-hash` identifies the plan authorized for apply. Deletion is not
 implemented.
@@ -161,10 +169,18 @@ Definition-bearing workloads are structurally validated:
 | Type | Required definition |
 | --- | --- |
 | Lakehouse | `item.yaml` |
-| Environment | Non-empty `definition/` directory |
+| Environment | `definition/environment.yml`; optional `Sparkcompute.yml`, `.platform`, and custom libraries |
 | Notebook | Exactly one `.py` or `.ipynb` file under `definition/` |
 | Spark Job Definition | Exactly one `definition/main.py` or `definition/main.scala` |
 | Data Pipeline | Valid JSON object at `definition/pipeline-content.json` |
+
+Environment custom libraries require `definition/Sparkcompute.yml`. When Spark
+settings are managed, the action reserves
+`spark.fabric.deploy.definitionHash` as a published verification marker. The
+marker binds the effective Fabric publish to the complete approved Environment
+definition, including custom-library bytes, and is removed from staging after
+the staged and published definitions are verified. Cleanup revalidates staging
+before removing only the reserved marker so concurrent changes fail closed.
 
 Optional non-sensitive deployment variables can be passed explicitly:
 
@@ -212,23 +228,26 @@ with:
 
 Changing the endpoint does not change the OAuth audience.
 
-## Phase 2 implementation boundary
+## Current implementation boundary
 
-The Phase 2 client implements:
+The action currently implements:
 
 - Fabric API bearer-token authentication through GitHub OIDC or client secret
 - Same-origin pagination
 - Transient GET retries with `Retry-After`
 - Long-running-operation polling and result retrieval
 - Lakehouse list/get/create/update/read-back verification
+- Environment definition mapping, create/update, publish, and read-back verification
+- Published Environment definition proof and target-version advancement checks
+- Regional Fabric long-running-operation polling for trusted operation URLs
 - Authenticated create/update/no-op planning
 - Approved-plan integrity and source-commit binding
 - Pre-mutation drift and authorization checks
-- Lakehouse create/update/no-op apply
+- Lakehouse and Environment create/update/no-op apply
 - Checkpoint and result artifacts
 
-Environment, Notebook, Spark Job Definition, and Data Pipeline apply remain
-blocked until their Phase 3 adapters are implemented.
+Notebook, Spark Job Definition, and Data Pipeline apply remain blocked until
+their Phase 3 adapters are implemented.
 
 ## Live test workflow
 

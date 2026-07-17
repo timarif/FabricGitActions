@@ -25,6 +25,7 @@ export interface FabricRequestOptions {
   retryable?: boolean;
   acceptedStatuses?: number[];
   deadlineMs?: number;
+  allowOperationOrigin?: boolean;
 }
 
 interface FabricErrorBody {
@@ -115,7 +116,10 @@ export class FabricClient {
     pathOrUrl: string,
     requestOptions: FabricRequestOptions = {},
   ): Promise<FabricResponse<T>> {
-    const url = this.resolveUrl(pathOrUrl);
+    const url = this.resolveUrl(
+      pathOrUrl,
+      requestOptions.allowOperationOrigin ?? false,
+    );
     const retryable =
       requestOptions.retryable ?? ["GET", "HEAD"].includes(method.toUpperCase());
     const requestDeadline = Math.min(
@@ -284,7 +288,26 @@ export class FabricClient {
       }
       return initialResponse.body as T;
     }
+    const result = await this.pollOperation<T>(initialResponse, true);
+    if (result === undefined) {
+      throw new Error("Fabric operation result response is empty.");
+    }
+    return result;
+  }
 
+  async waitForOperationCompletion(
+    initialResponse: FabricResponse<unknown>,
+  ): Promise<void> {
+    if (initialResponse.status !== 202) {
+      return;
+    }
+    await this.pollOperation(initialResponse, false);
+  }
+
+  private async pollOperation<T>(
+    initialResponse: FabricResponse<unknown>,
+    readResult: boolean,
+  ): Promise<T | undefined> {
     const operationId = initialResponse.headers.get("x-ms-operation-id");
     const location = initialResponse.headers.get("location");
     if (!operationId && !location) {
@@ -309,11 +332,15 @@ export class FabricClient {
       }
       const poll = await this.request<OperationState>("GET", pollUrl, {
         deadlineMs: deadline,
+        allowOperationOrigin: true,
       });
       const status =
         typeof poll.body?.status === "string" ? poll.body.status : "Undefined";
 
       if (status === "Succeeded") {
+        if (!readResult) {
+          return undefined;
+        }
         const returnedLocation = poll.headers.get("location");
         const resultUrl =
           returnedLocation && returnedLocation !== pollUrl
@@ -323,6 +350,7 @@ export class FabricClient {
               : `${pollUrl.replace(/\/$/, "")}/result`;
         const result = await this.request<T>("GET", resultUrl, {
           deadlineMs: deadline,
+          allowOperationOrigin: true,
         });
         if (result.body === undefined) {
           throw new Error("Fabric operation result response is empty.");
@@ -348,11 +376,32 @@ export class FabricClient {
     );
   }
 
-  private resolveUrl(pathOrUrl: string): string {
+  private resolveUrl(
+    pathOrUrl: string,
+    allowOperationOrigin = false,
+  ): string {
     const url = new URL(pathOrUrl, `${this.options.endpoint}/`);
-    if (url.origin !== this.endpointUrl.origin) {
+    if (
+      url.origin !== this.endpointUrl.origin &&
+      !(allowOperationOrigin && isFabricOperationUrl(url))
+    ) {
       throw new Error(
         `Fabric response attempted to access an unexpected origin: ${url.origin}`,
+      );
+    }
+
+    function isFabricOperationUrl(url: URL): boolean {
+      return (
+        url.protocol === "https:" &&
+        url.port === "" &&
+        url.username === "" &&
+        url.password === "" &&
+        url.search === "" &&
+        url.hash === "" &&
+        /^wabi-[a-z0-9-]+\.analysis\.windows\.net$/i.test(url.hostname) &&
+        /^\/v1\/operations\/[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?:\/result)?\/?$/i.test(
+          url.pathname,
+        )
       );
     }
     return url.toString();

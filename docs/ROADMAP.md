@@ -30,7 +30,7 @@
 
 ## Phase 3: core data engineering adapters
 
-- [ ] Environment definition and publish
+- [x] Environment definition and publish
 - [ ] Notebook definition deployment
 - [ ] Spark Job Definition deployment
 - [ ] Logical reference resolution

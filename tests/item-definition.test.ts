@@ -55,11 +55,22 @@ describe("item definition validation", () => {
     });
   });
 
-  it("requires a non-empty Environment definition directory", () => {
+  it("requires an Environment definition directory", () => {
     const fixture = createDeployment("Environment", "displayName: Spark\n");
 
     expect(() => loadManifest(fixture.manifestPath)).toThrow(
       "requires a definition directory",
+    );
+  });
+
+  it("requires definition/environment.yml for an Environment", () => {
+    const fixture = createDeployment("Environment", "displayName: Spark\n");
+    const definition = path.join(fixture.itemDirectory, "definition");
+    mkdirSync(definition);
+    writeFileSync(path.join(definition, "Sparkcompute.yml"), "runtime_version: 1.3\n");
+
+    expect(() => loadManifest(fixture.manifestPath)).toThrow(
+      "must include definition/environment.yml",
     );
   });
 

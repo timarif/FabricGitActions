@@ -15,6 +15,7 @@ const loadedManifest: LoadedManifest = {
       displayName: "Lakehouse",
     },
   },
+  environmentDefinitions: {},
   manifest: {
     apiVersion: "fabric.deploy/v1alpha1",
     kind: "FabricDeployment",

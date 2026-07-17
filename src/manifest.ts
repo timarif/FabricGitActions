@@ -13,6 +13,7 @@ import Ajv, { type ErrorObject } from "ajv";
 import { parse } from "yaml";
 
 import { compareCanonicalStrings, sha256, stableJson } from "./hash";
+import { loadEnvironmentDefinition } from "./fabric/definition";
 import { loadAndValidateItemDefinition } from "./item-definition";
 import { deploymentSchema } from "./schema";
 import { substituteVariables } from "./substitution";
@@ -68,7 +69,29 @@ export function loadManifest(
       ),
     ]),
   );
+  const environmentDefinitions = Object.fromEntries(
+    manifest.items
+      .filter((item) => item.type === "Environment")
+      .map((item) => [
+        item.logicalId,
+        loadEnvironmentDefinition(
+          itemContent.directories[item.logicalId] ?? "",
+        ),
+      ]),
+  );
+  validateEnvironmentPlatformMetadata(
+    manifest,
+    itemDefinitions,
+    environmentDefinitions,
+  );
+  assertItemContentUnchanged(
+    manifest,
+    manifestDirectory,
+    itemContent.directories,
+    itemContent.hashes,
+  );
   validateUniqueDesiredIdentities(manifest, itemDefinitions);
+  // Bind the plan to the exact Environment bytes retained for apply.
   const effectiveItemHashes = Object.fromEntries(
     manifest.items.map((item) => [
       item.logicalId,
@@ -76,6 +99,8 @@ export function loadManifest(
         stableJson({
           fileContentHash: itemContent.hashes[item.logicalId],
           resolvedDefinition: itemDefinitions[item.logicalId],
+          capturedEnvironmentDefinition:
+            environmentDefinitions[item.logicalId] ?? null,
         }),
       ),
     ]),
@@ -90,16 +115,91 @@ export function loadManifest(
     itemContentHashes: effectiveItemHashes,
     itemDirectories: itemContent.directories,
     itemDefinitions,
+    environmentDefinitions,
   };
+}
+
+function validateEnvironmentPlatformMetadata(
+  manifest: DeploymentManifest,
+  definitions: LoadedManifest["itemDefinitions"],
+  environmentDefinitions: LoadedManifest["environmentDefinitions"],
+): void {
+  for (const item of manifest.items) {
+    if (item.type !== "Environment") {
+      continue;
+    }
+    const desired = definitions[item.logicalId];
+    const fabricDefinition = environmentDefinitions[item.logicalId];
+    const platformPart = fabricDefinition?.parts.find(
+      (part) => part.path === ".platform",
+    );
+    if (!desired || !platformPart) {
+      continue;
+    }
+
+    let platform: unknown;
+    try {
+      platform = JSON.parse(
+        Buffer.from(platformPart.payload, "base64").toString("utf8"),
+      );
+    } catch {
+      throw new Error(
+        `Environment item '${item.logicalId}' has an invalid .platform JSON definition.`,
+      );
+    }
+    if (
+      platform === null ||
+      typeof platform !== "object" ||
+      Array.isArray(platform)
+    ) {
+      throw new Error(
+        `Environment item '${item.logicalId}' .platform definition must be a JSON object.`,
+      );
+    }
+    const metadata = (platform as Record<string, unknown>).metadata;
+    if (
+      metadata === null ||
+      typeof metadata !== "object" ||
+      Array.isArray(metadata)
+    ) {
+      throw new Error(
+        `Environment item '${item.logicalId}' .platform metadata must be a JSON object.`,
+      );
+    }
+    const values = metadata as Record<string, unknown>;
+    if (values.type !== "Environment") {
+      throw new Error(
+        `Environment item '${item.logicalId}' .platform metadata.type must be 'Environment'.`,
+      );
+    }
+    if (values.displayName !== desired.displayName) {
+      throw new Error(
+        `Environment item '${item.logicalId}' .platform displayName must match item.yaml.`,
+      );
+    }
+    if (
+      (values.description ?? "") !== (desired.description ?? "")
+    ) {
+      throw new Error(
+        `Environment item '${item.logicalId}' .platform description must match item.yaml.`,
+      );
+    }
+  }
 }
 
 function validateUniqueDesiredIdentities(
   manifest: DeploymentManifest,
   definitions: LoadedManifest["itemDefinitions"],
 ): void {
-  const lakehouseIdentities = new Map<string, string>();
+  const identities = new Map<
+    "Lakehouse" | "Environment",
+    Map<string, string>
+  >([
+    ["Lakehouse", new Map()],
+    ["Environment", new Map()],
+  ]);
   for (const item of manifest.items) {
-    if (item.type !== "Lakehouse") {
+    if (item.type !== "Lakehouse" && item.type !== "Environment") {
       continue;
     }
     const definition = definitions[item.logicalId];
@@ -107,13 +207,42 @@ function validateUniqueDesiredIdentities(
       continue;
     }
     const identity = `${definition.folderId ?? "<root>"}\0${definition.displayName}`;
-    const existing = lakehouseIdentities.get(identity);
+    const itemIdentities = identities.get(item.type)!;
+    const existing = itemIdentities.get(identity);
     if (existing) {
       throw new Error(
-        `Lakehouse items '${existing}' and '${item.logicalId}' resolve to the same folder and displayName.`,
+        `${item.type} items '${existing}' and '${item.logicalId}' resolve to the same folder and displayName.`,
       );
     }
-    lakehouseIdentities.set(identity, item.logicalId);
+    itemIdentities.set(identity, item.logicalId);
+  }
+}
+
+function assertItemContentUnchanged(
+  manifest: DeploymentManifest,
+  manifestDirectory: string,
+  directories: Record<string, string>,
+  expectedHashes: Record<string, string>,
+): void {
+  const realManifestDirectory = realpathSync(manifestDirectory);
+  for (const item of manifest.items) {
+    const directory = directories[item.logicalId];
+    const expectedHash = expectedHashes[item.logicalId];
+    if (!directory || !expectedHash) {
+      throw new Error(
+        `Item '${item.logicalId}' content snapshot is incomplete.`,
+      );
+    }
+    const currentHash = hashDirectory(
+      directory,
+      realManifestDirectory,
+      item.logicalId,
+    );
+    if (currentHash !== expectedHash) {
+      throw new Error(
+        `Item '${item.logicalId}' changed while the deployment manifest was being loaded. Retry from a stable checkout.`,
+      );
+    }
   }
 }
 

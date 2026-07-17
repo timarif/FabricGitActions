@@ -263,7 +263,25 @@ function isCheckpoint(value: unknown): value is ApplyCheckpoint {
       typeof intent.physicalId === "string" &&
       intent.physicalId.length > 0 &&
       typeof intent.submittedAt === "string" &&
-      !Number.isNaN(Date.parse(intent.submittedAt))
+      !Number.isNaN(Date.parse(intent.submittedAt)) &&
+      (intent.phase === undefined ||
+        [
+          "metadata-submitting",
+          "metadata-updated",
+          "definition-staged",
+          "published",
+          "marker-cleaned",
+        ].includes(intent.phase)) &&
+      (intent.stagedDefinitionHash === undefined ||
+        /^[a-f0-9]{64}$/.test(intent.stagedDefinitionHash)) &&
+      (intent.stagedDeploymentMarker === undefined ||
+        /^[a-f0-9]{64}$/.test(intent.stagedDeploymentMarker)) &&
+      (intent.publishState === undefined ||
+        typeof intent.publishState === "string") &&
+      (intent.targetVersion === undefined ||
+        typeof intent.targetVersion === "string") &&
+      (intent.phase === undefined ||
+        intent.stagedDefinitionHash !== undefined)
     );
   }
 

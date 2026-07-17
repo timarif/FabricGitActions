@@ -30,6 +30,7 @@ const loaded: LoadedManifest = {
   itemDefinitions: {
     lakehouse: { displayName: "Bronze", description: "Desired" },
   },
+  environmentDefinitions: {},
   manifest: {
     apiVersion: "fabric.deploy/v1alpha1",
     kind: "FabricDeployment",
@@ -338,11 +339,11 @@ describe("guarded apply", () => {
       },
       itemDirectories: {
         ...loaded.itemDirectories,
-        zzzUnsupported: "items/environment",
+        zzzUnsupported: "items/notebook",
       },
       itemDefinitions: {
         ...loaded.itemDefinitions,
-        zzzUnsupported: { displayName: "Environment" },
+        zzzUnsupported: { displayName: "Notebook" },
       },
       manifest: {
         ...loaded.manifest,
@@ -350,8 +351,8 @@ describe("guarded apply", () => {
           ...loaded.manifest.items,
           {
             logicalId: "zzzUnsupported",
-            type: "Environment",
-            path: "items/environment",
+            type: "Notebook",
+            path: "items/notebook",
           },
         ],
       },

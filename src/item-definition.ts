@@ -9,6 +9,7 @@ import path from "node:path";
 import Ajv, { type ErrorObject } from "ajv";
 import { parse } from "yaml";
 
+import { loadEnvironmentDefinition } from "./fabric/definition";
 import { substituteVariables } from "./substitution";
 import type {
   DeploymentItem,
@@ -169,7 +170,8 @@ function validateTypeSpecificDefinition(
     case "Lakehouse":
       return;
     case "Environment":
-      requireNonEmptyDefinitionDirectory(item, itemDirectory);
+      definitionDirectory(item, itemDirectory);
+      loadEnvironmentDefinition(itemDirectory);
       return;
     case "Notebook":
       requireNotebookDefinition(item, itemDirectory);
@@ -193,16 +195,6 @@ function definitionDirectory(item: DeploymentItem, itemDirectory: string): strin
     );
   }
   return directory;
-}
-
-function requireNonEmptyDefinitionDirectory(
-  item: DeploymentItem,
-  itemDirectory: string,
-): void {
-  const directory = definitionDirectory(item, itemDirectory);
-  if (listFiles(directory).length === 0) {
-    throw new Error(`Item '${item.logicalId}' definition directory is empty.`);
-  }
 }
 
 function requireNotebookDefinition(

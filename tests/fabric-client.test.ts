@@ -151,6 +151,99 @@ describe("Fabric API client", () => {
     ).resolves.toEqual({ id: "lakehouse-1" });
   });
 
+  it("waits for a long-running operation that has no result body", async () => {
+    let now = 0;
+    const fetchImpl = vi.fn(async () =>
+      new Response(JSON.stringify({ status: "Succeeded" }), { status: 200 }),
+    );
+    const client = new FabricClient({
+      endpoint: "https://api.fabric.microsoft.com",
+      scope: "scope",
+      tokenProvider,
+      fetchImpl,
+      now: () => now,
+      sleep: async (milliseconds) => {
+        now += milliseconds;
+      },
+      operationPollIntervalMs: 1,
+    });
+
+    await expect(
+      client.waitForOperationCompletion({
+        status: 202,
+        headers: new Headers({ "x-ms-operation-id": "operation-1" }),
+        body: undefined,
+      }),
+    ).resolves.toBeUndefined();
+    expect(fetchImpl).toHaveBeenCalledOnce();
+  });
+
+  it("allows Fabric regional operation URLs without relaxing normal requests", async () => {
+    let now = 0;
+    const operationUrl =
+      "https://wabi-west-us3-a-primary-redirect.analysis.windows.net/v1/operations/8118687d-b5c4-4400-a5c6-7319377332eb";
+    const fetchImpl = vi.fn(async (input: string | URL) => {
+      expect(String(input)).toBe(operationUrl);
+      return new Response(JSON.stringify({ status: "Succeeded" }), {
+        status: 200,
+      });
+    });
+    const client = new FabricClient({
+      endpoint: "https://api.fabric.microsoft.com",
+      scope: "scope",
+      tokenProvider,
+      fetchImpl,
+      now: () => now,
+      sleep: async (milliseconds) => {
+        now += milliseconds;
+      },
+      operationPollIntervalMs: 1,
+    });
+
+    await expect(
+      client.waitForOperationCompletion({
+        status: 202,
+        headers: new Headers({ location: operationUrl }),
+        body: undefined,
+      }),
+    ).resolves.toBeUndefined();
+    await expect(client.listAll(operationUrl)).rejects.toThrow(
+      "unexpected origin",
+    );
+  });
+
+  it("rejects malformed regional operation URLs before sending a token", async () => {
+    let now = 0;
+    const fetchImpl = vi.fn();
+    const client = new FabricClient({
+      endpoint: "https://api.fabric.microsoft.com",
+      scope: "scope",
+      tokenProvider,
+      fetchImpl,
+      now: () => now,
+      sleep: async (milliseconds) => {
+        now += milliseconds;
+      },
+      operationPollIntervalMs: 1,
+    });
+    const invalidUrls = [
+      "https://wabi-west-us3-a-primary-redirect.analysis.windows.net:4443/v1/operations/8118687d-b5c4-4400-a5c6-7319377332eb",
+      "https://wabi-west-us3-a-primary-redirect.analysis.windows.net/v1/operations/deadbeef",
+      "https://wabi-west-us3-a-primary-redirect.analysis.windows.net/v1/operations/8118687d-b5c4-4400-a5c6-7319377332eb?redirect=1",
+    ];
+
+    for (const location of invalidUrls) {
+      await expect(
+        client.waitForOperationCompletion({
+          status: 202,
+          headers: new Headers({ location }),
+          body: undefined,
+        }),
+      ).rejects.toThrow("unexpected origin");
+    }
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
   it("aborts API requests that exceed the request timeout", async () => {
     const fetchImpl = vi.fn(
       async (_input: string | URL, init?: RequestInit) =>

@@ -110,6 +110,141 @@ describe("manifest loading", () => {
     ).toThrow("resolve to the same folder and displayName");
   });
 
+  it("rejects duplicate desired Environment identities", () => {
+    const root = mkdtempSync(path.join(tmpdir(), "fabric-deploy-"));
+    const manifestPath = createFixture(
+      root,
+      `
+apiVersion: fabric.deploy/v1alpha1
+kind: FabricDeployment
+metadata:
+  deploymentId: sample
+workspace:
+  id: workspace-1
+items:
+  - logicalId: firstEnvironment
+    type: Environment
+    path: items/environments/first
+  - logicalId: secondEnvironment
+    type: Environment
+    path: items/environments/second
+`,
+      ["items/environments/first", "items/environments/second"],
+    );
+    for (const name of ["first", "second"]) {
+      const itemDirectory = path.join(root, "items/environments", name);
+      writeFileSync(
+        path.join(itemDirectory, "item.yaml"),
+        "displayName: Shared\n",
+        "utf8",
+      );
+      mkdirSync(path.join(itemDirectory, "definition"));
+      writeFileSync(
+        path.join(itemDirectory, "definition/environment.yml"),
+        "dependencies: []\n",
+        "utf8",
+      );
+    }
+
+    expect(() => loadManifest(manifestPath)).toThrow(
+      "Environment items 'firstEnvironment' and 'secondEnvironment' resolve to the same folder and displayName",
+    );
+  });
+
+  it("snapshots Environment definition bytes during manifest loading", () => {
+    const root = mkdtempSync(path.join(tmpdir(), "fabric-deploy-"));
+    const manifestPath = createFixture(
+      root,
+      `
+apiVersion: fabric.deploy/v1alpha1
+kind: FabricDeployment
+metadata:
+  deploymentId: sample
+workspace:
+  id: workspace-1
+items:
+  - logicalId: environment
+    type: Environment
+    path: items/environment
+`,
+      ["items/environment"],
+    );
+    const itemDirectory = path.join(root, "items/environment");
+    writeFileSync(
+      path.join(itemDirectory, "item.yaml"),
+      "displayName: Spark\n",
+      "utf8",
+    );
+    mkdirSync(path.join(itemDirectory, "definition"));
+    const environmentFile = path.join(
+      itemDirectory,
+      "definition/environment.yml",
+    );
+    writeFileSync(environmentFile, "dependencies: []\n", "utf8");
+
+    const loaded = loadManifest(manifestPath);
+    writeFileSync(
+      environmentFile,
+      "dependencies:\n  - pip:\n      - pandas\n",
+      "utf8",
+    );
+
+    const part = loaded.environmentDefinitions.environment?.parts.find(
+      (entry) =>
+        entry.path === "Libraries/PublicLibraries/environment.yml",
+    );
+    expect(Buffer.from(part?.payload ?? "", "base64").toString("utf8")).toBe(
+      "dependencies: []\n",
+    );
+  });
+
+  it("rejects managed Environment platform metadata that conflicts with item.yaml", () => {
+    const root = mkdtempSync(path.join(tmpdir(), "fabric-deploy-"));
+    const manifestPath = createFixture(
+      root,
+      `
+apiVersion: fabric.deploy/v1alpha1
+kind: FabricDeployment
+metadata:
+  deploymentId: sample
+workspace:
+  id: workspace-1
+items:
+  - logicalId: environment
+    type: Environment
+    path: items/environment
+`,
+      ["items/environment"],
+    );
+    const itemDirectory = path.join(root, "items/environment");
+    writeFileSync(
+      path.join(itemDirectory, "item.yaml"),
+      "displayName: Spark\ndescription: Desired\n",
+      "utf8",
+    );
+    mkdirSync(path.join(itemDirectory, "definition"));
+    writeFileSync(
+      path.join(itemDirectory, "definition/environment.yml"),
+      "dependencies: []\n",
+      "utf8",
+    );
+    writeFileSync(
+      path.join(itemDirectory, "definition/.platform"),
+      JSON.stringify({
+        metadata: {
+          type: "Environment",
+          displayName: "Different",
+          description: "Desired",
+        },
+      }),
+      "utf8",
+    );
+
+    expect(() => loadManifest(manifestPath)).toThrow(
+      ".platform displayName must match item.yaml",
+    );
+  });
+
   it("rejects item paths outside the manifest directory", () => {
     const root = mkdtempSync(path.join(tmpdir(), "fabric-deploy-"));
     const manifestPath = createFixture(
