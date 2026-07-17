@@ -1,0 +1,124 @@
+name: Live Fabric Phase 3 Apply
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        description: Type APPLY to deploy the Environment and Notebook.
+        required: true
+        default: PLAN_ONLY
+        type: string
+      allow_create:
+        description: Permit creation when the approved plan requires it.
+        required: true
+        default: false
+        type: boolean
+      allow_update:
+        description: Permit update when the approved plan requires it.
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: live-fabric-phase3-${{ vars.FABRIC_WORKSPACE_ID }}
+  cancel-in-progress: false
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      approved-plan-artifact: ${{ steps.plan-artifact.outputs.name }}
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Create approved Fabric plan
+        id: fabric-plan
+        uses: ./
+        with:
+          mode: plan
+          manifest: examples/live-phase3/fabric/deployment.yaml
+          environment: live-test
+          workspace-id: ${{ vars.FABRIC_WORKSPACE_ID }}
+          auth-mode: oidc
+          tenant-id: ${{ vars.FABRIC_TENANT_ID }}
+          client-id: ${{ vars.FABRIC_CLIENT_ID }}
+          plan-file: approved-plan/fabric-plan.json
+
+      - name: Verify approved plan
+        shell: bash
+        run: |
+          test "${{ steps.fabric-plan.outputs.item-count }}" = "2"
+          jq -e '
+            (.items | map(.type) | sort) == ["Environment", "Notebook"]
+            and all(
+              .items[];
+              .action == "create"
+              or .action == "update"
+              or .action == "no-op"
+            )
+          ' approved-plan/fabric-plan.json
+
+      - name: Record approved plan artifact
+        id: plan-artifact
+        shell: bash
+        run: |
+          echo "name=approved-phase3-plan-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
+            >> "$GITHUB_OUTPUT"
+
+      - name: Upload approved plan
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.plan-artifact.outputs.name }}
+          path: approved-plan/fabric-plan.json
+          if-no-files-found: error
+          retention-days: 7
+
+  apply:
+    if: ${{ inputs.confirmation == 'APPLY' }}
+    needs: plan
+    runs-on: ubuntu-latest
+    environment: fabric-live-apply
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Download approved plan
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ needs.plan.outputs.approved-plan-artifact }}
+          path: approved-plan
+
+      - name: Apply approved Fabric plan
+        id: fabric-apply
+        uses: ./
+        with:
+          mode: apply
+          manifest: examples/live-phase3/fabric/deployment.yaml
+          environment: live-test
+          workspace-id: ${{ vars.FABRIC_WORKSPACE_ID }}
+          auth-mode: oidc
+          tenant-id: ${{ vars.FABRIC_TENANT_ID }}
+          client-id: ${{ vars.FABRIC_CLIENT_ID }}
+          approved-plan-file: approved-plan/fabric-plan.json
+          allow-create: ${{ inputs.allow_create }}
+          allow-update: ${{ inputs.allow_update }}
+          plan-file: apply-output/current-plan.json
+          checkpoint-file: apply-output/checkpoint.json
+          result-file: apply-output/result.json
+
+      - name: Upload apply artifacts
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: phase3-apply-result-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            apply-output/current-plan.json
+            apply-output/checkpoint.json
+            apply-output/result.json
+          if-no-files-found: warn
+          retention-days: 14

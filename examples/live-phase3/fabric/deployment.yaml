@@ -1,0 +1,16 @@
+apiVersion: fabric.deploy/v1alpha1
+kind: FabricDeployment
+
+metadata:
+  deploymentId: gitactiontest-phase3
+
+items:
+  - logicalId: gitActionEnvironment
+    type: Environment
+    path: items/environments/gitactiontest
+
+  - logicalId: gitActionNotebook
+    type: Notebook
+    path: items/notebooks/gitactiontest-hello
+    dependsOn:
+      - gitActionEnvironment
