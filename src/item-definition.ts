@@ -172,6 +172,15 @@ function validateTypeSpecificDefinition(
 
   switch (item.type) {
     case "Lakehouse":
+      if (
+        !/^[A-Za-z][A-Za-z0-9_]{0,122}$/.test(
+          definition.displayName,
+        )
+      ) {
+        throw new Error(
+          `Item '${item.logicalId}' Lakehouse displayName must begin with a letter, contain only letters, numbers, and underscores, and be at most 123 characters.`,
+        );
+      }
       return;
     case "Environment":
       definitionDirectory(item, itemDirectory);

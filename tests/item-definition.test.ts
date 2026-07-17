@@ -55,6 +55,26 @@ describe("item definition validation", () => {
     });
   });
 
+  it("enforces Fabric Lakehouse naming rules", () => {
+    const invalid = createDeployment(
+      "Lakehouse",
+      "displayName: tva-GitActionTest Lakehouse\n",
+    );
+
+    expect(() => loadManifest(invalid.manifestPath)).toThrow(
+      "must begin with a letter, contain only letters, numbers, and underscores",
+    );
+
+    const valid = createDeployment(
+      "Lakehouse",
+      `displayName: ${`a${"b".repeat(122)}`}\n`,
+    );
+    expect(
+      loadManifest(valid.manifestPath).itemDefinitions.target
+        ?.displayName,
+    ).toHaveLength(123);
+  });
+
   it("requires an Environment definition directory", () => {
     const fixture = createDeployment("Environment", "displayName: Spark\n");
 

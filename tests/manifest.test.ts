@@ -487,13 +487,13 @@ items:
     const first = loadManifest(manifestPath, {
       variables: {
         FABRIC_WORKSPACE_ID: "workspace-1",
-        LAKEHOUSE_NAME: "Bronze Dev",
+        LAKEHOUSE_NAME: "Bronze_Dev",
       },
     });
     const second = loadManifest(manifestPath, {
       variables: {
         FABRIC_WORKSPACE_ID: "workspace-1",
-        LAKEHOUSE_NAME: "Bronze Prod",
+        LAKEHOUSE_NAME: "Bronze_Prod",
       },
     });
 
