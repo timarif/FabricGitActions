@@ -82,7 +82,6 @@ jobs:
     if: ${{ inputs.confirmation == 'APPLY' }}
     needs: plan
     runs-on: ubuntu-latest
-    environment: fabric-live-apply
 
     steps:
       - uses: actions/checkout@v5
