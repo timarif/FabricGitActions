@@ -137,6 +137,12 @@ function isPlannedItem(value: unknown): value is PlannedItem {
     typeof item.reason === "string" &&
     (item.physicalId === undefined || typeof item.physicalId === "string") &&
     (item.observedStateHash === undefined ||
-      typeof item.observedStateHash === "string")
+      typeof item.observedStateHash === "string") &&
+    (item.materializedDefinitionHash === undefined ||
+      /^[a-f0-9]{64}$/.test(item.materializedDefinitionHash)) &&
+    (item.resolvedBindingsHash === undefined ||
+      /^[a-f0-9]{64}$/.test(item.resolvedBindingsHash)) &&
+    (item.materializedDefinitionHash === undefined) ===
+      (item.resolvedBindingsHash === undefined)
   );
 }

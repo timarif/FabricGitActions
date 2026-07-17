@@ -83,6 +83,8 @@ export interface PlannedItem {
   displayName: string;
   physicalId?: string;
   observedStateHash?: string;
+  materializedDefinitionHash?: string;
+  resolvedBindingsHash?: string;
   action: PlannedAction;
   reason: string;
 }
@@ -166,12 +168,16 @@ export interface ApplyCheckpointOperation {
   action: "create";
   operationId?: string;
   location?: string;
+  materializedDefinitionHash?: string;
+  resolvedBindingsHash?: string;
   acceptedAt: string;
 }
 
 export interface ApplyCheckpointCreateIntent {
   logicalId: string;
   action: "create";
+  materializedDefinitionHash?: string;
+  resolvedBindingsHash?: string;
   submittedAt: string;
 }
 
@@ -190,6 +196,8 @@ export interface ApplyCheckpointUpdateIntent {
   stagedDeploymentMarker?: string;
   publishState?: string;
   targetVersion?: string;
+  materializedDefinitionHash?: string;
+  resolvedBindingsHash?: string;
 }
 
 export interface DefinitionItemUpdateRecoveryState {

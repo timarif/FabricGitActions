@@ -119,7 +119,7 @@ function validateBindings(
   dependencies: Set<string>,
 ): void {
   for (const binding of definition.bindings ?? []) {
-    const itemMatch = /^item\.([A-Za-z][A-Za-z0-9_-]*)\.id$/.exec(
+    const itemMatch = /^(?:item|items)\.([A-Za-z][A-Za-z0-9_-]*)\.id$/.exec(
       binding.valueFrom,
     );
     if (itemMatch) {

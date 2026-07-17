@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { enrichPlanWithFabric } from "../src/fabric/live-planner";
 import { buildPlan } from "../src/planner";
@@ -244,20 +244,27 @@ describe("online Fabric planning", () => {
     expect(rehashPlan(savedPlan).planHash).toBe(online.planHash);
   });
 
-  it("blocks Spark Job logical bindings until resolution is implemented", async () => {
+  it("materializes Spark Job logical bindings from planned dependency IDs", async () => {
     const sparkLoaded: LoadedManifest = {
       manifestPath: "deployment.yaml",
       manifestDirectory: ".",
       sourceHash: "source",
       resolvedHash: "resolved",
-      itemContentHashes: { sparkJob: "content" },
-      itemDirectories: { sparkJob: "items/spark-job" },
+      itemContentHashes: {
+        bronze: "lakehouse-content",
+        sparkJob: "content",
+      },
+      itemDirectories: {
+        bronze: "items/bronze",
+        sparkJob: "items/spark-job",
+      },
       itemDefinitions: {
+        bronze: { displayName: "Bronze" },
         sparkJob: {
           displayName: "Spark",
           bindings: [
             {
-              target: "properties.defaultLakehouseArtifactId",
+              target: "/properties/defaultLakehouseArtifactId",
               valueFrom: "items.bronze.id",
             },
           ],
@@ -293,9 +300,15 @@ describe("online Fabric planning", () => {
         workspace: { id: "workspace" },
         items: [
           {
+            logicalId: "bronze",
+            type: "Lakehouse",
+            path: "items/bronze",
+          },
+          {
             logicalId: "sparkJob",
             type: "SparkJobDefinition",
             path: "items/spark-job",
+            dependsOn: ["bronze"],
           },
         ],
       },
@@ -307,24 +320,173 @@ describe("online Fabric planning", () => {
     const fail = async () => {
       throw new Error("Adapter should not be called.");
     };
+    let plannedDefinition:
+      | LoadedManifest["sparkJobDefinitions"][string]
+      | undefined;
 
     const online = await enrichPlanWithFabric(
       offline,
       sparkLoaded,
       {
-        lakehouse: { plan: fail },
+        lakehouse: {
+          plan: async () => ({
+            action: "no-op" as const,
+            reason: "exists",
+            physicalId: "lakehouse-physical-id",
+            observedStateHash: "lakehouse-state",
+          }),
+        },
         environment: { plan: fail },
         notebook: { plan: fail },
-        sparkJob: { plan: fail },
+        sparkJob: {
+          plan: async (
+            _workspace,
+            _desired,
+            definition,
+          ) => {
+            plannedDefinition = definition;
+            return {
+              action: "no-op" as const,
+              reason: "matches",
+              physicalId: "spark-job-id",
+              observedStateHash: "spark-state",
+            };
+          },
+        },
         pipeline: { plan: fail },
         sparkCustomPool: { plan: fail },
       },
     );
 
-    expect(online.items[0]?.action).toBe("blocked");
-    expect(online.items[0]?.reason).toContain(
-      "references and bindings require",
+    const configPart = plannedDefinition?.parts.find(
+      (part) => part.path === "SparkJobDefinitionV1.json",
     );
+    expect(
+      JSON.parse(
+        Buffer.from(
+          configPart?.payload ?? "",
+          "base64",
+        ).toString("utf8"),
+      ).defaultLakehouseArtifactId,
+    ).toBe("lakehouse-physical-id");
+    expect(online.items[1]).toMatchObject({
+      action: "no-op",
+      materializedDefinitionHash: expect.stringMatching(
+        /^[a-f0-9]{64}$/,
+      ),
+      resolvedBindingsHash: expect.stringMatching(
+        /^[a-f0-9]{64}$/,
+      ),
+    });
+  });
+
+  it("approves only creation when referenced dependencies are also new", async () => {
+    const base: LoadedManifest = {
+      manifestPath: "deployment.yaml",
+      manifestDirectory: ".",
+      sourceHash: "source",
+      resolvedHash: "resolved",
+      itemContentHashes: {
+        bronze: "lakehouse-content",
+        sparkJob: "spark-content",
+      },
+      itemDirectories: {
+        bronze: "items/bronze",
+        sparkJob: "items/spark-job",
+      },
+      itemDefinitions: {
+        bronze: { displayName: "Bronze" },
+        sparkJob: {
+          displayName: "Spark",
+          references: { defaultLakehouse: "bronze" },
+        },
+      },
+      environmentDefinitions: {},
+      notebookDefinitions: {},
+      sparkJobDefinitions: {
+        sparkJob: {
+          format: "SparkJobDefinitionV2",
+          parts: [
+            {
+              path: "SparkJobDefinitionV1.json",
+              payload: Buffer.from("{}").toString("base64"),
+              payloadType: "InlineBase64",
+            },
+            {
+              path: "Main/main.py",
+              payload: Buffer.from("print('hello')\n").toString(
+                "base64",
+              ),
+              payloadType: "InlineBase64",
+            },
+          ],
+        },
+      },
+      pipelineDefinitions: {},
+      sparkCustomPoolDefinitions: {},
+      manifest: {
+        apiVersion: "fabric.deploy/v1alpha1",
+        kind: "FabricDeployment",
+        metadata: { deploymentId: "sample" },
+        workspace: { id: "workspace" },
+        items: [
+          {
+            logicalId: "bronze",
+            type: "Lakehouse",
+            path: "items/bronze",
+          },
+          {
+            logicalId: "sparkJob",
+            type: "SparkJobDefinition",
+            path: "items/spark-job",
+            dependsOn: ["bronze"],
+          },
+        ],
+      },
+    };
+    const unresolvedPlan = vi.fn(async () => ({
+      action: "create" as const,
+      reason: "absent",
+      observedStateHash: "absent",
+    }));
+    const fail = async () => {
+      throw new Error("Resolved Spark planning should not run.");
+    };
+
+    const online = await enrichPlanWithFabric(
+      buildPlan(base, {
+        mode: "plan",
+        environment: "dev",
+      }),
+      base,
+      {
+        lakehouse: {
+          plan: async () => ({
+            action: "create" as const,
+            reason: "missing",
+            observedStateHash: "absent",
+          }),
+        },
+        environment: { plan: fail },
+        notebook: { plan: fail },
+        sparkJob: {
+          plan: fail,
+          planUnresolvedReferences: unresolvedPlan,
+        },
+        pipeline: { plan: fail },
+        sparkCustomPool: { plan: fail },
+      },
+    );
+
+    expect(unresolvedPlan).toHaveBeenCalledWith(
+      "workspace",
+      base.itemDefinitions.sparkJob,
+      ["bronze"],
+    );
+    expect(online.items[1]).toMatchObject({
+      action: "create",
+    });
+    expect(online.items[1]?.materializedDefinitionHash).toBeUndefined();
   });
 
   it("blocks unsupported Data Pipeline bindings instead of ignoring them", async () => {
@@ -383,16 +545,17 @@ describe("online Fabric planning", () => {
       throw new Error("Adapter should not be called.");
     };
 
-    const online = await enrichPlanWithFabric(offline, loaded, {
-      lakehouse: { plan: fail },
-      environment: { plan: fail },
-      notebook: { plan: fail },
-      sparkJob: { plan: fail },
-      pipeline: { plan: fail },
-      sparkCustomPool: { plan: fail },
-    });
-
-    expect(online.items[0]?.action).toBe("blocked");
-    expect(online.items[0]?.reason).toContain("cannot be ignored");
+    await expect(
+      enrichPlanWithFabric(offline, loaded, {
+        lakehouse: { plan: fail },
+        environment: { plan: fail },
+        notebook: { plan: fail },
+        sparkJob: { plan: fail },
+        pipeline: { plan: fail },
+        sparkCustomPool: { plan: fail },
+      }),
+    ).rejects.toThrow(
+      "does not support logical references or bindings",
+    );
   });
 });

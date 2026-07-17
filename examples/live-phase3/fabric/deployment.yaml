@@ -14,3 +14,14 @@ items:
     path: items/notebooks/gitactiontest-hello
     dependsOn:
       - gitActionEnvironment
+
+  - logicalId: gitActionLakehouse
+    type: Lakehouse
+    path: items/lakehouses/gitactiontest
+
+  - logicalId: gitActionSparkJob
+    type: SparkJobDefinition
+    path: items/spark-jobs/logical-references
+    dependsOn:
+      - gitActionEnvironment
+      - gitActionLakehouse

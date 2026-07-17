@@ -181,6 +181,7 @@ function assertCheckpointMatchesPlan(
       pending.logicalId !== logicalId ||
       pending.action !== "create" ||
       planned.action !== "create" ||
+      !checkpointProofMatchesPlan(planned, pending) ||
       Object.hasOwn(checkpoint.completedItems, logicalId)
     ) {
       throw new Error(
@@ -197,6 +198,7 @@ function assertCheckpointMatchesPlan(
       pending.logicalId !== logicalId ||
       pending.action !== "create" ||
       planned.action !== "create" ||
+      !checkpointProofMatchesPlan(planned, pending) ||
       Object.hasOwn(checkpoint.completedItems, logicalId) ||
       Object.hasOwn(checkpoint.pendingOperations, logicalId)
     ) {
@@ -215,6 +217,7 @@ function assertCheckpointMatchesPlan(
       pending.action !== "update" ||
       planned.action !== "update" ||
       planned.physicalId !== pending.physicalId ||
+      !checkpointProofMatchesPlan(planned, pending) ||
       Object.hasOwn(checkpoint.completedItems, logicalId)
     ) {
       throw new Error(
@@ -222,6 +225,26 @@ function assertCheckpointMatchesPlan(
       );
     }
   }
+}
+
+function checkpointProofMatchesPlan(
+  planned: DeploymentPlan["items"][number],
+  pending: {
+    materializedDefinitionHash?: string;
+    resolvedBindingsHash?: string;
+  },
+): boolean {
+  if (
+    planned.materializedDefinitionHash === undefined &&
+    planned.resolvedBindingsHash === undefined
+  ) {
+    return true;
+  }
+  return (
+    pending.materializedDefinitionHash ===
+      planned.materializedDefinitionHash &&
+    pending.resolvedBindingsHash === planned.resolvedBindingsHash
+  );
 }
 
 function isCheckpoint(value: unknown): value is ApplyCheckpoint {
@@ -299,6 +322,12 @@ function isCheckpoint(value: unknown): value is ApplyCheckpoint {
         ].includes(intent.phase)) &&
       (intent.stagedDefinitionHash === undefined ||
         /^[a-f0-9]{64}$/.test(intent.stagedDefinitionHash)) &&
+      (intent.materializedDefinitionHash === undefined ||
+        /^[a-f0-9]{64}$/.test(intent.materializedDefinitionHash)) &&
+      (intent.resolvedBindingsHash === undefined ||
+        /^[a-f0-9]{64}$/.test(intent.resolvedBindingsHash)) &&
+      (intent.materializedDefinitionHash === undefined) ===
+        (intent.resolvedBindingsHash === undefined) &&
       (intent.stagedDeploymentMarker === undefined ||
         /^[a-f0-9]{64}$/.test(intent.stagedDeploymentMarker)) &&
       (intent.publishState === undefined ||
@@ -323,6 +352,12 @@ function isCheckpoint(value: unknown): value is ApplyCheckpoint {
     return (
       intent.logicalId === logicalId &&
       intent.action === "create" &&
+      (intent.materializedDefinitionHash === undefined ||
+        /^[a-f0-9]{64}$/.test(intent.materializedDefinitionHash)) &&
+      (intent.resolvedBindingsHash === undefined ||
+        /^[a-f0-9]{64}$/.test(intent.resolvedBindingsHash)) &&
+      (intent.materializedDefinitionHash === undefined) ===
+        (intent.resolvedBindingsHash === undefined) &&
       typeof intent.submittedAt === "string" &&
       !Number.isNaN(Date.parse(intent.submittedAt))
     );
@@ -341,6 +376,12 @@ function isCheckpoint(value: unknown): value is ApplyCheckpoint {
     return (
       operation.logicalId === logicalId &&
       operation.action === "create" &&
+      (operation.materializedDefinitionHash === undefined ||
+        /^[a-f0-9]{64}$/.test(operation.materializedDefinitionHash)) &&
+      (operation.resolvedBindingsHash === undefined ||
+        /^[a-f0-9]{64}$/.test(operation.resolvedBindingsHash)) &&
+      (operation.materializedDefinitionHash === undefined) ===
+        (operation.resolvedBindingsHash === undefined) &&
       (operation.operationId === undefined ||
         (typeof operation.operationId === "string" &&
           /^[A-Za-z0-9._-]+$/.test(operation.operationId))) &&

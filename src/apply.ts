@@ -15,6 +15,7 @@ import {
   getFabricDeploymentMarker,
   hashFabricDefinition,
   includesPlatformPart,
+  type FabricDefinition,
 } from "./fabric/definition";
 import type {
   NotebookAdapter,
@@ -45,6 +46,11 @@ import {
   hashSparkJobDefinition,
   sparkJobIncludesPlatformPart,
 } from "./fabric/spark-job-definition";
+import {
+  materializeSparkJobDefinitionWithProof,
+  validateLogicalReferenceDeclarations,
+  type SparkJobLogicalReferenceMaterialization,
+} from "./fabric/logical-references";
 import { FabricOperationFailedError } from "./fabric/client";
 import {
   createCheckpoint,
@@ -107,6 +113,7 @@ export interface ApplyPlanOptions {
   resultFile: string;
   itemDirectories?: string[];
   now?: () => number;
+  checkpoint?: ApplyCheckpoint;
 }
 
 export async function applyApprovedPlan(
@@ -126,6 +133,7 @@ export async function applyApprovedPlan(
     { label: "Checkpoint file", filePath: options.checkpointFile },
     { label: "Result file", filePath: options.resultFile },
   ]);
+  validateApplyLogicalReferences(options.loadedManifest);
   const now = options.now ?? Date.now;
   const startedAt = now();
   const results: ApplyItemResult[] = [];
@@ -208,6 +216,7 @@ export async function applyApprovedPlan(
         ...options.currentPlan,
         workspaceId: runtimeWorkspaceId,
       },
+      checkpoint,
     };
     const recoveredUpdates = await reconcilePendingUpdates(
       runtimeOptions,
@@ -295,19 +304,29 @@ export async function applyApprovedPlan(
               writeCheckpoint(options.checkpointFile, checkpoint);
             },
             (operation) => {
+              const proof = logicalReferenceCheckpointProof(
+                runtimeOptions,
+                approvedItem,
+              );
               delete checkpoint.pendingCreates[logicalId];
               checkpoint.pendingOperations[logicalId] = {
                 logicalId,
                 action: "create",
                 ...operation,
+                ...proof,
                 acceptedAt: new Date(now()).toISOString(),
               };
               writeCheckpoint(options.checkpointFile, checkpoint);
             },
             () => {
+              const proof = logicalReferenceCheckpointProof(
+                runtimeOptions,
+                approvedItem,
+              );
               checkpoint.pendingCreates[logicalId] = {
                 logicalId,
                 action: "create",
+                ...proof,
                 submittedAt: new Date(now()).toISOString(),
               };
               writeCheckpoint(options.checkpointFile, checkpoint);
@@ -411,6 +430,25 @@ export async function applyApprovedPlan(
   }
 }
 
+function validateApplyLogicalReferences(
+  loadedManifest: LoadedManifest,
+): void {
+  for (const item of loadedManifest.manifest.items) {
+    const definition =
+      loadedManifest.itemDefinitions[item.logicalId];
+    if (!definition) {
+      throw new Error(
+        `Desired definition is missing for '${item.logicalId}'.`,
+      );
+    }
+    validateLogicalReferenceDeclarations({
+      item,
+      definition,
+      itemGraph: loadedManifest.manifest.items,
+    });
+  }
+}
+
 async function reconcileInitialTerminalCreate(
   options: ApplyPlanOptions,
   checkpoint: ApplyCheckpoint,
@@ -506,6 +544,19 @@ async function assertFreshItemHasNotDrifted(
     reason: live.reason,
     observedStateHash: live.observedStateHash,
     ...(live.physicalId ? { physicalId: live.physicalId } : {}),
+    ...(approvedItem.materializedDefinitionHash !== undefined &&
+    "materializedDefinitionHash" in live &&
+    typeof live.materializedDefinitionHash === "string"
+      ? {
+          materializedDefinitionHash:
+            live.materializedDefinitionHash,
+        }
+      : {}),
+    ...(approvedItem.resolvedBindingsHash !== undefined &&
+    "resolvedBindingsHash" in live &&
+    typeof live.resolvedBindingsHash === "string"
+      ? { resolvedBindingsHash: live.resolvedBindingsHash }
+      : {}),
   };
   assertItemHasNotDrifted(approvedItem, freshItem);
 }
@@ -1206,6 +1257,9 @@ function comparableItemState(item: PlannedItem): unknown {
     action: item.action,
     physicalId: item.physicalId,
     observedStateHash: item.observedStateHash,
+    materializedDefinitionHash:
+      item.materializedDefinitionHash,
+    resolvedBindingsHash: item.resolvedBindingsHash,
   };
 }
 
@@ -1390,11 +1444,25 @@ async function planDesiredItem(
     );
   }
   if (item.type === "SparkJobDefinition") {
-    return requireSparkJobAdapter(options, item.logicalId).plan(
-      options.approvedPlan.workspaceId,
-      desired,
-      requireSparkJobDefinition(options, item.logicalId),
+    const materialized = requireSparkJobRuntimeDefinition(
+      options,
+      item.logicalId,
     );
+    return {
+      ...(await requireSparkJobAdapter(options, item.logicalId).plan(
+        options.approvedPlan.workspaceId,
+        desired,
+        materialized.definition,
+      )),
+      ...(materialized.materializedDefinitionHash
+        ? {
+            materializedDefinitionHash:
+              materialized.materializedDefinitionHash,
+            resolvedBindingsHash:
+              materialized.resolvedBindingsHash,
+          }
+        : {}),
+    };
   }
   if (item.type === "DataPipeline") {
     return requirePipelineAdapter(options, item.logicalId).plan(
@@ -1773,18 +1841,161 @@ function requireSparkJobAdapter(
   return options.sparkJobAdapter;
 }
 
-function requireSparkJobDefinition(
+interface RuntimeSparkJobDefinition {
+  definition: FabricDefinition;
+  materializedDefinitionHash?: string;
+  resolvedBindingsHash?: string;
+}
+
+function requireSparkJobRuntimeDefinition(
   options: ApplyPlanOptions,
   logicalId: string,
-) {
-  const definition =
+): RuntimeSparkJobDefinition {
+  const sourceDefinition =
     options.loadedManifest.sparkJobDefinitions[logicalId];
-  if (!definition) {
+  if (!sourceDefinition) {
     throw new Error(
       `Spark Job Definition snapshot is missing for '${logicalId}'.`,
     );
   }
-  return definition;
+  const item = options.loadedManifest.manifest.items.find(
+    (candidate) => candidate.logicalId === logicalId,
+  );
+  const desired =
+    options.loadedManifest.itemDefinitions[logicalId];
+  if (!item || !desired) {
+    throw new Error(
+      `Spark Job Definition declarations are missing for '${logicalId}'.`,
+    );
+  }
+  const bindings = validateLogicalReferenceDeclarations({
+    item,
+    definition: desired,
+    itemGraph: options.loadedManifest.manifest.items,
+  });
+  if (Object.keys(bindings).length === 0) {
+    assertLogicalReferenceCheckpointProof(
+      options,
+      logicalId,
+      undefined,
+    );
+    return { definition: sourceDefinition };
+  }
+
+  const physicalIds: Record<string, string> = {};
+  for (const binding of Object.values(bindings)) {
+    if (!binding) {
+      continue;
+    }
+    const completed = options.checkpoint
+      ? getCompletedItem(options.checkpoint, binding.logicalId)
+      : undefined;
+    const approvedDependency =
+      options.approvedPlan.items.find(
+        (candidate) =>
+          candidate.logicalId === binding.logicalId,
+      );
+    const currentDependency = options.currentPlan.items.find(
+      (candidate) => candidate.logicalId === binding.logicalId,
+    );
+    const physicalId =
+      completed?.physicalId ??
+      approvedDependency?.physicalId ??
+      currentDependency?.physicalId;
+    if (!physicalId) {
+      throw new Error(
+        `Spark Job Definition '${logicalId}' cannot materialize logical dependency '${binding.logicalId}' because its physical ID is not available.`,
+      );
+    }
+    physicalIds[binding.logicalId] = physicalId;
+  }
+
+  const materialized = materializeSparkJobDefinitionWithProof(
+    sourceDefinition,
+    bindings,
+    physicalIds,
+  );
+  assertLogicalReferenceCheckpointProof(
+    options,
+    logicalId,
+    materialized,
+  );
+  return materialized;
+}
+
+function requireSparkJobDefinition(
+  options: ApplyPlanOptions,
+  logicalId: string,
+): FabricDefinition {
+  return requireSparkJobRuntimeDefinition(
+    options,
+    logicalId,
+  ).definition;
+}
+
+function logicalReferenceCheckpointProof(
+  options: ApplyPlanOptions,
+  item: PlannedItem,
+): Pick<
+  SparkJobLogicalReferenceMaterialization,
+  "materializedDefinitionHash" | "resolvedBindingsHash"
+> | Record<string, never> {
+  if (item.type !== "SparkJobDefinition") {
+    return {};
+  }
+  const materialized = requireSparkJobRuntimeDefinition(
+    options,
+    item.logicalId,
+  );
+  return materialized.materializedDefinitionHash &&
+    materialized.resolvedBindingsHash
+    ? {
+        materializedDefinitionHash:
+          materialized.materializedDefinitionHash,
+        resolvedBindingsHash: materialized.resolvedBindingsHash,
+      }
+    : {};
+}
+
+function assertLogicalReferenceCheckpointProof(
+  options: ApplyPlanOptions,
+  logicalId: string,
+  materialized:
+    | SparkJobLogicalReferenceMaterialization
+    | undefined,
+): void {
+  const checkpoint = options.checkpoint;
+  if (!checkpoint) {
+    return;
+  }
+  const pending =
+    getPendingCreate(checkpoint, logicalId) ??
+    getPendingOperation(checkpoint, logicalId) ??
+    getPendingUpdate(checkpoint, logicalId);
+  if (!pending) {
+    return;
+  }
+  const hasPendingProof =
+    pending.materializedDefinitionHash !== undefined ||
+    pending.resolvedBindingsHash !== undefined;
+  if (!materialized) {
+    if (hasPendingProof) {
+      throw new Error(
+        `Pending write for '${logicalId}' contains unexpected logical-reference materialization proof.`,
+      );
+    }
+    return;
+  }
+  if (
+    pending.materializedDefinitionHash !==
+      materialized.materializedDefinitionHash ||
+    pending.resolvedBindingsHash !==
+      materialized.resolvedBindingsHash
+  ) {
+    throw new Error(
+      `Pending write for '${logicalId}' was materialized with different dependency IDs and cannot be resumed.`,
+    );
+  }
 }
 
 function requirePipelineAdapter(
@@ -2046,12 +2257,14 @@ function recordPendingUpdate(
     throw new Error(`Update item '${item.logicalId}' has no physical ID.`);
   }
   const existing = getPendingUpdate(checkpoint, item.logicalId);
+  const proof = logicalReferenceCheckpointProof(options, item);
   checkpoint.pendingUpdates[item.logicalId] = {
     logicalId: item.logicalId,
     action: "update",
     physicalId: item.physicalId,
     submittedAt:
       existing?.submittedAt ?? new Date(now()).toISOString(),
+    ...proof,
     ...(state?.phase ? { phase: state.phase } : {}),
     ...(state?.stagedDefinitionHash
       ? { stagedDefinitionHash: state.stagedDefinitionHash }

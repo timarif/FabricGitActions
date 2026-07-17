@@ -115,6 +115,48 @@ describe("Spark Job Definition adapter", () => {
     });
   });
 
+  it("plans unresolved logical references only when the item is absent", async () => {
+    const absent = createAdapter(
+      vi.fn(async () =>
+        new Response(JSON.stringify({ value: [] }), {
+          status: 200,
+        }),
+      ),
+    );
+
+    await expect(
+      absent.planUnresolvedReferences(
+        "workspace",
+        { displayName: "Hello" },
+        ["bronze"],
+      ),
+    ).resolves.toMatchObject({
+      action: "create",
+    });
+
+    const existing = createAdapter(
+      vi.fn(async () =>
+        new Response(
+          JSON.stringify({
+            value: [{ id: "spark-1", displayName: "Hello" }],
+          }),
+          { status: 200 },
+        ),
+      ),
+    );
+    await expect(
+      existing.planUnresolvedReferences(
+        "workspace",
+        { displayName: "Hello" },
+        ["bronze"],
+      ),
+    ).resolves.toMatchObject({
+      action: "blocked",
+      physicalId: "spark-1",
+      reason: expect.stringContaining("generate a new plan"),
+    });
+  });
+
   it("plans no-op when metadata and V2 content match", async () => {
     const fetchImpl = vi.fn(async (input: string | URL) => {
       const url = String(input);

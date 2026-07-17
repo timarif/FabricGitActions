@@ -13,6 +13,10 @@ import {
   writeCheckpoint,
 } from "../src/checkpoint";
 import { hashSparkJobDefinition } from "../src/fabric/spark-job-definition";
+import {
+  materializeSparkJobDefinitionWithProof,
+  validateLogicalReferenceDeclarations,
+} from "../src/fabric/logical-references";
 import { buildPlan, rehashPlan } from "../src/planner";
 import type {
   DeploymentPlan,
@@ -73,6 +77,42 @@ const loaded: LoadedManifest = {
   },
 };
 
+const referencedLoaded: LoadedManifest = {
+  ...loaded,
+  itemContentHashes: {
+    bronze: "lakehouse-content",
+    sparkJob: "content",
+  },
+  itemDirectories: {
+    bronze: "items/bronze",
+    sparkJob: "items/spark-job",
+  },
+  itemDefinitions: {
+    bronze: { displayName: "Bronze" },
+    sparkJob: {
+      displayName: "Hello",
+      description: "Desired",
+      references: { defaultLakehouse: "bronze" },
+    },
+  },
+  manifest: {
+    ...loaded.manifest,
+    items: [
+      {
+        logicalId: "bronze",
+        type: "Lakehouse",
+        path: "items/bronze",
+      },
+      {
+        logicalId: "sparkJob",
+        type: "SparkJobDefinition",
+        path: "items/spark-job",
+        dependsOn: ["bronze"],
+      },
+    ],
+  },
+};
+
 function makePlan(
   action: PlannedAction,
   observedStateHash = "observed",
@@ -89,6 +129,36 @@ function makePlan(
     reason: action,
     observedStateHash,
     ...(physicalId ? { physicalId } : {}),
+  };
+  return rehashPlan(plan);
+}
+
+function makeReferencedPlan(
+  lakehouseAction: PlannedAction,
+  sparkAction: PlannedAction,
+  lakehousePhysicalId?: string,
+): DeploymentPlan {
+  const plan = buildPlan(referencedLoaded, {
+    mode: "plan",
+    environment: "dev",
+    sourceCommit: "commit-1",
+  });
+  plan.items[0] = {
+    ...plan.items[0]!,
+    action: lakehouseAction,
+    reason: lakehouseAction,
+    observedStateHash:
+      lakehouseAction === "create" ? "absent" : "lakehouse-state",
+    ...(lakehousePhysicalId
+      ? { physicalId: lakehousePhysicalId }
+      : {}),
+  };
+  plan.items[1] = {
+    ...plan.items[1]!,
+    action: sparkAction,
+    reason: sparkAction,
+    observedStateHash:
+      sparkAction === "create" ? "absent" : "spark-state",
   };
   return rehashPlan(plan);
 }
@@ -217,6 +287,159 @@ function sparkJobAdapter(
 }
 
 describe("guarded Spark Job Definition apply", () => {
+  it("materializes a same-run Lakehouse ID before creating the Spark Job", async () => {
+    const plan = makeReferencedPlan("create", "create");
+    const output = files();
+    const pendingProofs: unknown[] = [];
+    const sparkAdapter = sparkJobAdapter();
+    sparkAdapter.create = vi.fn(
+      async (
+        _workspace: string,
+        _desired: ItemDefinition,
+        definition: LoadedManifest["sparkJobDefinitions"][string],
+        onMutationAccepted?: (physicalId: string) => void,
+        _onOperationAccepted?: (operation: {
+          operationId?: string;
+          location?: string;
+        }) => void,
+        onCreateSubmitting?: () => void,
+      ) => {
+        onCreateSubmitting?.();
+        pendingProofs.push(
+          JSON.parse(
+            readFileSync(output.checkpointFile, "utf8"),
+          ).pendingCreates.sparkJob,
+        );
+        onMutationAccepted?.("spark-created");
+        return {
+          id: "spark-created",
+          displayName: "Hello",
+          description: "Desired",
+          definition,
+        };
+      },
+    );
+    const lakehouse = {
+      plan: vi.fn(async () => ({
+        action: "create" as const,
+        reason: "missing",
+        observedStateHash: "absent",
+      })),
+      create: vi.fn(
+        async (
+          _workspace: string,
+          _desired: ItemDefinition,
+          onMutationAccepted?: (physicalId: string) => void,
+          _onOperationAccepted?: (operation: {
+            operationId?: string;
+            location?: string;
+          }) => void,
+          onCreateSubmitting?: () => void,
+        ) => {
+          onCreateSubmitting?.();
+          onMutationAccepted?.("lakehouse-created");
+          return {
+            id: "lakehouse-created",
+            displayName: "Bronze",
+          };
+        },
+      ),
+      update: vi.fn(),
+      resumeCreate: vi.fn(),
+      verify: vi.fn(),
+    };
+
+    const result = await applyApprovedPlan({
+      approvedPlan: plan,
+      currentPlan: plan,
+      loadedManifest: referencedLoaded,
+      lakehouseAdapter: lakehouse,
+      sparkJobAdapter: sparkAdapter,
+      allowCreate: true,
+      allowUpdate: false,
+      ...output,
+    });
+
+    const materializedDefinition =
+      sparkAdapter.create.mock.calls[0]?.[2];
+    const config = JSON.parse(
+      Buffer.from(
+        materializedDefinition?.parts.find(
+          (part) =>
+            part.path === "SparkJobDefinitionV1.json",
+        )?.payload ?? "",
+        "base64",
+      ).toString("utf8"),
+    ) as Record<string, unknown>;
+    expect(config.defaultLakehouseArtifactId).toBe(
+      "lakehouse-created",
+    );
+    expect(pendingProofs[0]).toMatchObject({
+      materializedDefinitionHash: expect.stringMatching(
+        /^[a-f0-9]{64}$/,
+      ),
+      resolvedBindingsHash: expect.stringMatching(
+        /^[a-f0-9]{64}$/,
+      ),
+    });
+    expect(result.items.map((item) => item.status)).toEqual([
+      "created",
+      "created",
+    ]);
+  });
+
+  it("refuses to resume a pending Spark write with different dependency IDs", async () => {
+    const approvedPlan = makeReferencedPlan("create", "create");
+    const currentPlan = makeReferencedPlan(
+      "no-op",
+      "create",
+      "lakehouse-new",
+    );
+    const output = files();
+    const checkpoint = createCheckpoint(approvedPlan);
+    checkpoint.completedItems.bronze = {
+      logicalId: "bronze",
+      action: "create",
+      physicalId: "lakehouse-new",
+      completedAt: new Date().toISOString(),
+    };
+    const sparkItem = referencedLoaded.manifest.items[1]!;
+    const bindings = validateLogicalReferenceDeclarations({
+      item: sparkItem,
+      definition: referencedLoaded.itemDefinitions.sparkJob!,
+      itemGraph: referencedLoaded.manifest.items,
+    });
+    const oldProof = materializeSparkJobDefinitionWithProof(
+      sparkJobDefinition,
+      bindings,
+      { bronze: "lakehouse-old" },
+    );
+    checkpoint.pendingCreates.sparkJob = {
+      logicalId: "sparkJob",
+      action: "create",
+      submittedAt: new Date().toISOString(),
+      materializedDefinitionHash:
+        oldProof.materializedDefinitionHash,
+      resolvedBindingsHash: oldProof.resolvedBindingsHash,
+    };
+    writeCheckpoint(output.checkpointFile, checkpoint);
+
+    await expect(
+      applyApprovedPlan({
+        approvedPlan,
+        currentPlan,
+        loadedManifest: referencedLoaded,
+        lakehouseAdapter: lakehouseAdapter(),
+        sparkJobAdapter: sparkJobAdapter(),
+        allowCreate: true,
+        allowUpdate: false,
+        ...output,
+      }),
+    ).rejects.toThrow(
+      "materialized with different dependency IDs",
+    );
+  });
+
   it("creates and checkpoints a Spark Job Definition", async () => {
     const plan = makePlan("create", "absent");
     const output = files();

@@ -1,0 +1,7 @@
+displayName: tva-GitActionTest Logical References Spark Job
+description: Spark Job deployed with logical Lakehouse and Environment references
+desiredState: present
+
+references:
+  defaultLakehouse: gitActionLakehouse
+  environment: gitActionEnvironment

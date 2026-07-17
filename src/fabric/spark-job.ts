@@ -134,6 +134,40 @@ export class SparkJobAdapter {
     };
   }
 
+  async planUnresolvedReferences(
+    workspaceId: string,
+    desired: ItemDefinition,
+    unresolvedLogicalIds: readonly string[],
+  ): Promise<SparkJobPlanResult> {
+    const existing = await this.findByDisplayName(
+      workspaceId,
+      desired,
+    );
+    if (!existing) {
+      return {
+        action: "create",
+        reason: `Spark Job Definition '${desired.displayName}' does not exist; its logical references will be materialized after dependencies are created.`,
+        observedStateHash: sha256(stableJson(null)),
+      };
+    }
+    return {
+      action: "blocked",
+      reason: `Spark Job Definition '${desired.displayName}' exists, but logical dependency IDs (${unresolvedLogicalIds.join(
+        ", ",
+      )}) are unavailable for definition comparison. Apply those dependencies and generate a new plan.`,
+      physicalId: existing.id,
+      observedStateHash: sha256(
+        stableJson({
+          id: existing.id,
+          displayName: existing.displayName,
+          description: normalizeDescription(existing.description),
+          folderId: existing.folderId ?? null,
+          definitionHash: null,
+        }),
+      ),
+    };
+  }
+
   async list(
     workspaceId: string,
     folderId?: string,

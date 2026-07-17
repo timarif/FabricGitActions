@@ -79,6 +79,27 @@ describe("approved plan loading", () => {
     expect(() => loadApprovedPlan(planPath)).toThrow("invalid structure");
   });
 
+  it("requires materialized definition and binding proofs as a pair", () => {
+    const root = mkdtempSync(path.join(tmpdir(), "fabric-plan-"));
+    const planPath = path.join(root, "plan.json");
+    const plan = createPlan();
+    plan.items[0]!.materializedDefinitionHash = "a".repeat(64);
+    plan.items[0]!.resolvedBindingsHash = "b".repeat(64);
+    const approved = rehashPlan(plan);
+    writeFileSync(planPath, JSON.stringify(approved), "utf8");
+    expect(loadApprovedPlan(planPath).items[0]).toMatchObject({
+      materializedDefinitionHash: "a".repeat(64),
+      resolvedBindingsHash: "b".repeat(64),
+    });
+
+    delete approved.items[0]!.resolvedBindingsHash;
+    const invalid = rehashPlan(approved);
+    writeFileSync(planPath, JSON.stringify(invalid), "utf8");
+    expect(() => loadApprovedPlan(planPath)).toThrow(
+      "invalid structure",
+    );
+  });
+
   it("rejects a managed workspace changed after approval", () => {
     const root = mkdtempSync(path.join(tmpdir(), "fabric-plan-"));
     const planPath = path.join(root, "plan.json");

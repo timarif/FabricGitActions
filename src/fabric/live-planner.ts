@@ -1,5 +1,9 @@
 import { rehashPlan } from "../planner";
-import { sha256, stableJson } from "../hash";
+import {
+  compareCanonicalStrings,
+  sha256,
+  stableJson,
+} from "../hash";
 import type {
   DeploymentPlan,
   LoadedManifest,
@@ -12,13 +16,18 @@ import type { PipelineAdapter } from "./pipeline";
 import type { SparkCustomPoolAdapter } from "./spark-custom-pool";
 import type { SparkJobAdapter } from "./spark-job";
 import type { WorkspaceAdapter } from "./workspace";
+import {
+  materializeSparkJobDefinitionWithProof,
+  validateLogicalReferenceDeclarations,
+} from "./logical-references";
 
 export interface FabricPlanAdapters {
   workspace?: Pick<WorkspaceAdapter, "plan">;
   lakehouse: Pick<LakehouseAdapter, "plan">;
   environment: Pick<EnvironmentAdapter, "plan">;
   notebook: Pick<NotebookAdapter, "plan">;
-  sparkJob: Pick<SparkJobAdapter, "plan">;
+  sparkJob: Pick<SparkJobAdapter, "plan"> &
+    Partial<Pick<SparkJobAdapter, "planUnresolvedReferences">>;
   pipeline: Pick<PipelineAdapter, "plan">;
   sparkCustomPool: Pick<SparkCustomPoolAdapter, "plan">;
 }
@@ -28,6 +37,7 @@ export async function enrichPlanWithFabric(
   loadedManifest: LoadedManifest,
   adapters: FabricPlanAdapters,
 ): Promise<DeploymentPlan> {
+  validateManifestLogicalReferences(loadedManifest);
   let workspaceId = plan.workspaceId;
   let plannedWorkspace = plan.workspace;
   if (plannedWorkspace) {
@@ -96,8 +106,16 @@ export async function enrichPlanWithFabric(
     }
   }
 
-  const plannedItems: PlannedItem[] = [];
-  for (const item of plan.items) {
+  const plannedItems = new Map<string, PlannedItem>();
+  const planningOrder = [
+    ...plan.items.filter(
+      (item) => item.type !== "SparkJobDefinition",
+    ),
+    ...plan.items.filter(
+      (item) => item.type === "SparkJobDefinition",
+    ),
+  ];
+  for (const item of planningOrder) {
     if (
       item.type !== "Lakehouse" &&
       item.type !== "Environment" &&
@@ -106,7 +124,7 @@ export async function enrichPlanWithFabric(
       item.type !== "SparkJobDefinition" &&
       item.type !== "DataPipeline"
     ) {
-      plannedItems.push({
+      plannedItems.set(item.logicalId, {
         ...item,
         reason: `Online discovery for ${item.type} is planned for a later workload adapter.`,
       });
@@ -115,22 +133,10 @@ export async function enrichPlanWithFabric(
 
     const desired = loadedManifest.itemDefinitions[item.logicalId];
     if (!desired) {
-      plannedItems.push({
+      plannedItems.set(item.logicalId, {
         ...item,
         action: "blocked" as const,
         reason: `The resolved ${item.type} item definition is missing.`,
-      });
-      continue;
-    }
-    const bindingBlockReason = unsupportedBindingReason(
-      item.type,
-      desired,
-    );
-    if (bindingBlockReason) {
-      plannedItems.push({
-        ...item,
-        action: "blocked" as const,
-        reason: bindingBlockReason,
       });
       continue;
     }
@@ -166,13 +172,13 @@ export async function enrichPlanWithFabric(
                 ),
               )
             : item.type === "SparkJobDefinition"
-              ? await adapters.sparkJob.plan(
+              ? await planSparkJob(
                   workspaceId,
+                  item,
                   desired,
-                  requireSparkJobDefinition(
-                    loadedManifest,
-                    item.logicalId,
-                  ),
+                  loadedManifest,
+                  plannedItems,
+                  adapters.sparkJob,
                 )
               : await adapters.pipeline.plan(
                   workspaceId,
@@ -182,7 +188,7 @@ export async function enrichPlanWithFabric(
                     item.logicalId,
                   ),
                 );
-    plannedItems.push({
+    plannedItems.set(item.logicalId, {
       ...item,
       action: result.action,
       reason: result.reason,
@@ -190,6 +196,19 @@ export async function enrichPlanWithFabric(
       ...(result.physicalId === undefined
         ? {}
         : { physicalId: result.physicalId }),
+      ...("materializedDefinitionHash" in result &&
+      typeof result.materializedDefinitionHash === "string"
+        ? {
+            materializedDefinitionHash:
+              result.materializedDefinitionHash,
+          }
+        : {}),
+      ...("resolvedBindingsHash" in result &&
+      typeof result.resolvedBindingsHash === "string"
+        ? {
+            resolvedBindingsHash: result.resolvedBindingsHash,
+          }
+        : {}),
     });
   }
 
@@ -201,20 +220,6 @@ export async function enrichPlanWithFabric(
     if (!definition) {
       throw new Error(
         `The resolved Notebook definition is missing for '${logicalId}'.`,
-      );
-    }
-    return definition;
-  }
-
-  function requireSparkJobDefinition(
-    loadedManifest: LoadedManifest,
-    logicalId: string,
-  ) {
-    const definition =
-      loadedManifest.sparkJobDefinitions[logicalId];
-    if (!definition) {
-      throw new Error(
-        `The resolved Spark Job Definition is missing for '${logicalId}'.`,
       );
     }
     return definition;
@@ -252,7 +257,15 @@ export async function enrichPlanWithFabric(
     ...plan,
     workspaceId,
     ...(plannedWorkspace ? { workspace: plannedWorkspace } : {}),
-    items: plannedItems,
+    items: plan.items.map((item) => {
+      const planned = plannedItems.get(item.logicalId);
+      if (!planned) {
+        throw new Error(
+          `Online plan result is missing for '${item.logicalId}'.`,
+        );
+      }
+      return planned;
+    }),
   });
 }
 
@@ -269,17 +282,6 @@ function blockItemUntilWorkspaceExists(
       reason: `The resolved ${item.type} item definition is missing.`,
     };
   }
-  const bindingBlockReason = unsupportedBindingReason(
-    item.type,
-    desired,
-  );
-  if (bindingBlockReason) {
-    return {
-      ...item,
-      action: "blocked",
-      reason: bindingBlockReason,
-    };
-  }
   return {
     ...item,
     action: "blocked",
@@ -289,21 +291,6 @@ function blockItemUntilWorkspaceExists(
         : "The managed workspace plan is blocked.",
     observedStateHash: sha256(stableJson(null)),
   };
-}
-
-function unsupportedBindingReason(
-  itemType: PlannedItem["type"],
-  desired: NonNullable<LoadedManifest["itemDefinitions"][string]>,
-): string | undefined {
-  const hasDeclarations =
-    Object.keys(desired.references ?? {}).length > 0 ||
-    (desired.bindings?.length ?? 0) > 0;
-  if (!hasDeclarations) {
-    return undefined;
-  }
-  return itemType === "SparkJobDefinition"
-    ? "Spark Job Definition logical references and bindings require the Phase 3 reference resolver; use explicit artifact IDs in SparkJobDefinitionV1.json until it is implemented."
-    : `${itemType} logical references and bindings are not supported and cannot be ignored.`;
 }
 
 function requireEnvironmentDefinition(
@@ -317,4 +304,128 @@ function requireEnvironmentDefinition(
     );
   }
   return definition;
+}
+
+function validateManifestLogicalReferences(
+  loadedManifest: LoadedManifest,
+): void {
+  for (const item of loadedManifest.manifest.items) {
+    const definition =
+      loadedManifest.itemDefinitions[item.logicalId];
+    if (!definition) {
+      throw new Error(
+        `The resolved ${item.type} item definition is missing.`,
+      );
+    }
+    validateLogicalReferenceDeclarations({
+      item,
+      definition,
+      itemGraph: loadedManifest.manifest.items,
+    });
+  }
+}
+
+async function planSparkJob(
+  workspaceId: string,
+  item: PlannedItem,
+  desired: NonNullable<
+    LoadedManifest["itemDefinitions"][string]
+  >,
+  loadedManifest: LoadedManifest,
+  plannedItems: ReadonlyMap<string, PlannedItem>,
+  adapter: FabricPlanAdapters["sparkJob"],
+) {
+  const sourceDefinition =
+    loadedManifest.sparkJobDefinitions[item.logicalId];
+  if (!sourceDefinition) {
+    throw new Error(
+      `The resolved Spark Job Definition is missing for '${item.logicalId}'.`,
+    );
+  }
+  const manifestItem = loadedManifest.manifest.items.find(
+    (candidate) => candidate.logicalId === item.logicalId,
+  );
+  if (!manifestItem) {
+    throw new Error(
+      `Manifest item '${item.logicalId}' is missing during Spark Job planning.`,
+    );
+  }
+  const bindings = validateLogicalReferenceDeclarations({
+    item: manifestItem,
+    definition: desired,
+    itemGraph: loadedManifest.manifest.items,
+  });
+  if (Object.keys(bindings).length === 0) {
+    return adapter.plan(workspaceId, desired, sourceDefinition);
+  }
+
+  const physicalIds: Record<string, string> = {};
+  const unresolved: string[] = [];
+  for (const binding of Object.values(bindings)) {
+    if (!binding) {
+      continue;
+    }
+    const dependency = plannedItems.get(binding.logicalId);
+    if (
+      dependency?.physicalId &&
+      (dependency.action === "update" ||
+        dependency.action === "no-op")
+    ) {
+      physicalIds[binding.logicalId] = dependency.physicalId;
+      continue;
+    }
+    if (dependency?.action === "create") {
+      unresolved.push(binding.logicalId);
+      continue;
+    }
+    return {
+      action: "blocked" as const,
+      reason: `Spark Job Definition '${desired.displayName}' cannot resolve logical dependency '${binding.logicalId}' because its current plan action is '${dependency?.action ?? "missing"}'.`,
+      observedStateHash: sha256(stableJson(null)),
+    };
+  }
+
+  if (unresolved.length > 0) {
+    const unresolvedLogicalIds = [
+      ...new Set(unresolved),
+    ].sort(compareCanonicalStrings);
+    if (!adapter.planUnresolvedReferences) {
+      return {
+        action: "blocked" as const,
+        reason: `Spark Job Definition '${desired.displayName}' requires physical IDs for newly created dependencies (${unresolvedLogicalIds.join(", ")}); replan after they exist.`,
+        observedStateHash: sha256(stableJson(null)),
+      };
+    }
+    const unresolvedResult =
+      await adapter.planUnresolvedReferences(
+      workspaceId,
+      desired,
+        unresolvedLogicalIds,
+    );
+    if (
+      unresolvedResult.action !== "create" &&
+      unresolvedResult.action !== "blocked"
+    ) {
+      throw new Error(
+        `Spark Job Definition '${desired.displayName}' returned unsafe action '${unresolvedResult.action}' before logical dependency IDs were available.`,
+      );
+    }
+    return unresolvedResult;
+  }
+
+  const materialized = materializeSparkJobDefinitionWithProof(
+    sourceDefinition,
+    bindings,
+    physicalIds,
+  );
+  return {
+    ...(await adapter.plan(
+      workspaceId,
+      desired,
+      materialized.definition,
+    )),
+    materializedDefinitionHash:
+      materialized.materializedDefinitionHash,
+    resolvedBindingsHash: materialized.resolvedBindingsHash,
+  };
 }

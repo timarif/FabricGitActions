@@ -180,6 +180,141 @@ items:
     );
   });
 
+  it("accepts supported Spark Job reference and binding declarations", () => {
+    const root = mkdtempSync(path.join(tmpdir(), "fabric-deploy-item-"));
+    const lakehouseDirectory = path.join(root, "items/bronze");
+    const environmentDirectory = path.join(root, "items/environment");
+    const sparkJobDirectory = path.join(root, "items/job");
+    mkdirSync(lakehouseDirectory, { recursive: true });
+    mkdirSync(path.join(environmentDirectory, "definition"), {
+      recursive: true,
+    });
+    mkdirSync(path.join(sparkJobDirectory, "definition"), {
+      recursive: true,
+    });
+    writeFileSync(
+      path.join(lakehouseDirectory, "item.yaml"),
+      "displayName: Bronze\n",
+      "utf8",
+    );
+    writeFileSync(
+      path.join(environmentDirectory, "item.yaml"),
+      "displayName: Spark Environment\n",
+      "utf8",
+    );
+    writeFileSync(
+      path.join(
+        environmentDirectory,
+        "definition",
+        "environment.yml",
+      ),
+      "dependencies: []\n",
+      "utf8",
+    );
+    writeFileSync(
+      path.join(sparkJobDirectory, "item.yaml"),
+      [
+        "displayName: Spark Job",
+        "references:",
+        "  defaultLakehouse: bronze",
+        "bindings:",
+        "  - target: /properties/environmentArtifactId",
+        "    valueFrom: items.environment.id",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+    writeFileSync(
+      path.join(sparkJobDirectory, "definition", "main.py"),
+      "print('ok')\n",
+      "utf8",
+    );
+    const manifestPath = path.join(root, "deployment.yaml");
+    writeFileSync(
+      manifestPath,
+      `
+apiVersion: fabric.deploy/v1alpha1
+kind: FabricDeployment
+metadata:
+  deploymentId: references-test
+workspace:
+  id: workspace-1
+items:
+  - logicalId: bronze
+    type: Lakehouse
+    path: items/bronze
+  - logicalId: environment
+    type: Environment
+    path: items/environment
+  - logicalId: job
+    type: SparkJobDefinition
+    path: items/job
+    dependsOn: [bronze, environment]
+`,
+      "utf8",
+    );
+
+    expect(loadManifest(manifestPath).itemDefinitions.job).toMatchObject({
+      references: { defaultLakehouse: "bronze" },
+      bindings: [
+        {
+          target: "/properties/environmentArtifactId",
+          valueFrom: "items.environment.id",
+        },
+      ],
+    });
+  });
+
+  it("rejects logical declarations on unsupported workloads during manifest loading", () => {
+    const root = mkdtempSync(path.join(tmpdir(), "fabric-deploy-item-"));
+    const lakehouseDirectory = path.join(root, "items/bronze");
+    const notebookDirectory = path.join(root, "items/notebook");
+    mkdirSync(lakehouseDirectory, { recursive: true });
+    mkdirSync(path.join(notebookDirectory, "definition"), {
+      recursive: true,
+    });
+    writeFileSync(
+      path.join(lakehouseDirectory, "item.yaml"),
+      "displayName: Bronze\n",
+      "utf8",
+    );
+    writeFileSync(
+      path.join(notebookDirectory, "item.yaml"),
+      "displayName: Notebook\nreferences:\n  defaultLakehouse: bronze\n",
+      "utf8",
+    );
+    writeFileSync(
+      path.join(notebookDirectory, "definition", "notebook.py"),
+      "print('ok')\n",
+      "utf8",
+    );
+    const manifestPath = path.join(root, "deployment.yaml");
+    writeFileSync(
+      manifestPath,
+      `
+apiVersion: fabric.deploy/v1alpha1
+kind: FabricDeployment
+metadata:
+  deploymentId: unsupported-reference-test
+workspace:
+  id: workspace-1
+items:
+  - logicalId: bronze
+    type: Lakehouse
+    path: items/bronze
+  - logicalId: notebook
+    type: Notebook
+    path: items/notebook
+    dependsOn: [bronze]
+`,
+      "utf8",
+    );
+
+    expect(() => loadManifest(manifestPath)).toThrow(
+      "does not support logical references or bindings",
+    );
+  });
+
   it("restricts enableSchemas to Lakehouse items", () => {
     const fixture = createDeployment(
       "Notebook",

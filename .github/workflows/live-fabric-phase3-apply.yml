@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       confirmation:
-        description: Type APPLY to deploy the Environment and Notebook.
+        description: Type APPLY to deploy the Phase 3 live fixture.
         required: true
         default: PLAN_ONLY
         type: string
@@ -52,9 +52,10 @@ jobs:
       - name: Verify approved plan
         shell: bash
         run: |
-          test "${{ steps.fabric-plan.outputs.item-count }}" = "2"
+          test "${{ steps.fabric-plan.outputs.item-count }}" = "4"
           jq -e '
-            (.items | map(.type) | sort) == ["Environment", "Notebook"]
+            (.items | map(.type) | sort)
+              == ["Environment", "Lakehouse", "Notebook", "SparkJobDefinition"]
             and all(
               .items[];
               .action == "create"

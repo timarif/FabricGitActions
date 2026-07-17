@@ -18,6 +18,7 @@ import { loadNotebookDefinition } from "./fabric/notebook-definition";
 import { loadPipelineDefinition } from "./fabric/pipeline-definition";
 import { loadSparkCustomPoolDefinition } from "./fabric/spark-custom-pool-definition";
 import { loadSparkJobDefinition } from "./fabric/spark-job-definition";
+import { validateLogicalReferenceDeclarations } from "./fabric/logical-references";
 import { loadAndValidateItemDefinition } from "./item-definition";
 import { deploymentSchema } from "./schema";
 import { substituteVariables } from "./substitution";
@@ -74,6 +75,19 @@ export function loadManifest(
       ),
     ]),
   );
+  for (const item of manifest.items) {
+    const definition = itemDefinitions[item.logicalId];
+    if (!definition) {
+      throw new Error(
+        `Item definition is missing for '${item.logicalId}'.`,
+      );
+    }
+    validateLogicalReferenceDeclarations({
+      item,
+      definition,
+      itemGraph: manifest.items,
+    });
+  }
   const environmentDefinitions = Object.fromEntries(
     manifest.items
       .filter((item) => item.type === "Environment")

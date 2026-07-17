@@ -264,9 +264,15 @@ Spark Job Definitions use `SparkJobDefinitionV2`, including inline `Main/`
 and `Libs/` parts. Inline JARs are rejected because Fabric requires an external
 `abfss://` library URI for that case. Definition updates use full-replacement
 semantics, so the generated `SparkJobDefinitionV1.json` always includes the
-main file and complete library list. Logical Lakehouse and Environment
-references are not injected until the logical reference resolver is complete;
-explicit artifact IDs can be supplied in `SparkJobDefinitionV1.json`.
+main file and complete library list. Spark Jobs support the
+`defaultLakehouse` and `environment` logical-reference sugars plus explicit
+bindings to `/properties/defaultLakehouseArtifactId` and
+`/properties/environmentArtifactId`. Binding sources use
+`items.<logicalId>.id`; the legacy singular `item.<logicalId>.id` form remains
+accepted. Existing dependencies are materialized during planning. A Spark Job
+that is also new can wait for dependencies created earlier in the same apply;
+an existing Spark Job is blocked until all referenced dependency IDs are
+available for a reviewed definition comparison.
 
 Data Pipelines deploy the public `pipeline-content.json` definition with
 semantic JSON comparison and optional managed `.platform` metadata. Accepted
