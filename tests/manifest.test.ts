@@ -429,6 +429,108 @@ items:
     );
   });
 
+  it("snapshots Spark custom pool definitions during manifest loading", () => {
+    const root = mkdtempSync(path.join(tmpdir(), "fabric-deploy-"));
+    const manifestPath = createFixture(
+      root,
+      `
+apiVersion: fabric.deploy/v1alpha1
+kind: FabricDeployment
+metadata:
+  deploymentId: sample
+workspace:
+  id: workspace-1
+items:
+  - logicalId: batchPool
+    type: SparkCustomPool
+    path: items/pools/batch
+`,
+      ["items/pools/batch"],
+    );
+    const definitionDirectory = path.join(
+      root,
+      "items/pools/batch/definition",
+    );
+    mkdirSync(definitionDirectory);
+    const definitionFile = path.join(definitionDirectory, "pool.yaml");
+    writeFileSync(
+      definitionFile,
+      `
+nodeFamily: MemoryOptimized
+nodeSize: Small
+autoScale: { enabled: true, minNodeCount: 1, maxNodeCount: 2 }
+dynamicExecutorAllocation: { enabled: true, minExecutors: 1, maxExecutors: 1 }
+`,
+      "utf8",
+    );
+
+    const loaded = loadManifest(manifestPath);
+    writeFileSync(
+      definitionFile,
+      `
+nodeFamily: MemoryOptimized
+nodeSize: Medium
+autoScale: { enabled: true, minNodeCount: 2, maxNodeCount: 4 }
+dynamicExecutorAllocation: { enabled: true, minExecutors: 2, maxExecutors: 2 }
+`,
+      "utf8",
+    );
+
+    expect(loaded.sparkCustomPoolDefinitions.batchPool).toMatchObject({
+      nodeSize: "Small",
+      autoScale: { minNodeCount: 1, maxNodeCount: 2 },
+    });
+  });
+
+  it("rejects case-insensitive Spark custom pool name collisions", () => {
+    const root = mkdtempSync(path.join(tmpdir(), "fabric-deploy-"));
+    const manifestPath = createFixture(
+      root,
+      `
+apiVersion: fabric.deploy/v1alpha1
+kind: FabricDeployment
+metadata:
+  deploymentId: sample
+workspace:
+  id: workspace-1
+items:
+  - logicalId: firstPool
+    type: SparkCustomPool
+    path: items/pools/first
+  - logicalId: secondPool
+    type: SparkCustomPool
+    path: items/pools/second
+`,
+      ["items/pools/first", "items/pools/second"],
+    );
+    for (const [directory, displayName] of [
+      ["first", "Batch"],
+      ["second", "batch"],
+    ] as const) {
+      const itemDirectory = path.join(root, "items/pools", directory);
+      writeFileSync(
+        path.join(itemDirectory, "item.yaml"),
+        `displayName: ${displayName}\n`,
+        "utf8",
+      );
+      mkdirSync(path.join(itemDirectory, "definition"));
+      writeFileSync(
+        path.join(itemDirectory, "definition/pool.yaml"),
+        `
+nodeFamily: MemoryOptimized
+nodeSize: Small
+autoScale: { enabled: true, minNodeCount: 1, maxNodeCount: 2 }
+dynamicExecutorAllocation: { enabled: true, minExecutors: 1, maxExecutors: 1 }
+`,
+        "utf8",
+      );
+    }
+
+    expect(() => loadManifest(manifestPath)).toThrow(
+      "SparkCustomPool items 'firstPool' and 'secondPool' resolve to the same folder and displayName",
+    );
+  });
+
   it("uses unambiguous framing when hashing file paths and contents", () => {
     const firstRoot = mkdtempSync(path.join(tmpdir(), "fabric-deploy-"));
     const secondRoot = mkdtempSync(path.join(tmpdir(), "fabric-deploy-"));

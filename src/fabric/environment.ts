@@ -348,7 +348,6 @@ export class EnvironmentAdapter {
     if (desired.folderId !== undefined) {
       body.folderId = desired.folderId;
     }
-    onCreateSubmitting?.();
     let response: FabricResponse<Environment>;
     try {
       response = await this.client.request<Environment>(
@@ -358,6 +357,7 @@ export class EnvironmentAdapter {
           body,
           retryable: false,
           acceptedStatuses: [201, 202],
+          onDispatch: onCreateSubmitting,
         },
       );
     } catch (error) {

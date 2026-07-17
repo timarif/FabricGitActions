@@ -4,16 +4,20 @@ A GitHub Marketplace action for declarative Microsoft Fabric deployments, with
 an initial focus on Data Engineering workloads.
 
 > **Current status:** Phases 1 and 2 are complete. Phase 3 now includes
-> Environment and Notebook definition deployment in addition to Lakehouse
-> deployment. These adapters support authenticated planning and guarded
-> create/update/no-op apply with approved-plan binding, drift detection,
-> checkpoints, and result artifacts. See [the roadmap](docs/ROADMAP.md).
+> Environment, Notebook, Spark Job Definition, Data Pipeline, and workspace
+> custom Spark pool deployment in addition to Lakehouse deployment. These
+> adapters support authenticated planning and guarded create/update/no-op apply
+> with approved-plan binding, drift detection, checkpoints, and result
+> artifacts. See
+> [the roadmap](docs/ROADMAP.md).
 
 ## Initial workload scope
 
 - Lakehouse
+- Lakehouse table DDL
 - Environment
 - Notebook
+- Workspace custom Spark pool
 - Spark Job Definition
 - Data Pipeline
 
@@ -39,9 +43,10 @@ contains the validated deployment order, observed Fabric state, source commit,
 and a deterministic hash used to bind approval to an exact deployment.
 
 Without authentication, `plan` is offline and reports item actions as
-`unknown`. With Fabric authentication configured, Lakehouses, Environments,
-and Notebooks are classified as `create`, `update`, `no-op`, or `blocked`;
-later workload adapters remain `unknown`.
+`unknown`. With Fabric authentication configured, Lakehouses, Environments, Notebooks,
+Spark Job Definitions, Data Pipelines, and workspace custom Spark pools are
+classified as `create`, `update`, `no-op`, or `blocked`; later workload
+adapters remain `unknown`.
 
 ## Authenticated Fabric plan with GitHub OIDC
 
@@ -78,13 +83,14 @@ with:
   client-secret: ${{ secrets.FABRIC_CLIENT_SECRET }}
 ```
 
-## Guarded Lakehouse, Environment, and Notebook apply
+## Guarded core data engineering apply
 
 Generate an authenticated plan, preserve it as an immutable artifact, then pass
 that exact file to a separate apply job:
 
 ```yaml
-- uses: your-organization/fabric-deploy@v1
+- id: deploy
+  uses: your-organization/fabric-deploy@v1
   with:
     mode: apply
     manifest: fabric/deployment.yaml
@@ -96,10 +102,16 @@ that exact file to a separate apply job:
     approved-plan-file: approved/fabric-plan.json
     allow-create: "true"
     allow-update: "false"
+    return-livy-api-endpoint: "true"
     plan-file: apply-output/current-plan.json
     checkpoint-file: apply-output/checkpoint.json
     result-file: apply-output/result.json
 ```
+
+When `return-livy-api-endpoint` is enabled, `livy-api-endpoints` returns a
+JSON map keyed by Lakehouse logical ID. If the deployment contains exactly one
+Lakehouse, `livy-api-endpoint` also returns its Lakehouse-scoped endpoint
+directly.
 
 Apply recomputes the current authenticated plan and rejects:
 
@@ -173,8 +185,9 @@ Definition-bearing workloads are structurally validated:
 | Lakehouse | `item.yaml` |
 | Environment | `definition/environment.yml`; optional `Sparkcompute.yml`, `.platform`, and custom libraries |
 | Notebook | Exactly one `.py`, `.scala`, `.r`, `.sql`, or `.ipynb` file under `definition/`; optional `.platform` |
-| Spark Job Definition | Exactly one `definition/main.py` or `definition/main.scala` |
+| Spark Job Definition | Exactly one `definition/main.py` or `definition/main.scala`; optional `SparkJobDefinitionV1.json`, `.platform`, and files under `definition/libs/` |
 | Data Pipeline | Valid JSON object at `definition/pipeline-content.json` |
+| Workspace custom Spark pool | `definition/pool.yaml` with node family, node size, autoscale, and dynamic executor allocation settings |
 
 Environment custom libraries require `definition/Sparkcompute.yml`. When Spark
 settings are managed, the action reserves
@@ -189,6 +202,27 @@ public-definition formats. When `.platform` is managed, `item.yaml` must
 explicitly define the description so metadata updates remain deterministic.
 Sensitivity labels are intentionally rejected in `.platform` until the
 dedicated Fabric sensitivity-label contract is implemented.
+
+Spark Job Definitions use `SparkJobDefinitionV2`, including inline `Main/`
+and `Libs/` parts. Inline JARs are rejected because Fabric requires an external
+`abfss://` library URI for that case. Definition updates use full-replacement
+semantics, so the generated `SparkJobDefinitionV1.json` always includes the
+main file and complete library list. Logical Lakehouse and Environment
+references are not injected until the logical reference resolver is complete;
+explicit artifact IDs can be supplied in `SparkJobDefinitionV1.json`.
+
+Data Pipelines deploy the public `pipeline-content.json` definition with
+semantic JSON comparison and optional managed `.platform` metadata. Accepted
+create and definition-update operations are checkpointed and verified through
+Fabric readback before apply completes.
+
+Workspace custom Spark pools use the stable workspace
+`/spark/pools` API. The adapter manages only workspace pools, rejects Starter
+Pool and capacity-level pool collisions, and requires the deployment identity
+to be a Workspace Admin for create and update operations. Pool mutations are
+synchronous, non-retryable, checkpointed before submission, and reconciled
+against either the exact approved pre-state or the verified desired state.
+Deletion is intentionally unsupported.
 
 Optional non-sensitive deployment variables can be passed explicitly:
 
@@ -247,16 +281,19 @@ The action currently implements:
 - Lakehouse list/get/create/update/read-back verification
 - Environment definition mapping, create/update, publish, and read-back verification
 - Notebook source/ipynb mapping, create/update, and read-back verification
+- Spark Job Definition V2 mapping, create/update, and read-back verification
+- Data Pipeline definition mapping, create/update, and read-back verification
+- Workspace custom Spark pool mapping, create/update, and read-back verification
 - Published Environment definition proof and target-version advancement checks
 - Regional Fabric long-running-operation polling for trusted operation URLs
 - Authenticated create/update/no-op planning
 - Approved-plan integrity and source-commit binding
 - Pre-mutation drift and authorization checks
-- Lakehouse, Environment, and Notebook create/update/no-op apply
+- Lakehouse, Environment, Notebook, Spark Job Definition, Data Pipeline, and workspace custom Spark pool create/update/no-op apply
 - Checkpoint and result artifacts
 
-Spark Job Definition and Data Pipeline apply remain blocked until their Phase
-3 adapters are implemented.
+Lakehouse table DDL apply remains blocked until its Phase 3 adapter is
+implemented.
 
 ## Live test workflow
 

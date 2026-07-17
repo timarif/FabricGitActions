@@ -1,8 +1,10 @@
 import type { FabricDefinition } from "./fabric/definition";
+import type { SparkCustomPoolDefinition } from "./fabric/spark-custom-pool-definition";
 
 export const FABRIC_ITEM_TYPES = [
   "Lakehouse",
   "Environment",
+  "SparkCustomPool",
   "Notebook",
   "SparkJobDefinition",
   "DataPipeline",
@@ -58,6 +60,12 @@ export interface LoadedManifest {
   itemDefinitions: Record<string, ItemDefinition>;
   environmentDefinitions: Record<string, FabricDefinition>;
   notebookDefinitions: Record<string, FabricDefinition>;
+  sparkJobDefinitions: Record<string, FabricDefinition>;
+  pipelineDefinitions: Record<string, FabricDefinition>;
+  sparkCustomPoolDefinitions: Record<
+    string,
+    SparkCustomPoolDefinition
+  >;
 }
 
 export interface PlannedItem {

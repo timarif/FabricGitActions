@@ -16,8 +16,12 @@ import { FabricClient } from "./fabric/client";
 import { parseFabricEndpoints } from "./fabric/config";
 import { EnvironmentAdapter } from "./fabric/environment";
 import { LakehouseAdapter } from "./fabric/lakehouse";
+import { buildLakehouseLivyApiEndpoints } from "./fabric/livy";
 import { enrichPlanWithFabric } from "./fabric/live-planner";
 import { NotebookAdapter } from "./fabric/notebook";
+import { PipelineAdapter } from "./fabric/pipeline";
+import { SparkCustomPoolAdapter } from "./fabric/spark-custom-pool";
+import { SparkJobAdapter } from "./fabric/spark-job";
 import { loadManifest } from "./manifest";
 import { loadApprovedPlan } from "./plan-artifact";
 import { buildPlan } from "./planner";
@@ -52,6 +56,14 @@ export async function run(): Promise<void> {
     );
     const planFile = core.getInput("plan-file") || "fabric-plan.json";
     const sourceCommit = process.env.GITHUB_SHA || undefined;
+    const returnLivyApiEndpoint = readBooleanInput(
+      "return-livy-api-endpoint",
+    );
+    if (returnLivyApiEndpoint && mode !== "apply") {
+      throw new Error(
+        "return-livy-api-endpoint is supported only when mode is apply.",
+      );
+    }
 
     const loadedManifest = loadManifest(manifestPath, {
       variables,
@@ -122,6 +134,9 @@ export async function run(): Promise<void> {
     let lakehouseAdapter: LakehouseAdapter | undefined;
     let environmentAdapter: EnvironmentAdapter | undefined;
     let notebookAdapter: NotebookAdapter | undefined;
+    let sparkJobAdapter: SparkJobAdapter | undefined;
+    let pipelineAdapter: PipelineAdapter | undefined;
+    let sparkCustomPoolAdapter: SparkCustomPoolAdapter | undefined;
     if ((mode === "plan" || mode === "apply") && authMode !== "none") {
       const clientSecret = core.getInput("client-secret") || undefined;
       if (clientSecret) {
@@ -149,10 +164,16 @@ export async function run(): Promise<void> {
       lakehouseAdapter = new LakehouseAdapter(client);
       environmentAdapter = new EnvironmentAdapter(client);
       notebookAdapter = new NotebookAdapter(client);
+      sparkJobAdapter = new SparkJobAdapter(client);
+      pipelineAdapter = new PipelineAdapter(client);
+      sparkCustomPoolAdapter = new SparkCustomPoolAdapter(client);
       plan = await enrichPlanWithFabric(plan, loadedManifest, {
         lakehouse: lakehouseAdapter,
         environment: environmentAdapter,
         notebook: notebookAdapter,
+        sparkJob: sparkJobAdapter,
+        pipeline: pipelineAdapter,
+        sparkCustomPool: sparkCustomPoolAdapter,
       });
     } else if (mode === "apply") {
       throw new Error("apply mode requires Fabric authentication.");
@@ -191,7 +212,10 @@ export async function run(): Promise<void> {
         !resultFile ||
         !lakehouseAdapter ||
         !environmentAdapter ||
-        !notebookAdapter
+        !notebookAdapter ||
+        !sparkJobAdapter ||
+        !pipelineAdapter ||
+        !sparkCustomPoolAdapter
       ) {
         throw new Error("Fabric adapters were not initialized for apply mode.");
       }
@@ -202,6 +226,9 @@ export async function run(): Promise<void> {
         lakehouseAdapter,
         environmentAdapter,
         notebookAdapter,
+        sparkJobAdapter,
+        pipelineAdapter,
+        sparkCustomPoolAdapter,
         allowCreate: readBooleanInput("allow-create"),
         allowUpdate: readBooleanInput("allow-update"),
         checkpointFile,
@@ -218,6 +245,20 @@ export async function run(): Promise<void> {
         "resumed-count",
         String(result.items.filter((item) => item.status === "resumed").length),
       );
+      if (returnLivyApiEndpoint) {
+        const livyApiEndpoints = buildLakehouseLivyApiEndpoints(
+          endpoints.fabricApiEndpoint,
+          result.workspaceId,
+          result.items,
+        );
+        const endpointsByLogicalId = JSON.stringify(livyApiEndpoints);
+        core.setOutput("livy-api-endpoints", endpointsByLogicalId);
+        const endpointValues = Object.values(livyApiEndpoints);
+        core.setOutput(
+          "livy-api-endpoint",
+          endpointValues.length === 1 ? endpointValues[0] : "",
+        );
+      }
     } else {
       core.setOutput("status", mode === "validate" ? "validated" : "planned");
     }

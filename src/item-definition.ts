@@ -10,6 +10,10 @@ import { parse } from "yaml";
 
 import { loadEnvironmentDefinition } from "./fabric/definition";
 import { loadNotebookDefinition } from "./fabric/notebook-definition";
+import {
+  assertValidSparkCustomPoolItemDefinition,
+  loadSparkCustomPoolDefinition,
+} from "./fabric/spark-custom-pool-definition";
 import { substituteVariables } from "./substitution";
 import type {
   DeploymentItem,
@@ -172,6 +176,11 @@ function validateTypeSpecificDefinition(
     case "Environment":
       definitionDirectory(item, itemDirectory);
       loadEnvironmentDefinition(itemDirectory);
+      return;
+    case "SparkCustomPool":
+      definitionDirectory(item, itemDirectory);
+      assertValidSparkCustomPoolItemDefinition(definition);
+      loadSparkCustomPoolDefinition(itemDirectory);
       return;
     case "Notebook":
       definitionDirectory(item, itemDirectory);

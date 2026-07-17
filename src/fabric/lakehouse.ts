@@ -131,7 +131,6 @@ export class LakehouseAdapter {
       body.creationPayload = { enableSchemas: true };
     }
 
-    onCreateSubmitting?.();
     let response: FabricResponse<Lakehouse>;
     try {
       response = await this.client.request<Lakehouse>(
@@ -141,6 +140,7 @@ export class LakehouseAdapter {
           body,
           retryable: false,
           acceptedStatuses: [201, 202],
+          onDispatch: onCreateSubmitting,
         },
       );
     } catch (error) {

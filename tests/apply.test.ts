@@ -32,6 +32,9 @@ const loaded: LoadedManifest = {
   },
   environmentDefinitions: {},
   notebookDefinitions: {},
+  sparkJobDefinitions: {},
+  pipelineDefinitions: {},
+  sparkCustomPoolDefinitions: {},
   manifest: {
     apiVersion: "fabric.deploy/v1alpha1",
     kind: "FabricDeployment",
@@ -340,11 +343,11 @@ describe("guarded apply", () => {
       },
       itemDirectories: {
         ...loaded.itemDirectories,
-        zzzUnsupported: "items/spark-job",
+        zzzUnsupported: "items/pipeline",
       },
       itemDefinitions: {
         ...loaded.itemDefinitions,
-        zzzUnsupported: { displayName: "Spark Job" },
+        zzzUnsupported: { displayName: "Pipeline" },
       },
       manifest: {
         ...loaded.manifest,
@@ -352,8 +355,8 @@ describe("guarded apply", () => {
           ...loaded.manifest.items,
           {
             logicalId: "zzzUnsupported",
-            type: "SparkJobDefinition",
-            path: "items/spark-job",
+            type: "DataPipeline",
+            path: "items/pipeline",
           },
         ],
       },
@@ -383,7 +386,7 @@ describe("guarded apply", () => {
         allowUpdate: false,
         ...output,
       }),
-    ).rejects.toThrow("Apply is not implemented");
+    ).rejects.toThrow("Data Pipeline adapter was not initialized");
 
     expect(lakehouseAdapter.create).not.toHaveBeenCalled();
   });

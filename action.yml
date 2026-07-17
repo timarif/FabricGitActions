@@ -74,6 +74,10 @@ inputs:
     description: Allow apply mode to update Fabric items.
     required: false
     default: "false"
+  return-livy-api-endpoint:
+    description: Return deployed Lakehouse Livy API endpoints during apply.
+    required: false
+    default: "false"
 
 outputs:
   status:
@@ -104,6 +108,10 @@ outputs:
     description: Number of items created, updated, or verified by apply.
   resumed-count:
     description: Number of previously completed items verified from a checkpoint.
+  livy-api-endpoint:
+    description: Livy API endpoint when exactly one Lakehouse is deployed and return-livy-api-endpoint is true.
+  livy-api-endpoints:
+    description: JSON map of Lakehouse logical IDs to Livy API endpoints when return-livy-api-endpoint is true.
 
 runs:
   using: node24

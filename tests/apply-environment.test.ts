@@ -56,6 +56,9 @@ runtime_version: 1.3
     },
   },
   notebookDefinitions: {},
+  sparkJobDefinitions: {},
+  pipelineDefinitions: {},
+  sparkCustomPoolDefinitions: {},
   manifest: {
     apiVersion: "fabric.deploy/v1alpha1",
     kind: "FabricDeployment",
@@ -327,24 +330,24 @@ describe("guarded Environment apply", () => {
       ...loaded,
       itemContentHashes: {
         ...loaded.itemContentHashes,
-        sparkJob: "spark-job-content",
+        pipeline: "pipeline-content",
       },
       itemDirectories: {
         ...loaded.itemDirectories,
-        sparkJob: "items/spark-job",
+        pipeline: "items/pipeline",
       },
       itemDefinitions: {
         ...loaded.itemDefinitions,
-        sparkJob: { displayName: "Spark Job" },
+        pipeline: { displayName: "Pipeline" },
       },
       manifest: {
         ...loaded.manifest,
         items: [
           ...loaded.manifest.items,
           {
-            logicalId: "sparkJob",
-            type: "SparkJobDefinition",
-            path: "items/spark-job",
+            logicalId: "pipeline",
+            type: "DataPipeline",
+            path: "items/pipeline",
           },
         ],
       },
@@ -400,7 +403,7 @@ describe("guarded Environment apply", () => {
         allowUpdate: false,
         ...output,
       }),
-    ).rejects.toThrow("Apply is not implemented");
+    ).rejects.toThrow("Data Pipeline adapter was not initialized");
 
     expect(adapter.update).not.toHaveBeenCalled();
   });

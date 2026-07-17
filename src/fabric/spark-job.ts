@@ -11,25 +11,25 @@ import {
 } from "./client";
 import type { FabricDefinition } from "./definition";
 import {
-  hashNotebookDefinition,
-  notebookDefinitionFormat,
-  notebookIncludesPlatformPart,
-} from "./notebook-definition";
+  hashSparkJobDefinition,
+  sparkJobDefinitionFormat,
+  sparkJobIncludesPlatformPart,
+} from "./spark-job-definition";
 
-export interface Notebook {
+export interface SparkJobDefinitionItem {
   id: string;
   workspaceId?: string;
-  type?: "Notebook";
+  type?: "SparkJobDefinition";
   displayName: string;
   description?: string;
   folderId?: string;
 }
 
-export interface NotebookDefinitionResponse {
+export interface SparkJobDefinitionResponse {
   definition: FabricDefinition;
 }
 
-export interface NotebookPlanResult {
+export interface SparkJobPlanResult {
   action: Extract<
     PlannedAction,
     "create" | "update" | "no-op" | "blocked"
@@ -41,24 +41,27 @@ export interface NotebookPlanResult {
   managedMetadataMatches?: boolean;
 }
 
-export interface NotebookOperationReference {
+export interface SparkJobOperationReference {
   operationId?: string;
   location?: string;
 }
 
-export class NotebookAdapter {
+export class SparkJobAdapter {
   constructor(private readonly client: FabricClient) {}
 
   async plan(
     workspaceId: string,
     desired: ItemDefinition,
     desiredDefinition: FabricDefinition,
-  ): Promise<NotebookPlanResult> {
-    const existing = await this.findByDisplayName(workspaceId, desired);
+  ): Promise<SparkJobPlanResult> {
+    const existing = await this.findByDisplayName(
+      workspaceId,
+      desired,
+    );
     if (!existing) {
       return {
         action: "create",
-        reason: `Notebook '${desired.displayName}' does not exist.`,
+        reason: `Spark Job Definition '${desired.displayName}' does not exist.`,
         observedStateHash: sha256(stableJson(null)),
       };
     }
@@ -70,16 +73,17 @@ export class NotebookAdapter {
       desiredDefinition,
     );
     const includePlatform =
-      notebookIncludesPlatformPart(desiredDefinition);
-    const desiredDefinitionHash = hashNotebookDefinition(
+      sparkJobIncludesPlatformPart(desiredDefinition);
+    const desiredDefinitionHash = hashSparkJobDefinition(
       desiredDefinition,
       includePlatform,
     );
-    const currentDefinitionHash = hashNotebookDefinition(
+    const currentDefinitionHash = hashSparkJobDefinition(
       currentDefinition,
       includePlatform,
+      { allowExternalExecutable: true },
     );
-    const observedStateHash = hashObservedNotebook(
+    const observedStateHash = hashObservedSparkJob(
       current,
       currentDefinitionHash,
     );
@@ -98,7 +102,7 @@ export class NotebookAdapter {
     if (!folderMatches) {
       return {
         action: "blocked",
-        reason: `Notebook '${desired.displayName}' is in a different folder; folder moves are not supported.`,
+        reason: `Spark Job Definition '${desired.displayName}' is in a different folder; folder moves are not supported.`,
         physicalId: current.id,
         observedStateHash,
         stagedDefinitionHash: currentDefinitionHash,
@@ -112,8 +116,8 @@ export class NotebookAdapter {
       return {
         action: "update",
         reason: !descriptionMatches
-          ? `Notebook '${desired.displayName}' metadata differs.`
-          : `Notebook '${desired.displayName}' definition differs.`,
+          ? `Spark Job Definition '${desired.displayName}' metadata differs.`
+          : `Spark Job Definition '${desired.displayName}' definition differs.`,
         physicalId: current.id,
         observedStateHash,
         stagedDefinitionHash: currentDefinitionHash,
@@ -122,7 +126,7 @@ export class NotebookAdapter {
     }
     return {
       action: "no-op",
-      reason: `Notebook '${desired.displayName}' matches the desired definition.`,
+      reason: `Spark Job Definition '${desired.displayName}' matches the desired definition.`,
       physicalId: current.id,
       observedStateHash,
       stagedDefinitionHash: currentDefinitionHash,
@@ -133,44 +137,51 @@ export class NotebookAdapter {
   async list(
     workspaceId: string,
     folderId?: string,
-  ): Promise<Notebook[]> {
+  ): Promise<SparkJobDefinitionItem[]> {
     const url = new URL(
-      `/v1/workspaces/${encodeURIComponent(workspaceId)}/notebooks`,
+      `/v1/workspaces/${encodeURIComponent(
+        workspaceId,
+      )}/sparkJobDefinitions`,
       "https://placeholder.invalid",
     );
     url.searchParams.set("recursive", "false");
     if (folderId) {
       url.searchParams.set("rootFolderId", folderId);
     }
-    return this.client.listAll<Notebook>(`${url.pathname}${url.search}`);
+    return this.client.listAll<SparkJobDefinitionItem>(
+      `${url.pathname}${url.search}`,
+    );
   }
 
   async get(
     workspaceId: string,
-    notebookId: string,
-  ): Promise<Notebook> {
-    const response = await this.client.request<Notebook>(
-      "GET",
-      notebookPath(workspaceId, notebookId),
-    );
+    sparkJobId: string,
+  ): Promise<SparkJobDefinitionItem> {
+    const response =
+      await this.client.request<SparkJobDefinitionItem>(
+        "GET",
+        sparkJobPath(workspaceId, sparkJobId),
+      );
     if (!response.body) {
-      throw new Error("Fabric Get Notebook response is empty.");
+      throw new Error(
+        "Fabric Get Spark Job Definition response is empty.",
+      );
     }
     return response.body;
   }
 
   async getDefinition(
     workspaceId: string,
-    notebookId: string,
+    sparkJobId: string,
     desiredDefinition: FabricDefinition,
   ): Promise<FabricDefinition> {
-    const format = notebookDefinitionFormat(desiredDefinition);
+    const format = sparkJobDefinitionFormat(desiredDefinition);
     const response =
-      await this.client.request<NotebookDefinitionResponse>(
+      await this.client.request<SparkJobDefinitionResponse>(
         "POST",
-        `${notebookPath(
+        `${sparkJobPath(
           workspaceId,
-          notebookId,
+          sparkJobId,
         )}/getDefinition?format=${encodeURIComponent(format)}`,
         {
           retryable: true,
@@ -179,13 +190,16 @@ export class NotebookAdapter {
       );
     const result =
       response.status === 202
-        ? await this.client.waitForOperation<NotebookDefinitionResponse>(
+        ? await this.client.waitForOperation<SparkJobDefinitionResponse>(
             response as FabricResponse<unknown>,
           )
         : response.body;
-    if (!result?.definition || !Array.isArray(result.definition.parts)) {
+    if (
+      !result?.definition ||
+      !Array.isArray(result.definition.parts)
+    ) {
       throw new Error(
-        "Fabric Get Notebook Definition response is invalid.",
+        "Fabric Get Spark Job Definition response is invalid.",
       );
     }
     return {
@@ -199,10 +213,12 @@ export class NotebookAdapter {
     desired: ItemDefinition,
     definition: FabricDefinition,
     onMutationAccepted?: (physicalId: string) => void,
-    onOperationAccepted?: (operation: NotebookOperationReference) => void,
+    onOperationAccepted?: (
+      operation: SparkJobOperationReference,
+    ) => void,
     onCreateSubmitting?: () => void,
     onCreateRejected?: () => void,
-  ): Promise<Notebook> {
+  ): Promise<SparkJobDefinitionItem> {
     const body: Record<string, unknown> = {
       displayName: desired.displayName,
       definition,
@@ -213,18 +229,21 @@ export class NotebookAdapter {
     if (desired.folderId !== undefined) {
       body.folderId = desired.folderId;
     }
-    let response: FabricResponse<Notebook>;
+    let response: FabricResponse<SparkJobDefinitionItem>;
     try {
-      response = await this.client.request<Notebook>(
-        "POST",
-        `/v1/workspaces/${encodeURIComponent(workspaceId)}/notebooks`,
-        {
-          body,
-          retryable: false,
-          acceptedStatuses: [201, 202],
-          onDispatch: onCreateSubmitting,
-        },
-      );
+      response =
+        await this.client.request<SparkJobDefinitionItem>(
+          "POST",
+          `/v1/workspaces/${encodeURIComponent(
+            workspaceId,
+          )}/sparkJobDefinitions`,
+          {
+            body,
+            retryable: false,
+            acceptedStatuses: [201, 202],
+            onDispatch: onCreateSubmitting,
+          },
+        );
     } catch (error) {
       if (isDefinitiveRejection(error)) {
         onCreateRejected?.();
@@ -233,11 +252,14 @@ export class NotebookAdapter {
     }
     const created =
       response.status === 202
-        ? await this.waitForCreateOperation(response, onOperationAccepted)
+        ? await this.waitForCreateOperation(
+            response,
+            onOperationAccepted,
+          )
         : response.body;
     if (!created?.id) {
       throw new Error(
-        "Fabric Create Notebook response is missing the item ID.",
+        "Fabric Create Spark Job Definition response is missing the item ID.",
       );
     }
     const verified = await this.verify(
@@ -254,9 +276,9 @@ export class NotebookAdapter {
     workspaceId: string,
     desired: ItemDefinition,
     definition: FabricDefinition,
-    operation: NotebookOperationReference,
+    operation: SparkJobOperationReference,
     onMutationAccepted?: (physicalId: string) => void,
-  ): Promise<Notebook> {
+  ): Promise<SparkJobDefinitionItem> {
     const headers = new Headers();
     if (operation.operationId) {
       headers.set("x-ms-operation-id", operation.operationId);
@@ -264,14 +286,15 @@ export class NotebookAdapter {
     if (operation.location) {
       headers.set("location", operation.location);
     }
-    const created = await this.client.waitForOperation<Notebook>({
-      status: 202,
-      headers,
-      body: undefined,
-    });
+    const created =
+      await this.client.waitForOperation<SparkJobDefinitionItem>({
+        status: 202,
+        headers,
+        body: undefined,
+      });
     if (!created?.id) {
       throw new Error(
-        "Fabric Create Notebook operation result is missing the item ID.",
+        "Fabric Create Spark Job Definition operation result is missing the item ID.",
       );
     }
     const verified = await this.verify(
@@ -286,7 +309,7 @@ export class NotebookAdapter {
 
   async update(
     workspaceId: string,
-    notebookId: string,
+    sparkJobId: string,
     desired: ItemDefinition,
     definition: FabricDefinition,
     onMutationAccepted?: (physicalId: string) => void,
@@ -294,18 +317,19 @@ export class NotebookAdapter {
       state?: DefinitionItemUpdateRecoveryState,
     ) => void,
     onUpdateRejected?: () => void,
-  ): Promise<Notebook> {
+  ): Promise<SparkJobDefinitionItem> {
     const managesPlatform =
-      notebookIncludesPlatformPart(definition);
+      sparkJobIncludesPlatformPart(definition);
     const recoveryBaseline = onUpdateCheckpoint
       ? {
-          stagedDefinitionHash: hashNotebookDefinition(
+          stagedDefinitionHash: hashSparkJobDefinition(
             await this.getDefinition(
               workspaceId,
-              notebookId,
+              sparkJobId,
               definition,
             ),
             managesPlatform,
+            { allowExternalExecutable: true },
           ),
         }
       : undefined;
@@ -326,9 +350,9 @@ export class NotebookAdapter {
         metadataBody.description = desired.description;
       }
       try {
-        await this.client.request<Notebook>(
+        await this.client.request<SparkJobDefinitionItem>(
           "PATCH",
-          notebookPath(workspaceId, notebookId),
+          sparkJobPath(workspaceId, sparkJobId),
           {
             body: metadataBody,
             retryable: false,
@@ -351,20 +375,20 @@ export class NotebookAdapter {
 
     await this.stageDefinition(
       workspaceId,
-      notebookId,
+      sparkJobId,
       definition,
       managesPlatform ? onUpdateRejected : undefined,
     );
     onUpdateCheckpoint?.({
       phase: "definition-staged",
-      stagedDefinitionHash: hashNotebookDefinition(
+      stagedDefinitionHash: hashSparkJobDefinition(
         definition,
         managesPlatform,
       ),
     });
     const verified = await this.verify(
       workspaceId,
-      notebookId,
+      sparkJobId,
       desired,
       definition,
     );
@@ -374,14 +398,14 @@ export class NotebookAdapter {
 
   async verify(
     workspaceId: string,
-    notebookId: string,
+    sparkJobId: string,
     desired: ItemDefinition,
     desiredDefinition: FabricDefinition,
-  ): Promise<Notebook> {
-    const actual = await this.get(workspaceId, notebookId);
+  ): Promise<SparkJobDefinitionItem> {
+    const actual = await this.get(workspaceId, sparkJobId);
     if (actual.displayName !== desired.displayName) {
       throw new Error(
-        `Notebook verification failed: expected displayName '${desired.displayName}', received '${actual.displayName}'.`,
+        `Spark Job Definition verification failed: expected displayName '${desired.displayName}', received '${actual.displayName}'.`,
       );
     }
     if (
@@ -390,7 +414,7 @@ export class NotebookAdapter {
         normalizeDescription(desired.description)
     ) {
       throw new Error(
-        `Notebook '${desired.displayName}' verification failed for description.`,
+        `Spark Job Definition '${desired.displayName}' verification failed for description.`,
       );
     }
     if (
@@ -398,22 +422,24 @@ export class NotebookAdapter {
       normalizeFolderId(desired.folderId)
     ) {
       throw new Error(
-        `Notebook '${desired.displayName}' verification failed for folder placement.`,
+        `Spark Job Definition '${desired.displayName}' verification failed for folder placement.`,
       );
     }
     const actualDefinition = await this.getDefinition(
       workspaceId,
-      notebookId,
+      sparkJobId,
       desiredDefinition,
     );
     const includePlatform =
-      notebookIncludesPlatformPart(desiredDefinition);
+      sparkJobIncludesPlatformPart(desiredDefinition);
     if (
-      hashNotebookDefinition(actualDefinition, includePlatform) !==
-      hashNotebookDefinition(desiredDefinition, includePlatform)
+      hashSparkJobDefinition(actualDefinition, includePlatform, {
+        allowExternalExecutable: true,
+      }) !==
+      hashSparkJobDefinition(desiredDefinition, includePlatform)
     ) {
       throw new Error(
-        `Notebook '${desired.displayName}' verification failed for definition content.`,
+        `Spark Job Definition '${desired.displayName}' verification failed for definition content.`,
       );
     }
     return actual;
@@ -421,7 +447,7 @@ export class NotebookAdapter {
 
   private async stageDefinition(
     workspaceId: string,
-    notebookId: string,
+    sparkJobId: string,
     definition: FabricDefinition,
     onInitialRequestRejected?: () => void,
   ): Promise<void> {
@@ -429,11 +455,13 @@ export class NotebookAdapter {
     try {
       response = await this.client.request<unknown>(
         "POST",
-        `${notebookPath(
+        `${sparkJobPath(
           workspaceId,
-          notebookId,
+          sparkJobId,
         )}/updateDefinition?updateMetadata=${
-          notebookIncludesPlatformPart(definition) ? "true" : "false"
+          sparkJobIncludesPlatformPart(definition)
+            ? "true"
+            : "false"
         }`,
         {
           body: { definition },
@@ -455,26 +483,29 @@ export class NotebookAdapter {
   private async findByDisplayName(
     workspaceId: string,
     desired: ItemDefinition,
-  ): Promise<Notebook | undefined> {
-    const matches = (await this.list(workspaceId, desired.folderId)).filter(
-      (notebook) => notebook.displayName === desired.displayName,
+  ): Promise<SparkJobDefinitionItem | undefined> {
+    const matches = (
+      await this.list(workspaceId, desired.folderId)
+    ).filter(
+      (sparkJob) =>
+        sparkJob.displayName === desired.displayName,
     );
     if (matches.length > 1) {
       throw new Error(
-        `Multiple Notebooks named '${desired.displayName}' were found. Use an unambiguous folder scope.`,
+        `Multiple Spark Job Definitions named '${desired.displayName}' were found. Use an unambiguous folder scope.`,
       );
     }
     return matches[0];
   }
 
   private async waitForCreateOperation(
-    response: FabricResponse<Notebook>,
+    response: FabricResponse<SparkJobDefinitionItem>,
     onOperationAccepted:
-      | ((operation: NotebookOperationReference) => void)
+      | ((operation: SparkJobOperationReference) => void)
       | undefined,
-  ): Promise<Notebook> {
+  ): Promise<SparkJobDefinitionItem> {
     onOperationAccepted?.(readOperationReference(response));
-    return this.client.waitForOperation<Notebook>(
+    return this.client.waitForOperation<SparkJobDefinitionItem>(
       response as FabricResponse<unknown>,
     );
   }
@@ -492,12 +523,13 @@ function isDefinitiveRejection(error: unknown): boolean {
 
 function readOperationReference(
   response: FabricResponse<unknown>,
-): NotebookOperationReference {
-  const operationId = response.headers.get("x-ms-operation-id") || undefined;
+): SparkJobOperationReference {
+  const operationId =
+    response.headers.get("x-ms-operation-id") || undefined;
   const location = response.headers.get("location") || undefined;
   if (!operationId && !location) {
     throw new Error(
-      "Fabric Create Notebook response is missing Location and x-ms-operation-id.",
+      "Fabric Create Spark Job Definition response is missing Location and x-ms-operation-id.",
     );
   }
   return {
@@ -506,22 +538,25 @@ function readOperationReference(
   };
 }
 
-function notebookPath(workspaceId: string, notebookId: string): string {
+function sparkJobPath(
+  workspaceId: string,
+  sparkJobId: string,
+): string {
   return `/v1/workspaces/${encodeURIComponent(
     workspaceId,
-  )}/notebooks/${encodeURIComponent(notebookId)}`;
+  )}/sparkJobDefinitions/${encodeURIComponent(sparkJobId)}`;
 }
 
-function hashObservedNotebook(
-  notebook: Notebook,
+function hashObservedSparkJob(
+  sparkJob: SparkJobDefinitionItem,
   definitionHash: string,
 ): string {
   return sha256(
     stableJson({
-      id: notebook.id,
-      displayName: notebook.displayName,
-      description: normalizeDescription(notebook.description),
-      folderId: notebook.folderId ?? null,
+      id: sparkJob.id,
+      displayName: sparkJob.displayName,
+      description: normalizeDescription(sparkJob.description),
+      folderId: sparkJob.folderId ?? null,
       definitionHash,
     }),
   );

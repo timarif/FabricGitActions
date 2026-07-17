@@ -26,6 +26,7 @@ export interface FabricRequestOptions {
   acceptedStatuses?: number[];
   deadlineMs?: number;
   allowOperationOrigin?: boolean;
+  onDispatch?: () => void;
 }
 
 interface FabricErrorBody {
@@ -150,6 +151,7 @@ export class FabricClient {
         ),
       );
       try {
+        requestOptions.onDispatch?.();
         response = await (this.options.fetchImpl ?? fetch)(url, {
           method,
           headers: {

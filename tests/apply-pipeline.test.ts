@@ -1,12 +1,18 @@
-import { mkdtempSync, readFileSync } from "node:fs";
+import {
+  mkdtempSync,
+  readFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
 import { describe, expect, it, vi } from "vitest";
 
 import { applyApprovedPlan } from "../src/apply";
-import { createCheckpoint, writeCheckpoint } from "../src/checkpoint";
-import { hashNotebookDefinition } from "../src/fabric/notebook-definition";
+import {
+  createCheckpoint,
+  writeCheckpoint,
+} from "../src/checkpoint";
+import { hashPipelineDefinition } from "../src/fabric/pipeline-definition";
 import { buildPlan, rehashPlan } from "../src/planner";
 import type {
   DeploymentPlan,
@@ -15,12 +21,17 @@ import type {
   PlannedAction,
 } from "../src/types";
 
-const notebookDefinition = {
-  format: "fabricGitSource",
+const pipelineDefinition = {
   parts: [
     {
-      path: "notebook-content.py",
-      payload: Buffer.from("print('hello')\n").toString("base64"),
+      path: "pipeline-content.json",
+      payload: Buffer.from(
+        JSON.stringify({
+          properties: {
+            activities: [],
+          },
+        }),
+      ).toString("base64"),
       payloadType: "InlineBase64" as const,
     },
   ],
@@ -31,15 +42,15 @@ const loaded: LoadedManifest = {
   manifestDirectory: ".",
   sourceHash: "source",
   resolvedHash: "resolved",
-  itemContentHashes: { notebook: "content" },
-  itemDirectories: { notebook: "items/notebook" },
+  itemContentHashes: { pipeline: "content" },
+  itemDirectories: { pipeline: "items/pipeline" },
   itemDefinitions: {
-    notebook: { displayName: "Hello", description: "Desired" },
+    pipeline: { displayName: "Pipeline", description: "Desired" },
   },
   environmentDefinitions: {},
-  notebookDefinitions: { notebook: notebookDefinition },
+  notebookDefinitions: {},
   sparkJobDefinitions: {},
-  pipelineDefinitions: {},
+  pipelineDefinitions: { pipeline: pipelineDefinition },
   sparkCustomPoolDefinitions: {},
   manifest: {
     apiVersion: "fabric.deploy/v1alpha1",
@@ -48,9 +59,9 @@ const loaded: LoadedManifest = {
     workspace: { id: "workspace" },
     items: [
       {
-        logicalId: "notebook",
-        type: "Notebook",
-        path: "items/notebook",
+        logicalId: "pipeline",
+        type: "DataPipeline",
+        path: "items/pipeline",
       },
     ],
   },
@@ -77,7 +88,9 @@ function makePlan(
 }
 
 function files() {
-  const root = mkdtempSync(path.join(tmpdir(), "fabric-notebook-apply-"));
+  const root = mkdtempSync(
+    path.join(tmpdir(), "fabric-pipeline-apply-"),
+  );
   return {
     checkpointFile: path.join(root, "checkpoint.json"),
     resultFile: path.join(root, "result.json"),
@@ -85,31 +98,24 @@ function files() {
 }
 
 function lakehouseAdapter() {
+  const fail = async () => {
+    throw new Error("Lakehouse adapter should not be called.");
+  };
   return {
-    plan: vi.fn(async () => {
-      throw new Error("Lakehouse adapter should not be called.");
-    }),
-    create: vi.fn(async () => {
-      throw new Error("Lakehouse adapter should not be called.");
-    }),
-    update: vi.fn(async () => {
-      throw new Error("Lakehouse adapter should not be called.");
-    }),
-    resumeCreate: vi.fn(async () => {
-      throw new Error("Lakehouse adapter should not be called.");
-    }),
-    verify: vi.fn(async () => {
-      throw new Error("Lakehouse adapter should not be called.");
-    }),
+    plan: vi.fn(fail),
+    create: vi.fn(fail),
+    update: vi.fn(fail),
+    resumeCreate: vi.fn(fail),
+    verify: vi.fn(fail),
   };
 }
 
-function notebookAdapter(
+function pipelineAdapter(
   plannedAction: "create" | "update" | "no-op" = "create",
-  observedStateHash = plannedAction === "create" ? "absent" : "observed",
-  physicalId = "notebook-existing",
+  observedStateHash =
+    plannedAction === "create" ? "absent" : "observed",
+  physicalId = "pipeline-existing",
   stagedDefinitionHash?: string,
-  managedMetadataMatches = true,
 ) {
   return {
     plan: vi.fn(async () => ({
@@ -117,14 +123,16 @@ function notebookAdapter(
       reason: plannedAction,
       observedStateHash,
       ...(plannedAction === "create" ? {} : { physicalId }),
-      ...(stagedDefinitionHash ? { stagedDefinitionHash } : {}),
-      managedMetadataMatches,
+      ...(stagedDefinitionHash
+        ? { stagedDefinitionHash }
+        : {}),
+      managedMetadataMatches: true,
     })),
     create: vi.fn(
       async (
         _workspace: string,
         _desired: ItemDefinition,
-        _definition: LoadedManifest["notebookDefinitions"][string],
+        _definition: LoadedManifest["pipelineDefinitions"][string],
         onMutationAccepted?: (physicalId: string) => void,
         _onOperationAccepted?: (operation: {
           operationId?: string;
@@ -133,10 +141,10 @@ function notebookAdapter(
         onCreateSubmitting?: () => void,
       ) => {
         onCreateSubmitting?.();
-        onMutationAccepted?.("notebook-created");
+        onMutationAccepted?.("pipeline-created");
         return {
-          id: "notebook-created",
-          displayName: "Hello",
+          id: "pipeline-created",
+          displayName: "Pipeline",
           description: "Desired",
         };
       },
@@ -146,7 +154,7 @@ function notebookAdapter(
         _workspace: string,
         id: string,
         _desired: ItemDefinition,
-        _definition: LoadedManifest["notebookDefinitions"][string],
+        _definition: LoadedManifest["pipelineDefinitions"][string],
         onMutationAccepted?: (physicalId: string) => void,
         onUpdateCheckpoint?: (state?: {
           phase:
@@ -162,15 +170,15 @@ function notebookAdapter(
         });
         onUpdateCheckpoint?.({
           phase: "definition-staged",
-          stagedDefinitionHash: hashNotebookDefinition(
-            notebookDefinition,
+          stagedDefinitionHash: hashPipelineDefinition(
+            pipelineDefinition,
             false,
           ),
         });
         onMutationAccepted?.(id);
         return {
           id,
-          displayName: "Hello",
+          displayName: "Pipeline",
           description: "Desired",
         };
       },
@@ -179,66 +187,65 @@ function notebookAdapter(
       async (
         _workspace: string,
         _desired: ItemDefinition,
-        _definition: LoadedManifest["notebookDefinitions"][string],
-        _operation: { operationId?: string; location?: string },
+        _definition: LoadedManifest["pipelineDefinitions"][string],
+        _operation: {
+          operationId?: string;
+          location?: string;
+        },
         onMutationAccepted?: (physicalId: string) => void,
       ) => {
-        onMutationAccepted?.("notebook-created");
+        onMutationAccepted?.("pipeline-created");
         return {
-          id: "notebook-created",
-          displayName: "Hello",
+          id: "pipeline-created",
+          displayName: "Pipeline",
           description: "Desired",
         };
       },
     ),
     verify: vi.fn(async (_workspace: string, id: string) => ({
       id,
-      displayName: "Hello",
+      displayName: "Pipeline",
       description: "Desired",
     })),
   };
 }
 
-describe("guarded Notebook apply", () => {
-  it("creates and checkpoints a Notebook definition", async () => {
+describe("guarded Data Pipeline apply", () => {
+  it("creates and checkpoints a Data Pipeline", async () => {
     const plan = makePlan("create", "absent");
     const output = files();
-    const adapter = notebookAdapter();
+    const adapter = pipelineAdapter();
 
     const result = await applyApprovedPlan({
       approvedPlan: plan,
       currentPlan: plan,
       loadedManifest: loaded,
       lakehouseAdapter: lakehouseAdapter(),
-      notebookAdapter: adapter,
+      pipelineAdapter: adapter,
       allowCreate: true,
       allowUpdate: false,
       ...output,
     });
 
     expect(result.items[0]?.status).toBe("created");
-    expect(adapter.create).toHaveBeenCalledWith(
-      "workspace",
-      loaded.itemDefinitions.notebook,
-      notebookDefinition,
-      expect.any(Function),
-      expect.any(Function),
-      expect.any(Function),
-      expect.any(Function),
-    );
     expect(
-      JSON.parse(readFileSync(output.checkpointFile, "utf8")).completedItems
-        .notebook.physicalId,
-    ).toBe("notebook-created");
+      JSON.parse(
+        readFileSync(output.checkpointFile, "utf8"),
+      ).completedItems.pipeline.physicalId,
+    ).toBe("pipeline-created");
   });
 
-  it("updates a Notebook through the Notebook adapter", async () => {
-    const plan = makePlan("update", "before", "notebook-existing");
-    const output = files();
-    const adapter = notebookAdapter(
+  it("updates through the Data Pipeline adapter", async () => {
+    const plan = makePlan(
       "update",
       "before",
-      "notebook-existing",
+      "pipeline-existing",
+    );
+    const output = files();
+    const adapter = pipelineAdapter(
+      "update",
+      "before",
+      "pipeline-existing",
     );
 
     const result = await applyApprovedPlan({
@@ -246,7 +253,7 @@ describe("guarded Notebook apply", () => {
       currentPlan: plan,
       loadedManifest: loaded,
       lakehouseAdapter: lakehouseAdapter(),
-      notebookAdapter: adapter,
+      pipelineAdapter: adapter,
       allowCreate: false,
       allowUpdate: true,
       ...output,
@@ -256,35 +263,62 @@ describe("guarded Notebook apply", () => {
     expect(adapter.update).toHaveBeenCalledOnce();
   });
 
-  it("recovers a metadata-only interrupted update from checkpointed definition state", async () => {
+  it("verifies a no-op Data Pipeline", async () => {
+    const plan = makePlan(
+      "no-op",
+      "observed",
+      "pipeline-existing",
+    );
+    const output = files();
+    const adapter = pipelineAdapter(
+      "no-op",
+      "observed",
+      "pipeline-existing",
+    );
+
+    const result = await applyApprovedPlan({
+      approvedPlan: plan,
+      currentPlan: plan,
+      loadedManifest: loaded,
+      lakehouseAdapter: lakehouseAdapter(),
+      pipelineAdapter: adapter,
+      allowCreate: false,
+      allowUpdate: false,
+      ...output,
+    });
+
+    expect(result.items[0]?.status).toBe("verified");
+    expect(adapter.verify).toHaveBeenCalledOnce();
+  });
+
+  it("recovers an interrupted definition update", async () => {
     const approvedPlan = makePlan(
       "update",
       "before",
-      "notebook-existing",
+      "pipeline-existing",
     );
     const currentPlan = makePlan(
       "update",
       "metadata-updated",
-      "notebook-existing",
+      "pipeline-existing",
     );
     const output = files();
     const checkpoint = createCheckpoint(approvedPlan);
     const stagedDefinitionHash = "b".repeat(64);
-    checkpoint.pendingUpdates.notebook = {
-      logicalId: "notebook",
+    checkpoint.pendingUpdates.pipeline = {
+      logicalId: "pipeline",
       action: "update",
-      physicalId: "notebook-existing",
+      physicalId: "pipeline-existing",
       submittedAt: new Date().toISOString(),
       phase: "metadata-updated",
       stagedDefinitionHash,
     };
     writeCheckpoint(output.checkpointFile, checkpoint);
-    const adapter = notebookAdapter(
+    const adapter = pipelineAdapter(
       "update",
       "metadata-updated",
-      "notebook-existing",
+      "pipeline-existing",
       stagedDefinitionHash,
-      true,
     );
 
     const result = await applyApprovedPlan({
@@ -292,7 +326,7 @@ describe("guarded Notebook apply", () => {
       currentPlan,
       loadedManifest: loaded,
       lakehouseAdapter: lakehouseAdapter(),
-      notebookAdapter: adapter,
+      pipelineAdapter: adapter,
       allowCreate: false,
       allowUpdate: true,
       ...output,
@@ -300,51 +334,5 @@ describe("guarded Notebook apply", () => {
 
     expect(result.items[0]?.status).toBe("resumed");
     expect(adapter.update).toHaveBeenCalledOnce();
-  });
-
-  it("fails closed when interrupted Notebook staging drift is unproven", async () => {
-    const approvedPlan = makePlan(
-      "update",
-      "before",
-      "notebook-existing",
-    );
-    const currentPlan = makePlan(
-      "update",
-      "drifted",
-      "notebook-existing",
-    );
-    const output = files();
-    const checkpoint = createCheckpoint(approvedPlan);
-    checkpoint.pendingUpdates.notebook = {
-      logicalId: "notebook",
-      action: "update",
-      physicalId: "notebook-existing",
-      submittedAt: new Date().toISOString(),
-      phase: "metadata-updated",
-      stagedDefinitionHash: "c".repeat(64),
-    };
-    writeCheckpoint(output.checkpointFile, checkpoint);
-    const adapter = notebookAdapter(
-      "update",
-      "drifted",
-      "notebook-existing",
-      "d".repeat(64),
-      true,
-    );
-
-    await expect(
-      applyApprovedPlan({
-        approvedPlan,
-        currentPlan,
-        loadedManifest: loaded,
-        lakehouseAdapter: lakehouseAdapter(),
-        notebookAdapter: adapter,
-        allowCreate: false,
-        allowUpdate: true,
-        ...output,
-      }),
-    ).rejects.toThrow("cannot be reconciled");
-
-    expect(adapter.update).not.toHaveBeenCalled();
   });
 });

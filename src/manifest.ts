@@ -15,6 +15,9 @@ import { parse } from "yaml";
 import { compareCanonicalStrings, sha256, stableJson } from "./hash";
 import { loadEnvironmentDefinition } from "./fabric/definition";
 import { loadNotebookDefinition } from "./fabric/notebook-definition";
+import { loadPipelineDefinition } from "./fabric/pipeline-definition";
+import { loadSparkCustomPoolDefinition } from "./fabric/spark-custom-pool-definition";
+import { loadSparkJobDefinition } from "./fabric/spark-job-definition";
 import { loadAndValidateItemDefinition } from "./item-definition";
 import { deploymentSchema } from "./schema";
 import { substituteVariables } from "./substitution";
@@ -90,6 +93,36 @@ export function loadManifest(
         ),
       ]),
   );
+  const sparkCustomPoolDefinitions = Object.fromEntries(
+    manifest.items
+      .filter((item) => item.type === "SparkCustomPool")
+      .map((item) => [
+        item.logicalId,
+        loadSparkCustomPoolDefinition(
+          itemContent.directories[item.logicalId] ?? "",
+        ),
+      ]),
+  );
+  const sparkJobDefinitions = Object.fromEntries(
+    manifest.items
+      .filter((item) => item.type === "SparkJobDefinition")
+      .map((item) => [
+        item.logicalId,
+        loadSparkJobDefinition(
+          itemContent.directories[item.logicalId] ?? "",
+        ),
+      ]),
+  );
+  const pipelineDefinitions = Object.fromEntries(
+    manifest.items
+      .filter((item) => item.type === "DataPipeline")
+      .map((item) => [
+        item.logicalId,
+        loadPipelineDefinition(
+          itemContent.directories[item.logicalId] ?? "",
+        ),
+      ]),
+  );
   validateEnvironmentPlatformMetadata(
     manifest,
     itemDefinitions,
@@ -100,6 +133,16 @@ export function loadManifest(
     itemDefinitions,
     notebookDefinitions,
   );
+  validateSparkJobPlatformMetadata(
+    manifest,
+    itemDefinitions,
+    sparkJobDefinitions,
+  );
+  validatePipelinePlatformMetadata(
+    manifest,
+    itemDefinitions,
+    pipelineDefinitions,
+  );
   assertItemContentUnchanged(
     manifest,
     manifestDirectory,
@@ -107,7 +150,7 @@ export function loadManifest(
     itemContent.hashes,
   );
   validateUniqueDesiredIdentities(manifest, itemDefinitions);
-  // Bind the plan to the exact Environment bytes retained for apply.
+  // Bind the plan to the exact definition bytes retained for apply.
   const effectiveItemHashes = Object.fromEntries(
     manifest.items.map((item) => [
       item.logicalId,
@@ -119,6 +162,12 @@ export function loadManifest(
             environmentDefinitions[item.logicalId] ?? null,
           capturedNotebookDefinition:
             notebookDefinitions[item.logicalId] ?? null,
+          capturedSparkJobDefinition:
+            sparkJobDefinitions[item.logicalId] ?? null,
+          capturedPipelineDefinition:
+            pipelineDefinitions[item.logicalId] ?? null,
+          capturedSparkCustomPoolDefinition:
+            sparkCustomPoolDefinitions[item.logicalId] ?? null,
         }),
       ),
     ]),
@@ -135,7 +184,62 @@ export function loadManifest(
     itemDefinitions,
     environmentDefinitions,
     notebookDefinitions,
+    sparkJobDefinitions,
+    pipelineDefinitions,
+    sparkCustomPoolDefinitions,
   };
+}
+
+function validatePipelinePlatformMetadata(
+  manifest: DeploymentManifest,
+  definitions: LoadedManifest["itemDefinitions"],
+  pipelineDefinitions: LoadedManifest["pipelineDefinitions"],
+): void {
+  for (const item of manifest.items) {
+    if (item.type !== "DataPipeline") {
+      continue;
+    }
+    const desired = definitions[item.logicalId];
+    const fabricDefinition = pipelineDefinitions[item.logicalId];
+    const platformPart = fabricDefinition?.parts.find(
+      (part) => part.path === ".platform",
+    );
+    if (!desired || !platformPart) {
+      continue;
+    }
+    validatePlatformMetadata(
+      item.logicalId,
+      "DataPipeline",
+      desired,
+      platformPart.payload,
+    );
+  }
+}
+
+function validateSparkJobPlatformMetadata(
+  manifest: DeploymentManifest,
+  definitions: LoadedManifest["itemDefinitions"],
+  sparkJobDefinitions: LoadedManifest["sparkJobDefinitions"],
+): void {
+  for (const item of manifest.items) {
+    if (item.type !== "SparkJobDefinition") {
+      continue;
+    }
+    const desired = definitions[item.logicalId];
+    const fabricDefinition = sparkJobDefinitions[item.logicalId];
+    const platformPart = fabricDefinition?.parts.find(
+      (part) => part.path === ".platform",
+    );
+    if (!desired || !platformPart) {
+      continue;
+    }
+    validatePlatformMetadata(
+      item.logicalId,
+      "SparkJobDefinition",
+      desired,
+      platformPart.payload,
+    );
+  }
 }
 
 function validateNotebookPlatformMetadata(
@@ -192,7 +296,12 @@ function validateEnvironmentPlatformMetadata(
 
 function validatePlatformMetadata(
   logicalId: string,
-  type: "Environment" | "Notebook",
+  type:
+    | "Environment"
+    | "SparkCustomPool"
+    | "Notebook"
+    | "SparkJobDefinition"
+    | "DataPipeline",
   desired: LoadedManifest["itemDefinitions"][string],
   payload: string,
 ): void {
@@ -276,18 +385,29 @@ function validateUniqueDesiredIdentities(
   definitions: LoadedManifest["itemDefinitions"],
 ): void {
   const identities = new Map<
-    "Lakehouse" | "Environment" | "Notebook",
+    | "Lakehouse"
+    | "Environment"
+    | "SparkCustomPool"
+    | "Notebook"
+    | "SparkJobDefinition"
+    | "DataPipeline",
     Map<string, string>
   >([
     ["Lakehouse", new Map()],
     ["Environment", new Map()],
+    ["SparkCustomPool", new Map()],
     ["Notebook", new Map()],
+    ["SparkJobDefinition", new Map()],
+    ["DataPipeline", new Map()],
   ]);
   for (const item of manifest.items) {
     if (
       item.type !== "Lakehouse" &&
       item.type !== "Environment" &&
-      item.type !== "Notebook"
+      item.type !== "SparkCustomPool" &&
+      item.type !== "Notebook" &&
+      item.type !== "SparkJobDefinition" &&
+      item.type !== "DataPipeline"
     ) {
       continue;
     }
@@ -295,7 +415,11 @@ function validateUniqueDesiredIdentities(
     if (!definition) {
       continue;
     }
-    const identity = `${definition.folderId ?? "<root>"}\0${definition.displayName}`;
+    const displayName =
+      item.type === "SparkCustomPool"
+        ? definition.displayName.toLowerCase()
+        : definition.displayName;
+    const identity = `${definition.folderId ?? "<root>"}\0${displayName}`;
     const itemIdentities = identities.get(item.type)!;
     const existing = itemIdentities.get(identity);
     if (existing) {

@@ -24,6 +24,26 @@ import {
   hashNotebookDefinition,
   notebookIncludesPlatformPart,
 } from "./fabric/notebook-definition";
+import type {
+  PipelineAdapter,
+  PipelineOperationReference,
+} from "./fabric/pipeline";
+import {
+  hashPipelineDefinition,
+  pipelineIncludesPlatformPart,
+} from "./fabric/pipeline-definition";
+import type {
+  SparkCustomPoolAdapter,
+  SparkCustomPoolOperationReference,
+} from "./fabric/spark-custom-pool";
+import type {
+  SparkJobAdapter,
+  SparkJobOperationReference,
+} from "./fabric/spark-job";
+import {
+  hashSparkJobDefinition,
+  sparkJobIncludesPlatformPart,
+} from "./fabric/spark-job-definition";
 import { FabricOperationFailedError } from "./fabric/client";
 import {
   createCheckpoint,
@@ -58,6 +78,18 @@ export interface ApplyPlanOptions {
   notebookAdapter?: Pick<
     NotebookAdapter,
     "create" | "update" | "verify" | "resumeCreate" | "plan"
+  >;
+  sparkJobAdapter?: Pick<
+    SparkJobAdapter,
+    "create" | "update" | "verify" | "resumeCreate" | "plan"
+  >;
+  pipelineAdapter?: Pick<
+    PipelineAdapter,
+    "create" | "update" | "verify" | "resumeCreate" | "plan"
+  >;
+  sparkCustomPoolAdapter?: Pick<
+    SparkCustomPoolAdapter,
+    "create" | "update" | "verify" | "plan"
   >;
   allowCreate: boolean;
   allowUpdate: boolean;
@@ -538,7 +570,10 @@ function assertSupportedApplyItem(
   if (
     item.type !== "Lakehouse" &&
     item.type !== "Environment" &&
-    item.type !== "Notebook"
+    item.type !== "SparkCustomPool" &&
+    item.type !== "Notebook" &&
+    item.type !== "SparkJobDefinition" &&
+    item.type !== "DataPipeline"
   ) {
     throw new Error(
       `Apply is not implemented for item '${item.logicalId}' of type ${item.type}.`,
@@ -552,6 +587,27 @@ function assertSupportedApplyItem(
   if (item.type === "Notebook" && !options.notebookAdapter) {
     throw new Error(
       `Notebook adapter was not initialized for item '${item.logicalId}'.`,
+    );
+  }
+  if (
+    item.type === "SparkJobDefinition" &&
+    !options.sparkJobAdapter
+  ) {
+    throw new Error(
+      `Spark Job Definition adapter was not initialized for item '${item.logicalId}'.`,
+    );
+  }
+  if (item.type === "DataPipeline" && !options.pipelineAdapter) {
+    throw new Error(
+      `Data Pipeline adapter was not initialized for item '${item.logicalId}'.`,
+    );
+  }
+  if (
+    item.type === "SparkCustomPool" &&
+    !options.sparkCustomPoolAdapter
+  ) {
+    throw new Error(
+      `Spark custom pool adapter was not initialized for item '${item.logicalId}'.`,
     );
   }
 }
@@ -608,7 +664,10 @@ async function resumePendingOperations(
         !approvedItem ||
         (approvedItem.type !== "Lakehouse" &&
           approvedItem.type !== "Environment" &&
-          approvedItem.type !== "Notebook")
+          approvedItem.type !== "SparkCustomPool" &&
+          approvedItem.type !== "Notebook" &&
+          approvedItem.type !== "SparkJobDefinition" &&
+          approvedItem.type !== "DataPipeline")
       ) {
         throw new Error(
           `Pending operation item '${logicalId}' is missing or unsupported.`,
@@ -761,7 +820,10 @@ async function reconcilePendingCreates(
         !approvedItem ||
         (approvedItem.type !== "Lakehouse" &&
           approvedItem.type !== "Environment" &&
-          approvedItem.type !== "Notebook") ||
+          approvedItem.type !== "SparkCustomPool" &&
+          approvedItem.type !== "Notebook" &&
+          approvedItem.type !== "SparkJobDefinition" &&
+          approvedItem.type !== "DataPipeline") ||
         !currentItem
       ) {
         throw new Error(
@@ -842,7 +904,10 @@ async function reconcilePendingUpdates(
         !approvedItem ||
         (approvedItem.type !== "Lakehouse" &&
           approvedItem.type !== "Environment" &&
-          approvedItem.type !== "Notebook") ||
+          approvedItem.type !== "SparkCustomPool" &&
+          approvedItem.type !== "Notebook" &&
+          approvedItem.type !== "SparkJobDefinition" &&
+          approvedItem.type !== "DataPipeline") ||
         approvedItem.action !== "update" ||
         !currentItem
       ) {
@@ -872,6 +937,25 @@ async function reconcilePendingUpdates(
               approvedItem,
               live,
               intent,
+            )) ||
+          (approvedItem.type === "SparkJobDefinition" &&
+            hasSparkJobRecoveryProof(
+              options,
+              approvedItem,
+              live,
+              intent,
+            )) ||
+          (approvedItem.type === "DataPipeline" &&
+            hasPipelineRecoveryProof(
+              options,
+              approvedItem,
+              live,
+              intent,
+            )) ||
+          (approvedItem.type === "SparkCustomPool" &&
+            hasSparkCustomPoolRecoveryProof(
+              approvedItem,
+              live,
             )))
       ) {
         const verified = await updateDesiredItem(
@@ -1057,7 +1141,9 @@ async function applyItem(
     operation:
       | LakehouseOperationReference
       | EnvironmentOperationReference
-      | NotebookOperationReference,
+      | NotebookOperationReference
+      | SparkJobOperationReference
+      | PipelineOperationReference,
   ) => void,
   onCreateSubmitting: () => void,
   onCreateRejected: () => void,
@@ -1069,7 +1155,10 @@ async function applyItem(
   if (
     item.type !== "Lakehouse" &&
     item.type !== "Environment" &&
-    item.type !== "Notebook"
+    item.type !== "SparkCustomPool" &&
+    item.type !== "Notebook" &&
+    item.type !== "SparkJobDefinition" &&
+    item.type !== "DataPipeline"
   ) {
     throw new Error(
       `Apply is not implemented for item '${item.logicalId}' of type ${item.type}.`,
@@ -1166,7 +1255,10 @@ async function resumeCompletedItem(
   if (
     item.type !== "Lakehouse" &&
     item.type !== "Environment" &&
-    item.type !== "Notebook"
+    item.type !== "SparkCustomPool" &&
+    item.type !== "Notebook" &&
+    item.type !== "SparkJobDefinition" &&
+    item.type !== "DataPipeline"
   ) {
     throw new Error(
       `Checkpoint resume is not implemented for type ${item.type}.`,
@@ -1202,11 +1294,35 @@ async function planDesiredItem(
       requireEnvironmentDefinition(options, item.logicalId),
     );
   }
+  if (item.type === "SparkCustomPool") {
+    return requireSparkCustomPoolAdapter(
+      options,
+      item.logicalId,
+    ).plan(
+      options.approvedPlan.workspaceId,
+      desired,
+      requireSparkCustomPoolDefinition(options, item.logicalId),
+    );
+  }
   if (item.type === "Notebook") {
     return requireNotebookAdapter(options, item.logicalId).plan(
       options.approvedPlan.workspaceId,
       desired,
       requireNotebookDefinition(options, item.logicalId),
+    );
+  }
+  if (item.type === "SparkJobDefinition") {
+    return requireSparkJobAdapter(options, item.logicalId).plan(
+      options.approvedPlan.workspaceId,
+      desired,
+      requireSparkJobDefinition(options, item.logicalId),
+    );
+  }
+  if (item.type === "DataPipeline") {
+    return requirePipelineAdapter(options, item.logicalId).plan(
+      options.approvedPlan.workspaceId,
+      desired,
+      requirePipelineDefinition(options, item.logicalId),
     );
   }
   throw new Error(
@@ -1223,7 +1339,9 @@ async function createDesiredItem(
     operation:
       | LakehouseOperationReference
       | EnvironmentOperationReference
-      | NotebookOperationReference,
+      | NotebookOperationReference
+      | SparkJobOperationReference
+      | PipelineOperationReference,
   ) => void,
   onCreateSubmitting: () => void,
   onCreateRejected: () => void,
@@ -1249,11 +1367,47 @@ async function createDesiredItem(
       onCreateRejected,
     );
   }
+  if (item.type === "SparkCustomPool") {
+    return requireSparkCustomPoolAdapter(
+      options,
+      item.logicalId,
+    ).create(
+      options.approvedPlan.workspaceId,
+      desired,
+      requireSparkCustomPoolDefinition(options, item.logicalId),
+      onMutationAccepted,
+      onOperationAccepted,
+      onCreateSubmitting,
+      onCreateRejected,
+    );
+  }
   if (item.type === "Notebook") {
     return requireNotebookAdapter(options, item.logicalId).create(
       options.approvedPlan.workspaceId,
       desired,
       requireNotebookDefinition(options, item.logicalId),
+      onMutationAccepted,
+      onOperationAccepted,
+      onCreateSubmitting,
+      onCreateRejected,
+    );
+  }
+  if (item.type === "SparkJobDefinition") {
+    return requireSparkJobAdapter(options, item.logicalId).create(
+      options.approvedPlan.workspaceId,
+      desired,
+      requireSparkJobDefinition(options, item.logicalId),
+      onMutationAccepted,
+      onOperationAccepted,
+      onCreateSubmitting,
+      onCreateRejected,
+    );
+  }
+  if (item.type === "DataPipeline") {
+    return requirePipelineAdapter(options, item.logicalId).create(
+      options.approvedPlan.workspaceId,
+      desired,
+      requirePipelineDefinition(options, item.logicalId),
       onMutationAccepted,
       onOperationAccepted,
       onCreateSubmitting,
@@ -1272,7 +1426,9 @@ async function resumeCreateDesiredItem(
   operation:
     | LakehouseOperationReference
     | EnvironmentOperationReference
-    | NotebookOperationReference,
+    | NotebookOperationReference
+    | SparkJobOperationReference
+    | PipelineOperationReference,
   onMutationAccepted: (physicalId: string) => void,
 ) {
   if (item.type === "Lakehouse") {
@@ -1297,6 +1453,30 @@ async function resumeCreateDesiredItem(
       options.approvedPlan.workspaceId,
       desired,
       requireNotebookDefinition(options, item.logicalId),
+      operation,
+      onMutationAccepted,
+    );
+  }
+  if (item.type === "SparkJobDefinition") {
+    return requireSparkJobAdapter(
+      options,
+      item.logicalId,
+    ).resumeCreate(
+      options.approvedPlan.workspaceId,
+      desired,
+      requireSparkJobDefinition(options, item.logicalId),
+      operation,
+      onMutationAccepted,
+    );
+  }
+  if (item.type === "DataPipeline") {
+    return requirePipelineAdapter(
+      options,
+      item.logicalId,
+    ).resumeCreate(
+      options.approvedPlan.workspaceId,
+      desired,
+      requirePipelineDefinition(options, item.logicalId),
       operation,
       onMutationAccepted,
     );
@@ -1327,6 +1507,20 @@ async function updateDesiredItem(
       onUpdateRejected,
     );
   }
+  if (item.type === "SparkCustomPool") {
+    return requireSparkCustomPoolAdapter(
+      options,
+      item.logicalId,
+    ).update(
+      options.approvedPlan.workspaceId,
+      physicalId,
+      desired,
+      requireSparkCustomPoolDefinition(options, item.logicalId),
+      onMutationAccepted,
+      onUpdateSubmitting,
+      onUpdateRejected,
+    );
+  }
   if (item.type === "Environment") {
     return requireEnvironmentAdapter(options, item.logicalId).update(
       options.approvedPlan.workspaceId,
@@ -1344,6 +1538,28 @@ async function updateDesiredItem(
       physicalId,
       desired,
       requireNotebookDefinition(options, item.logicalId),
+      onMutationAccepted,
+      onUpdateSubmitting,
+      onUpdateRejected,
+    );
+  }
+  if (item.type === "SparkJobDefinition") {
+    return requireSparkJobAdapter(options, item.logicalId).update(
+      options.approvedPlan.workspaceId,
+      physicalId,
+      desired,
+      requireSparkJobDefinition(options, item.logicalId),
+      onMutationAccepted,
+      onUpdateSubmitting,
+      onUpdateRejected,
+    );
+  }
+  if (item.type === "DataPipeline") {
+    return requirePipelineAdapter(options, item.logicalId).update(
+      options.approvedPlan.workspaceId,
+      physicalId,
+      desired,
+      requirePipelineDefinition(options, item.logicalId),
       onMutationAccepted,
       onUpdateSubmitting,
       onUpdateRejected,
@@ -1375,12 +1591,39 @@ async function verifyDesiredItem(
       requireEnvironmentDefinition(options, item.logicalId),
     );
   }
+  if (item.type === "SparkCustomPool") {
+    return requireSparkCustomPoolAdapter(
+      options,
+      item.logicalId,
+    ).verify(
+      options.approvedPlan.workspaceId,
+      physicalId,
+      desired,
+      requireSparkCustomPoolDefinition(options, item.logicalId),
+    );
+  }
   if (item.type === "Notebook") {
     return requireNotebookAdapter(options, item.logicalId).verify(
       options.approvedPlan.workspaceId,
       physicalId,
       desired,
       requireNotebookDefinition(options, item.logicalId),
+    );
+  }
+  if (item.type === "SparkJobDefinition") {
+    return requireSparkJobAdapter(options, item.logicalId).verify(
+      options.approvedPlan.workspaceId,
+      physicalId,
+      desired,
+      requireSparkJobDefinition(options, item.logicalId),
+    );
+  }
+  if (item.type === "DataPipeline") {
+    return requirePipelineAdapter(options, item.logicalId).verify(
+      options.approvedPlan.workspaceId,
+      physicalId,
+      desired,
+      requirePipelineDefinition(options, item.logicalId),
     );
   }
   throw new Error(
@@ -1435,6 +1678,84 @@ function requireNotebookDefinition(
   if (!definition) {
     throw new Error(
       `Notebook definition snapshot is missing for '${logicalId}'.`,
+    );
+  }
+  return definition;
+}
+
+function requireSparkJobAdapter(
+  options: ApplyPlanOptions,
+  logicalId: string,
+): NonNullable<ApplyPlanOptions["sparkJobAdapter"]> {
+  if (!options.sparkJobAdapter) {
+    throw new Error(
+      `Spark Job Definition adapter was not initialized for item '${logicalId}'.`,
+    );
+  }
+  return options.sparkJobAdapter;
+}
+
+function requireSparkJobDefinition(
+  options: ApplyPlanOptions,
+  logicalId: string,
+) {
+  const definition =
+    options.loadedManifest.sparkJobDefinitions[logicalId];
+  if (!definition) {
+    throw new Error(
+      `Spark Job Definition snapshot is missing for '${logicalId}'.`,
+    );
+  }
+  return definition;
+}
+
+function requirePipelineAdapter(
+  options: ApplyPlanOptions,
+  logicalId: string,
+): NonNullable<ApplyPlanOptions["pipelineAdapter"]> {
+  if (!options.pipelineAdapter) {
+    throw new Error(
+      `Data Pipeline adapter was not initialized for item '${logicalId}'.`,
+    );
+  }
+  return options.pipelineAdapter;
+}
+
+function requirePipelineDefinition(
+  options: ApplyPlanOptions,
+  logicalId: string,
+) {
+  const definition =
+    options.loadedManifest.pipelineDefinitions[logicalId];
+  if (!definition) {
+    throw new Error(
+      `Data Pipeline definition snapshot is missing for '${logicalId}'.`,
+    );
+  }
+  return definition;
+}
+
+function requireSparkCustomPoolAdapter(
+  options: ApplyPlanOptions,
+  logicalId: string,
+): NonNullable<ApplyPlanOptions["sparkCustomPoolAdapter"]> {
+  if (!options.sparkCustomPoolAdapter) {
+    throw new Error(
+      `Spark custom pool adapter was not initialized for item '${logicalId}'.`,
+    );
+  }
+  return options.sparkCustomPoolAdapter;
+}
+
+function requireSparkCustomPoolDefinition(
+  options: ApplyPlanOptions,
+  logicalId: string,
+) {
+  const definition =
+    options.loadedManifest.sparkCustomPoolDefinitions[logicalId];
+  if (!definition) {
+    throw new Error(
+      `Spark custom pool definition snapshot is missing for '${logicalId}'.`,
     );
   }
   return definition;
@@ -1533,6 +1854,106 @@ function hasNotebookRecoveryProof(
   return (
     live.managedMetadataMatches === true &&
     live.stagedDefinitionHash === intent.stagedDefinitionHash
+  );
+}
+
+function hasSparkJobRecoveryProof(
+  options: ApplyPlanOptions,
+  item: PlannedItem,
+  live: {
+    action: PlannedAction;
+    observedStateHash: string;
+    stagedDefinitionHash?: string;
+    managedMetadataMatches?: boolean;
+  },
+  intent?: ApplyCheckpoint["pendingUpdates"][string],
+): boolean {
+  if (item.type !== "SparkJobDefinition") {
+    return false;
+  }
+  if (live.observedStateHash === item.observedStateHash) {
+    return true;
+  }
+  const desiredDefinition = requireSparkJobDefinition(
+    options,
+    item.logicalId,
+  );
+  const expectedDefinitionHash = hashSparkJobDefinition(
+    desiredDefinition,
+    sparkJobIncludesPlatformPart(desiredDefinition),
+  );
+  if (
+    live.managedMetadataMatches === true &&
+    live.stagedDefinitionHash === expectedDefinitionHash
+  ) {
+    return true;
+  }
+  if (
+    !intent ||
+    (intent.phase !== "metadata-submitting" &&
+      intent.phase !== "metadata-updated")
+  ) {
+    return false;
+  }
+  return (
+    live.managedMetadataMatches === true &&
+    live.stagedDefinitionHash === intent.stagedDefinitionHash
+  );
+}
+
+function hasPipelineRecoveryProof(
+  options: ApplyPlanOptions,
+  item: PlannedItem,
+  live: {
+    action: PlannedAction;
+    observedStateHash: string;
+    stagedDefinitionHash?: string;
+    managedMetadataMatches?: boolean;
+  },
+  intent?: ApplyCheckpoint["pendingUpdates"][string],
+): boolean {
+  if (item.type !== "DataPipeline") {
+    return false;
+  }
+  if (live.observedStateHash === item.observedStateHash) {
+    return true;
+  }
+  const desiredDefinition = requirePipelineDefinition(
+    options,
+    item.logicalId,
+  );
+  const expectedDefinitionHash = hashPipelineDefinition(
+    desiredDefinition,
+    pipelineIncludesPlatformPart(desiredDefinition),
+  );
+  if (
+    live.managedMetadataMatches === true &&
+    live.stagedDefinitionHash === expectedDefinitionHash
+  ) {
+    return true;
+  }
+  if (
+    !intent ||
+    (intent.phase !== "metadata-submitting" &&
+      intent.phase !== "metadata-updated")
+  ) {
+    return false;
+  }
+  return (
+    live.managedMetadataMatches === true &&
+    live.stagedDefinitionHash === intent.stagedDefinitionHash
+  );
+}
+
+function hasSparkCustomPoolRecoveryProof(
+  item: PlannedItem,
+  live: {
+    observedStateHash: string;
+  },
+): boolean {
+  return (
+    item.type === "SparkCustomPool" &&
+    live.observedStateHash === item.observedStateHash
   );
 }
 

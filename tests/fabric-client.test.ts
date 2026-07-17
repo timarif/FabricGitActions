@@ -59,6 +59,48 @@ describe("Fabric API client", () => {
     expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 
+  it("signals dispatch only after token acquisition succeeds", async () => {
+    const onDispatch = vi.fn();
+    const fetchImpl = vi.fn();
+    const client = new FabricClient({
+      endpoint: "https://api.fabric.microsoft.com",
+      scope: "scope",
+      tokenProvider: {
+        getToken: async () => {
+          throw new Error("token unavailable");
+        },
+      },
+      fetchImpl,
+    });
+
+    await expect(
+      client.request("POST", "/v1/test", { onDispatch }),
+    ).rejects.toThrow("token unavailable");
+    expect(onDispatch).not.toHaveBeenCalled();
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it("signals dispatch immediately before sending the request", async () => {
+    const lifecycle: string[] = [];
+    const client = new FabricClient({
+      endpoint: "https://api.fabric.microsoft.com",
+      scope: "scope",
+      tokenProvider,
+      fetchImpl: vi.fn(async () => {
+        lifecycle.push("FETCH");
+        return new Response(JSON.stringify({ ok: true }), {
+          status: 200,
+        });
+      }),
+    });
+
+    await client.request("POST", "/v1/test", {
+      onDispatch: () => lifecycle.push("DISPATCH"),
+    });
+
+    expect(lifecycle).toEqual(["DISPATCH", "FETCH"]);
+  });
+
   it("follows same-origin pagination", async () => {
     const fetchImpl = vi
       .fn()

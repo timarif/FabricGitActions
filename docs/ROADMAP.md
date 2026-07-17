@@ -32,9 +32,11 @@
 
 - [x] Environment definition and publish
 - [x] Notebook definition deployment
-- [ ] Spark Job Definition deployment
+- [ ] Lakehouse table DDL deployment
+- [x] Workspace custom Spark pool deployment
+- [x] Spark Job Definition deployment
 - [ ] Logical reference resolution
-- [ ] Data Pipeline definition deployment
+- [x] Data Pipeline definition deployment
 
 ## Phase 4: production hardening
 

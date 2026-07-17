@@ -11,25 +11,24 @@ import {
 } from "./client";
 import type { FabricDefinition } from "./definition";
 import {
-  hashNotebookDefinition,
-  notebookDefinitionFormat,
-  notebookIncludesPlatformPart,
-} from "./notebook-definition";
+  hashPipelineDefinition,
+  pipelineIncludesPlatformPart,
+} from "./pipeline-definition";
 
-export interface Notebook {
+export interface DataPipeline {
   id: string;
   workspaceId?: string;
-  type?: "Notebook";
+  type?: "DataPipeline";
   displayName: string;
   description?: string;
   folderId?: string;
 }
 
-export interface NotebookDefinitionResponse {
+export interface PipelineDefinitionResponse {
   definition: FabricDefinition;
 }
 
-export interface NotebookPlanResult {
+export interface PipelinePlanResult {
   action: Extract<
     PlannedAction,
     "create" | "update" | "no-op" | "blocked"
@@ -41,24 +40,27 @@ export interface NotebookPlanResult {
   managedMetadataMatches?: boolean;
 }
 
-export interface NotebookOperationReference {
+export interface PipelineOperationReference {
   operationId?: string;
   location?: string;
 }
 
-export class NotebookAdapter {
+export class PipelineAdapter {
   constructor(private readonly client: FabricClient) {}
 
   async plan(
     workspaceId: string,
     desired: ItemDefinition,
     desiredDefinition: FabricDefinition,
-  ): Promise<NotebookPlanResult> {
-    const existing = await this.findByDisplayName(workspaceId, desired);
+  ): Promise<PipelinePlanResult> {
+    const existing = await this.findByDisplayName(
+      workspaceId,
+      desired,
+    );
     if (!existing) {
       return {
         action: "create",
-        reason: `Notebook '${desired.displayName}' does not exist.`,
+        reason: `Data Pipeline '${desired.displayName}' does not exist.`,
         observedStateHash: sha256(stableJson(null)),
       };
     }
@@ -70,16 +72,16 @@ export class NotebookAdapter {
       desiredDefinition,
     );
     const includePlatform =
-      notebookIncludesPlatformPart(desiredDefinition);
-    const desiredDefinitionHash = hashNotebookDefinition(
+      pipelineIncludesPlatformPart(desiredDefinition);
+    const desiredDefinitionHash = hashPipelineDefinition(
       desiredDefinition,
       includePlatform,
     );
-    const currentDefinitionHash = hashNotebookDefinition(
+    const currentDefinitionHash = hashPipelineDefinition(
       currentDefinition,
       includePlatform,
     );
-    const observedStateHash = hashObservedNotebook(
+    const observedStateHash = hashObservedPipeline(
       current,
       currentDefinitionHash,
     );
@@ -98,7 +100,7 @@ export class NotebookAdapter {
     if (!folderMatches) {
       return {
         action: "blocked",
-        reason: `Notebook '${desired.displayName}' is in a different folder; folder moves are not supported.`,
+        reason: `Data Pipeline '${desired.displayName}' is in a different folder; folder moves are not supported.`,
         physicalId: current.id,
         observedStateHash,
         stagedDefinitionHash: currentDefinitionHash,
@@ -112,8 +114,8 @@ export class NotebookAdapter {
       return {
         action: "update",
         reason: !descriptionMatches
-          ? `Notebook '${desired.displayName}' metadata differs.`
-          : `Notebook '${desired.displayName}' definition differs.`,
+          ? `Data Pipeline '${desired.displayName}' metadata differs.`
+          : `Data Pipeline '${desired.displayName}' definition differs.`,
         physicalId: current.id,
         observedStateHash,
         stagedDefinitionHash: currentDefinitionHash,
@@ -122,7 +124,7 @@ export class NotebookAdapter {
     }
     return {
       action: "no-op",
-      reason: `Notebook '${desired.displayName}' matches the desired definition.`,
+      reason: `Data Pipeline '${desired.displayName}' matches the desired definition.`,
       physicalId: current.id,
       observedStateHash,
       stagedDefinitionHash: currentDefinitionHash,
@@ -133,45 +135,48 @@ export class NotebookAdapter {
   async list(
     workspaceId: string,
     folderId?: string,
-  ): Promise<Notebook[]> {
+  ): Promise<DataPipeline[]> {
     const url = new URL(
-      `/v1/workspaces/${encodeURIComponent(workspaceId)}/notebooks`,
+      `/v1/workspaces/${encodeURIComponent(
+        workspaceId,
+      )}/dataPipelines`,
       "https://placeholder.invalid",
     );
     url.searchParams.set("recursive", "false");
     if (folderId) {
       url.searchParams.set("rootFolderId", folderId);
     }
-    return this.client.listAll<Notebook>(`${url.pathname}${url.search}`);
+    return this.client.listAll<DataPipeline>(
+      `${url.pathname}${url.search}`,
+    );
   }
 
   async get(
     workspaceId: string,
-    notebookId: string,
-  ): Promise<Notebook> {
-    const response = await this.client.request<Notebook>(
+    pipelineId: string,
+  ): Promise<DataPipeline> {
+    const response = await this.client.request<DataPipeline>(
       "GET",
-      notebookPath(workspaceId, notebookId),
+      pipelinePath(workspaceId, pipelineId),
     );
     if (!response.body) {
-      throw new Error("Fabric Get Notebook response is empty.");
+      throw new Error("Fabric Get Data Pipeline response is empty.");
     }
     return response.body;
   }
 
   async getDefinition(
     workspaceId: string,
-    notebookId: string,
-    desiredDefinition: FabricDefinition,
+    pipelineId: string,
+    _desiredDefinition: FabricDefinition,
   ): Promise<FabricDefinition> {
-    const format = notebookDefinitionFormat(desiredDefinition);
     const response =
-      await this.client.request<NotebookDefinitionResponse>(
+      await this.client.request<PipelineDefinitionResponse>(
         "POST",
-        `${notebookPath(
+        `${pipelinePath(
           workspaceId,
-          notebookId,
-        )}/getDefinition?format=${encodeURIComponent(format)}`,
+          pipelineId,
+        )}/getDefinition`,
         {
           retryable: true,
           acceptedStatuses: [200, 202],
@@ -179,19 +184,23 @@ export class NotebookAdapter {
       );
     const result =
       response.status === 202
-        ? await this.client.waitForOperation<NotebookDefinitionResponse>(
+        ? await this.client.waitForOperation<PipelineDefinitionResponse>(
             response as FabricResponse<unknown>,
           )
         : response.body;
-    if (!result?.definition || !Array.isArray(result.definition.parts)) {
+    if (
+      !result?.definition ||
+      !Array.isArray(result.definition.parts)
+    ) {
       throw new Error(
-        "Fabric Get Notebook Definition response is invalid.",
+        "Fabric Get Data Pipeline Definition response is invalid.",
       );
     }
-    return {
-      ...result.definition,
-      format: result.definition.format ?? format,
-    };
+    hashPipelineDefinition(
+      result.definition,
+      pipelineIncludesPlatformPart(result.definition),
+    );
+    return result.definition;
   }
 
   async create(
@@ -199,10 +208,12 @@ export class NotebookAdapter {
     desired: ItemDefinition,
     definition: FabricDefinition,
     onMutationAccepted?: (physicalId: string) => void,
-    onOperationAccepted?: (operation: NotebookOperationReference) => void,
+    onOperationAccepted?: (
+      operation: PipelineOperationReference,
+    ) => void,
     onCreateSubmitting?: () => void,
     onCreateRejected?: () => void,
-  ): Promise<Notebook> {
+  ): Promise<DataPipeline> {
     const body: Record<string, unknown> = {
       displayName: desired.displayName,
       definition,
@@ -213,11 +224,13 @@ export class NotebookAdapter {
     if (desired.folderId !== undefined) {
       body.folderId = desired.folderId;
     }
-    let response: FabricResponse<Notebook>;
+    let response: FabricResponse<DataPipeline>;
     try {
-      response = await this.client.request<Notebook>(
+      response = await this.client.request<DataPipeline>(
         "POST",
-        `/v1/workspaces/${encodeURIComponent(workspaceId)}/notebooks`,
+        `/v1/workspaces/${encodeURIComponent(
+          workspaceId,
+        )}/dataPipelines`,
         {
           body,
           retryable: false,
@@ -233,11 +246,14 @@ export class NotebookAdapter {
     }
     const created =
       response.status === 202
-        ? await this.waitForCreateOperation(response, onOperationAccepted)
+        ? await this.waitForCreateOperation(
+            response,
+            onOperationAccepted,
+          )
         : response.body;
     if (!created?.id) {
       throw new Error(
-        "Fabric Create Notebook response is missing the item ID.",
+        "Fabric Create Data Pipeline response is missing the item ID.",
       );
     }
     const verified = await this.verify(
@@ -254,9 +270,9 @@ export class NotebookAdapter {
     workspaceId: string,
     desired: ItemDefinition,
     definition: FabricDefinition,
-    operation: NotebookOperationReference,
+    operation: PipelineOperationReference,
     onMutationAccepted?: (physicalId: string) => void,
-  ): Promise<Notebook> {
+  ): Promise<DataPipeline> {
     const headers = new Headers();
     if (operation.operationId) {
       headers.set("x-ms-operation-id", operation.operationId);
@@ -264,14 +280,15 @@ export class NotebookAdapter {
     if (operation.location) {
       headers.set("location", operation.location);
     }
-    const created = await this.client.waitForOperation<Notebook>({
-      status: 202,
-      headers,
-      body: undefined,
-    });
+    const created =
+      await this.client.waitForOperation<DataPipeline>({
+        status: 202,
+        headers,
+        body: undefined,
+      });
     if (!created?.id) {
       throw new Error(
-        "Fabric Create Notebook operation result is missing the item ID.",
+        "Fabric Create Data Pipeline operation result is missing the item ID.",
       );
     }
     const verified = await this.verify(
@@ -286,7 +303,7 @@ export class NotebookAdapter {
 
   async update(
     workspaceId: string,
-    notebookId: string,
+    pipelineId: string,
     desired: ItemDefinition,
     definition: FabricDefinition,
     onMutationAccepted?: (physicalId: string) => void,
@@ -294,15 +311,15 @@ export class NotebookAdapter {
       state?: DefinitionItemUpdateRecoveryState,
     ) => void,
     onUpdateRejected?: () => void,
-  ): Promise<Notebook> {
+  ): Promise<DataPipeline> {
     const managesPlatform =
-      notebookIncludesPlatformPart(definition);
+      pipelineIncludesPlatformPart(definition);
     const recoveryBaseline = onUpdateCheckpoint
       ? {
-          stagedDefinitionHash: hashNotebookDefinition(
+          stagedDefinitionHash: hashPipelineDefinition(
             await this.getDefinition(
               workspaceId,
-              notebookId,
+              pipelineId,
               definition,
             ),
             managesPlatform,
@@ -326,9 +343,9 @@ export class NotebookAdapter {
         metadataBody.description = desired.description;
       }
       try {
-        await this.client.request<Notebook>(
+        await this.client.request<DataPipeline>(
           "PATCH",
-          notebookPath(workspaceId, notebookId),
+          pipelinePath(workspaceId, pipelineId),
           {
             body: metadataBody,
             retryable: false,
@@ -351,20 +368,20 @@ export class NotebookAdapter {
 
     await this.stageDefinition(
       workspaceId,
-      notebookId,
+      pipelineId,
       definition,
       managesPlatform ? onUpdateRejected : undefined,
     );
     onUpdateCheckpoint?.({
       phase: "definition-staged",
-      stagedDefinitionHash: hashNotebookDefinition(
+      stagedDefinitionHash: hashPipelineDefinition(
         definition,
         managesPlatform,
       ),
     });
     const verified = await this.verify(
       workspaceId,
-      notebookId,
+      pipelineId,
       desired,
       definition,
     );
@@ -374,14 +391,14 @@ export class NotebookAdapter {
 
   async verify(
     workspaceId: string,
-    notebookId: string,
+    pipelineId: string,
     desired: ItemDefinition,
     desiredDefinition: FabricDefinition,
-  ): Promise<Notebook> {
-    const actual = await this.get(workspaceId, notebookId);
+  ): Promise<DataPipeline> {
+    const actual = await this.get(workspaceId, pipelineId);
     if (actual.displayName !== desired.displayName) {
       throw new Error(
-        `Notebook verification failed: expected displayName '${desired.displayName}', received '${actual.displayName}'.`,
+        `Data Pipeline verification failed: expected displayName '${desired.displayName}', received '${actual.displayName}'.`,
       );
     }
     if (
@@ -390,7 +407,7 @@ export class NotebookAdapter {
         normalizeDescription(desired.description)
     ) {
       throw new Error(
-        `Notebook '${desired.displayName}' verification failed for description.`,
+        `Data Pipeline '${desired.displayName}' verification failed for description.`,
       );
     }
     if (
@@ -398,22 +415,22 @@ export class NotebookAdapter {
       normalizeFolderId(desired.folderId)
     ) {
       throw new Error(
-        `Notebook '${desired.displayName}' verification failed for folder placement.`,
+        `Data Pipeline '${desired.displayName}' verification failed for folder placement.`,
       );
     }
     const actualDefinition = await this.getDefinition(
       workspaceId,
-      notebookId,
+      pipelineId,
       desiredDefinition,
     );
     const includePlatform =
-      notebookIncludesPlatformPart(desiredDefinition);
+      pipelineIncludesPlatformPart(desiredDefinition);
     if (
-      hashNotebookDefinition(actualDefinition, includePlatform) !==
-      hashNotebookDefinition(desiredDefinition, includePlatform)
+      hashPipelineDefinition(actualDefinition, includePlatform) !==
+      hashPipelineDefinition(desiredDefinition, includePlatform)
     ) {
       throw new Error(
-        `Notebook '${desired.displayName}' verification failed for definition content.`,
+        `Data Pipeline '${desired.displayName}' verification failed for definition content.`,
       );
     }
     return actual;
@@ -421,7 +438,7 @@ export class NotebookAdapter {
 
   private async stageDefinition(
     workspaceId: string,
-    notebookId: string,
+    pipelineId: string,
     definition: FabricDefinition,
     onInitialRequestRejected?: () => void,
   ): Promise<void> {
@@ -429,11 +446,13 @@ export class NotebookAdapter {
     try {
       response = await this.client.request<unknown>(
         "POST",
-        `${notebookPath(
+        `${pipelinePath(
           workspaceId,
-          notebookId,
+          pipelineId,
         )}/updateDefinition?updateMetadata=${
-          notebookIncludesPlatformPart(definition) ? "true" : "false"
+          pipelineIncludesPlatformPart(definition)
+            ? "true"
+            : "false"
         }`,
         {
           body: { definition },
@@ -455,30 +474,38 @@ export class NotebookAdapter {
   private async findByDisplayName(
     workspaceId: string,
     desired: ItemDefinition,
-  ): Promise<Notebook | undefined> {
-    const matches = (await this.list(workspaceId, desired.folderId)).filter(
-      (notebook) => notebook.displayName === desired.displayName,
+  ): Promise<DataPipeline | undefined> {
+    const matches = (
+      await this.list(workspaceId, desired.folderId)
+    ).filter(
+      (pipeline) =>
+        pipeline.displayName === desired.displayName,
     );
     if (matches.length > 1) {
       throw new Error(
-        `Multiple Notebooks named '${desired.displayName}' were found. Use an unambiguous folder scope.`,
+        `Multiple Data Pipelines named '${desired.displayName}' were found. Use an unambiguous folder scope.`,
       );
     }
     return matches[0];
   }
 
   private async waitForCreateOperation(
-    response: FabricResponse<Notebook>,
+    response: FabricResponse<DataPipeline>,
     onOperationAccepted:
-      | ((operation: NotebookOperationReference) => void)
+      | ((operation: PipelineOperationReference) => void)
       | undefined,
-  ): Promise<Notebook> {
+  ): Promise<DataPipeline> {
     onOperationAccepted?.(readOperationReference(response));
-    return this.client.waitForOperation<Notebook>(
+    return this.client.waitForOperation<DataPipeline>(
       response as FabricResponse<unknown>,
     );
   }
 }
+
+export { PipelineAdapter as DataPipelineAdapter };
+export type DataPipelinePlanResult = PipelinePlanResult;
+export type DataPipelineOperationReference =
+  PipelineOperationReference;
 
 function isDefinitiveRejection(error: unknown): boolean {
   return (
@@ -492,12 +519,14 @@ function isDefinitiveRejection(error: unknown): boolean {
 
 function readOperationReference(
   response: FabricResponse<unknown>,
-): NotebookOperationReference {
-  const operationId = response.headers.get("x-ms-operation-id") || undefined;
-  const location = response.headers.get("location") || undefined;
+): PipelineOperationReference {
+  const operationId =
+    response.headers.get("x-ms-operation-id") || undefined;
+  const location =
+    response.headers.get("location") || undefined;
   if (!operationId && !location) {
     throw new Error(
-      "Fabric Create Notebook response is missing Location and x-ms-operation-id.",
+      "Fabric Create Data Pipeline response is missing Location and x-ms-operation-id.",
     );
   }
   return {
@@ -506,22 +535,25 @@ function readOperationReference(
   };
 }
 
-function notebookPath(workspaceId: string, notebookId: string): string {
+function pipelinePath(
+  workspaceId: string,
+  pipelineId: string,
+): string {
   return `/v1/workspaces/${encodeURIComponent(
     workspaceId,
-  )}/notebooks/${encodeURIComponent(notebookId)}`;
+  )}/dataPipelines/${encodeURIComponent(pipelineId)}`;
 }
 
-function hashObservedNotebook(
-  notebook: Notebook,
+function hashObservedPipeline(
+  pipeline: DataPipeline,
   definitionHash: string,
 ): string {
   return sha256(
     stableJson({
-      id: notebook.id,
-      displayName: notebook.displayName,
-      description: normalizeDescription(notebook.description),
-      folderId: notebook.folderId ?? null,
+      id: pipeline.id,
+      displayName: pipeline.displayName,
+      description: normalizeDescription(pipeline.description),
+      folderId: pipeline.folderId ?? null,
       definitionHash,
     }),
   );
