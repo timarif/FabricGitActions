@@ -1,6 +1,7 @@
 import {
   mkdirSync,
   mkdtempSync,
+  rmSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -21,12 +22,18 @@ interface TableEntry {
   dependsOn?: string[];
 }
 
+interface SchemaEntry {
+  logicalId: string;
+  name: string;
+}
+
 function createDefinition(
   tables: TableEntry[],
   sqlFiles: Record<string, string>,
   options: {
     defaultSchema?: string;
     adoptExisting?: boolean;
+    schemas?: SchemaEntry[];
     variables?: Record<string, string>;
     extraManifest?: Record<string, unknown>;
   } = {},
@@ -47,6 +54,9 @@ function createDefinition(
       ...(options.adoptExisting === undefined
         ? {}
         : { adoptExisting: options.adoptExisting }),
+      ...(options.schemas === undefined
+        ? {}
+        : { schemas: options.schemas }),
       tables,
       ...(options.extraManifest ?? {}),
     }),
@@ -79,6 +89,126 @@ TBLPROPERTIES (
 `;
 
 describe("LakehouseTables source definitions", () => {
+  it("loads deterministic schema declarations before tables", () => {
+    const input = createDefinition(
+      [
+        {
+          logicalId: "orders",
+          file: "tables/orders.sql",
+        },
+      ],
+      {
+        "orders.sql":
+          "CREATE TABLE IF NOT EXISTS sales.orders (id INT) USING DELTA",
+      },
+      {
+        schemas: [
+          { logicalId: "zetaSchema", name: "zeta" },
+          { logicalId: "salesSchema", name: "sales" },
+        ],
+      },
+    );
+
+    const definition = loadLakehouseTablesDefinition(
+      input.itemDirectory,
+    );
+
+    expect(definition.schemas).toEqual([
+      {
+        logicalId: "salesSchema",
+        name: "sales",
+        desiredHash: expect.stringMatching(/^[a-f0-9]{64}$/),
+      },
+      {
+        logicalId: "zetaSchema",
+        name: "zeta",
+        desiredHash: expect.stringMatching(/^[a-f0-9]{64}$/),
+      },
+    ]);
+  });
+
+  it("supports schema-only bundles and preserves tables-only hashes", () => {
+    const schemaOnly = createDefinition([], {}, {
+      schemas: [{ logicalId: "salesSchema", name: "sales" }],
+    });
+    rmSync(
+      path.join(schemaOnly.itemDirectory, "definition", "tables"),
+      { recursive: true },
+    );
+    const schemaDefinition = loadLakehouseTablesDefinition(
+      schemaOnly.itemDirectory,
+    );
+    expect(schemaDefinition.tables).toEqual([]);
+    expect(schemaDefinition.schemas).toHaveLength(1);
+
+    const tablesOnly = createDefinition(
+      [{ logicalId: "orders", file: "tables/orders.sql" }],
+      {
+        "orders.sql":
+          "CREATE TABLE IF NOT EXISTS sales.orders (id INT) USING DELTA",
+      },
+    );
+    const explicitEmptySchemas = createDefinition(
+      [{ logicalId: "orders", file: "tables/orders.sql" }],
+      {
+        "orders.sql":
+          "CREATE TABLE IF NOT EXISTS sales.orders (id INT) USING DELTA",
+      },
+      { schemas: [] },
+    );
+    const first = loadLakehouseTablesDefinition(
+      tablesOnly.itemDirectory,
+    );
+    const second = loadLakehouseTablesDefinition(
+      explicitEmptySchemas.itemDirectory,
+    );
+    expect(first.schemas).toBeUndefined();
+    expect(first.desiredHash).toBe(second.desiredHash);
+    expect(first.sourceHash).toBe(second.sourceHash);
+  });
+
+  it("requires at least one schema or table", () => {
+    const input = createDefinition([], {}, { schemas: [] });
+    expect(() =>
+      loadLakehouseTablesDefinition(input.itemDirectory),
+    ).toThrow("at least one schema or table");
+  });
+
+  it("rejects reserved, duplicate, and colliding schema declarations", () => {
+    for (const name of ["dbo", "sys", "information_schema", "default"]) {
+      const input = createDefinition([], {}, {
+        schemas: [{ logicalId: "managedSchema", name }],
+      });
+      expect(() =>
+        loadLakehouseTablesDefinition(input.itemDirectory),
+      ).toThrow("reserved Lakehouse schema");
+    }
+
+    const duplicateName = createDefinition([], {}, {
+      schemas: [
+        { logicalId: "firstSchema", name: "sales" },
+        { logicalId: "secondSchema", name: "sales" },
+      ],
+    });
+    expect(() =>
+      loadLakehouseTablesDefinition(duplicateName.itemDirectory),
+    ).toThrow("Duplicate managed Lakehouse schema name");
+
+    const logicalCollision = createDefinition(
+      [{ logicalId: "salesSchema", file: "tables/orders.sql" }],
+      {
+        "orders.sql":
+          "CREATE TABLE IF NOT EXISTS sales.orders (id INT) USING DELTA",
+      },
+      {
+        schemas: [{ logicalId: "salesSchema", name: "sales" }],
+      },
+    );
+    expect(() =>
+      loadLakehouseTablesDefinition(logicalCollision.itemDirectory),
+    ).toThrow("Duplicate Lakehouse DDL logicalId");
+  });
+
   it("loads, canonicalizes, hashes, and dependency-sorts table definitions", () => {
     const input = createDefinition(
       [

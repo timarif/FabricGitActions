@@ -15,7 +15,7 @@
       "maxLength": 256
     },
     "desiredState": {
-      "const": "present"
+      "enum": ["present", "absent"]
     },
     "folderId": {
       "type": "string",

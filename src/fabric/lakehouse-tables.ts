@@ -4,6 +4,7 @@ import {
   validateSparkSqlLiteral,
   type CanonicalLakehouseTable,
   type CanonicalLakehouseTableColumn,
+  type LoadedLakehouseSchema,
   type LoadedLakehouseTable,
   type LoadedLakehouseTablesDefinition,
 } from "./lakehouse-tables-definition";
@@ -116,6 +117,20 @@ export interface LakehouseTableObservation {
   tableFeatures?: string[];
 }
 
+export interface LakehouseSchemaObservation {
+  exists: boolean;
+}
+
+export interface LakehouseSchemaVerification {
+  logicalId: string;
+  identifier: string;
+  desiredHash: string;
+  observedHash: string;
+  observation: LakehouseSchemaObservation;
+  matches: boolean;
+  differences: string[];
+}
+
 export interface LakehouseTableVerification {
   logicalId: string;
   identifier: string;
@@ -134,6 +149,7 @@ export interface LakehouseTableVerification {
 export interface LakehouseTablesVerificationResult {
   matches: boolean;
   observedStateHash: string;
+  schemas?: LakehouseSchemaVerification[];
   tables: LakehouseTableVerification[];
 }
 
@@ -150,13 +166,32 @@ export interface LakehouseTablePlanEntry
   adoptionOperation?: LakehouseTableAdoptionOperation;
 }
 
+export interface LakehouseSchemaPlanEntry
+  extends LakehouseSchemaVerification {
+  action: "create" | "no-op";
+  reason: string;
+}
+
 export interface LakehouseTablesPlanResult {
   action: LakehouseTablePlanAction;
   reason: string;
   physicalId: string;
   observedStateHash: string;
   desiredHash: string;
+  schemas?: LakehouseSchemaPlanEntry[];
   tables: LakehouseTablePlanEntry[];
+}
+
+export interface LakehouseSchemaCreateOperation {
+  kind: "create-schema";
+  operationId: string;
+  operationHash: string;
+  order: number;
+  logicalId: string;
+  desiredHash: string;
+  identifier: string;
+  schema: string;
+  ddl: string;
 }
 
 export interface LakehouseTableCreateOperation {
@@ -183,8 +218,13 @@ export interface LakehouseTableAdoptionOperation {
 }
 
 export type LakehouseTableOperation =
+  | LakehouseSchemaCreateOperation
   | LakehouseTableCreateOperation
   | LakehouseTableAdoptionOperation;
+
+export type LakehouseDdlCreateOperation =
+  | LakehouseSchemaCreateOperation
+  | LakehouseTableCreateOperation;
 
 export interface LakehouseSessionSubmittingContext {
   workspaceId: string;
@@ -211,7 +251,7 @@ export interface LakehouseStatementSubmittingContext {
   statementAttemptName: string;
   purpose: LakehouseStatementPurpose;
   logicalId: string;
-  operation?: LakehouseTableCreateOperation;
+  operation?: LakehouseDdlCreateOperation;
   codeHash: string;
 }
 
@@ -244,29 +284,34 @@ export interface LakehouseTableExecutionHooks {
   ) => void | Promise<void>;
   onOperationSubmitting?: (
     context: LakehouseStatementSubmittingContext & {
-      operation: LakehouseTableCreateOperation;
+      operation: LakehouseDdlCreateOperation;
     },
   ) => void | Promise<void>;
   onOperationAccepted?: (
     context: LakehouseStatementAcceptedContext & {
-      operation: LakehouseTableCreateOperation;
+      operation: LakehouseDdlCreateOperation;
     },
   ) => void | Promise<void>;
   onOperationVerified?: (
     context: LakehouseStatementAcceptedContext & {
-      operation: LakehouseTableCreateOperation;
-      verification: LakehouseTableVerification;
+      operation: LakehouseDdlCreateOperation;
+      verification:
+        | LakehouseSchemaVerification
+        | LakehouseTableVerification;
     },
   ) => void | Promise<void>;
 }
 
 export interface LakehouseTableApplyOperationResult {
+  resourceKind: "schema" | "table";
   operationId: string;
   operationHash: string;
   logicalId: string;
   identifier: string;
   statementId: number;
-  verification: LakehouseTableVerification;
+  verification:
+    | LakehouseSchemaVerification
+    | LakehouseTableVerification;
 }
 
 export interface LakehouseTablesApplyResult {
@@ -274,6 +319,7 @@ export interface LakehouseTablesApplyResult {
   desiredHash: string;
   observedStateHash: string;
   operations: LakehouseTableApplyOperationResult[];
+  schemas?: LakehouseSchemaVerification[];
   tables: LakehouseTableVerification[];
 }
 
@@ -320,7 +366,7 @@ export interface AmbiguousStatementRecoveryRequest {
   statementId?: number;
   statementAttemptName?: string;
   codeHash?: string;
-  operation?: LakehouseTableCreateOperation;
+  operation?: LakehouseDdlCreateOperation;
 }
 
 export type AmbiguousStatementRecoveryResult =
@@ -345,7 +391,9 @@ export type AmbiguousStatementRecoveryResult =
       outcome: "completed";
       session: DiscoveredLakehouseLivySession;
       statementId: number;
-      verification?: LakehouseTableVerification;
+      verification?:
+        | LakehouseSchemaVerification
+        | LakehouseTableVerification;
     };
 
 interface LivySession {
@@ -397,7 +445,7 @@ interface ActiveSession {
 interface StatementDispatch {
   purpose: LakehouseStatementPurpose;
   logicalId: string;
-  operation?: LakehouseTableCreateOperation;
+  operation?: LakehouseDdlCreateOperation;
 }
 
 export class LakehouseTableAdoptionRequiredError extends Error {
@@ -470,21 +518,43 @@ export class LakehouseTablesAdapter {
     const loadedByLogicalId = new Map(
       definition.tables.map((table) => [table.logicalId, table]),
     );
+    const managedSchemaNames = new Set(
+      (definition.schemas ?? []).map((schema) => schema.name),
+    );
+    const schemas: LakehouseSchemaPlanEntry[] =
+      (verification.schemas ?? []).map((schema) =>
+        schema.observation.exists
+          ? {
+              ...schema,
+              action: "no-op",
+              reason: `Schema '${schema.identifier}' already exists and is left unchanged.`,
+            }
+          : {
+              ...schema,
+              action: "create",
+              reason: `Schema '${schema.identifier}' does not exist.`,
+            },
+      );
     const tables: LakehouseTablePlanEntry[] =
       verification.tables.map((table) => {
         const loaded = loadedByLogicalId.get(table.logicalId)!;
-        if (!table.observation.schemaExists) {
+        if (
+          !table.observation.schemaExists &&
+          !managedSchemaNames.has(loaded.table.schema)
+        ) {
           return {
             ...table,
             action: "blocked",
-            reason: `Schema '${loaded.table.schema}' does not exist; Phase 3 does not create schemas.`,
+            reason: `Schema '${loaded.table.schema}' does not exist and is not declared in this LakehouseTables bundle.`,
           };
         }
         if (!table.observation.exists) {
           return {
             ...table,
             action: "create",
-            reason: `Table '${table.identifier}' does not exist.`,
+            reason: table.observation.schemaExists
+              ? `Table '${table.identifier}' does not exist.`
+              : `Table '${table.identifier}' does not exist and will be created after managed schema '${loaded.table.schema}'.`,
           };
         }
         if (!table.structureMatches) {
@@ -528,7 +598,10 @@ export class LakehouseTablesAdapter {
 
     const blocked = tables.filter((table) => table.action === "blocked");
     const adoptions = tables.filter((table) => table.action === "adopt");
-    const creates = tables.filter((table) => table.action === "create");
+    const creates = [
+      ...schemas.filter((schema) => schema.action === "create"),
+      ...tables.filter((table) => table.action === "create"),
+    ];
     const action: LakehouseTablePlanAction =
       blocked.length > 0
         ? "blocked"
@@ -543,8 +616,8 @@ export class LakehouseTablesAdapter {
         : action === "adopt"
           ? `${adoptions.length} Lakehouse table(s) require separately approved ownership adoption.`
           : action === "create"
-            ? `${creates.length} Lakehouse table(s) require creation.`
-            : "All Lakehouse tables match the desired owned managed Delta definitions.";
+            ? `${creates.length} Lakehouse schema or table resource(s) require creation.`
+            : "All managed Lakehouse schemas exist and all tables match the desired owned managed Delta definitions.";
 
     return {
       action,
@@ -552,6 +625,7 @@ export class LakehouseTablesAdapter {
       physicalId: lakehouseId,
       observedStateHash: verification.observedStateHash,
       desiredHash: definition.desiredHash,
+      schemas,
       tables,
     };
   }
@@ -564,15 +638,32 @@ export class LakehouseTablesAdapter {
     hooks: LakehouseTableExecutionHooks = {},
   ): Promise<LakehouseTablesApplyResult> {
     validateExecutionContext(execution);
-    const createOperations = buildLakehouseTableCreateOperations(
+    const createOperations = buildLakehouseDdlCreateOperations(
       definition,
       execution,
     );
-    const createByLogicalId = new Map(
-      createOperations.map((operation) => [
+    const schemaOperations = createOperations.filter(
+      (operation): operation is LakehouseSchemaCreateOperation =>
+        operation.kind === "create-schema",
+    );
+    const tableOperations = createOperations.filter(
+      (operation): operation is LakehouseTableCreateOperation =>
+        operation.kind === "create-table",
+    );
+    const schemaCreateByLogicalId = new Map(
+      schemaOperations.map((operation) => [
         operation.logicalId,
         operation,
       ]),
+    );
+    const tableCreateByLogicalId = new Map(
+      tableOperations.map((operation) => [
+        operation.logicalId,
+        operation,
+      ]),
+    );
+    const managedSchemaNames = new Set(
+      (definition.schemas ?? []).map((schema) => schema.name),
     );
 
     return this.withSession(
@@ -582,9 +673,26 @@ export class LakehouseTablesAdapter {
       execution,
       hooks,
       async (session) => {
-        const preflight: LakehouseTableVerification[] = [];
+        const schemaPreflight: LakehouseSchemaVerification[] = [];
+        for (const loaded of definition.schemas ?? []) {
+          const observation = await this.inspectSchema(
+            workspaceId,
+            lakehouseId,
+            session,
+            loaded,
+            execution,
+            hooks,
+          );
+          schemaPreflight.push(
+            verifyObservedSchema(loaded, observation.schemaExists),
+          );
+        }
+
+        const tablePreflight: LakehouseTableVerification[] = [];
         for (const loaded of definition.tables) {
-          const operation = createByLogicalId.get(loaded.logicalId)!;
+          const operation = tableCreateByLogicalId.get(
+            loaded.logicalId,
+          )!;
           const observation = await this.inspectTable(
             workspaceId,
             lakehouseId,
@@ -593,7 +701,7 @@ export class LakehouseTablesAdapter {
             execution,
             hooks,
           );
-          preflight.push(
+          tablePreflight.push(
             verifyObservedTable(
               loaded.logicalId,
               loaded.desiredHash,
@@ -604,13 +712,16 @@ export class LakehouseTablesAdapter {
           );
         }
 
-        for (const verification of preflight) {
+        for (const verification of tablePreflight) {
           const loaded = definition.tables.find(
             (table) => table.logicalId === verification.logicalId,
           )!;
-          if (!verification.observation.schemaExists) {
+          if (
+            !verification.observation.schemaExists &&
+            !managedSchemaNames.has(loaded.table.schema)
+          ) {
             throw new Error(
-              `Lakehouse schema '${loaded.table.schema}' does not exist. Phase 3 fails closed and does not create schemas.`,
+              `Lakehouse schema '${loaded.table.schema}' does not exist and is not declared in this LakehouseTables bundle.`,
             );
           }
           if (!verification.observation.exists) {
@@ -642,15 +753,27 @@ export class LakehouseTablesAdapter {
         }
 
         const operationResults: LakehouseTableApplyOperationResult[] = [];
-        const finalByLogicalId = new Map(
-          preflight
+        const finalSchemasByLogicalId = new Map(
+          schemaPreflight
+            .filter((schema) => schema.matches)
+            .map((schema) => [schema.logicalId, schema]),
+        );
+        const finalTablesByLogicalId = new Map(
+          tablePreflight
             .filter((table) => table.matches)
             .map((table) => [table.logicalId, table]),
         );
         for (const operation of createOperations) {
-          const before = preflight.find(
-            (table) => table.logicalId === operation.logicalId,
-          )!;
+          const before =
+            operation.kind === "create-schema"
+              ? schemaPreflight.find(
+                  (schema) =>
+                    schema.logicalId === operation.logicalId,
+                )!
+              : tablePreflight.find(
+                  (table) =>
+                    table.logicalId === operation.logicalId,
+                )!;
           if (before.observation.exists) {
             continue;
           }
@@ -659,25 +782,23 @@ export class LakehouseTablesAdapter {
             logicalId: operation.logicalId,
             operation,
           };
+          const code = generateCreateAndObservePySpark(operation);
           const executionResult = await this.submitAndWaitForStatement(
             workspaceId,
             lakehouseId,
             session,
-            generateCreateAndObservePySpark(operation),
+            code,
             execution,
             dispatch,
             hooks,
           );
-          const verification = verifyObservedTable(
-            operation.logicalId,
-            operation.desiredHash,
-            operation.table,
+          const verification = verifyCreateOperation(
+            operation,
             executionResult.observation,
-            operation.ownership,
           );
           if (!verification.matches) {
             throw new Error(
-              `Lakehouse table '${operation.identifier}' verification failed: ${verification.differences.join(
+              `Lakehouse ${operation.kind === "create-schema" ? "schema" : "table"} '${operation.identifier}' verification failed: ${verification.differences.join(
                 "; ",
               )}`,
             );
@@ -690,15 +811,39 @@ export class LakehouseTablesAdapter {
               execution,
               dispatch,
               executionResult.statementId,
-              sha256(generateCreateAndObservePySpark(operation)),
+              sha256(code),
             );
           await hooks.onOperationVerified?.({
             ...acceptedContext,
             operation,
             verification,
           });
-          finalByLogicalId.set(operation.logicalId, verification);
+          if (
+            operation.kind === "create-schema" &&
+            isSchemaVerification(verification)
+          ) {
+            finalSchemasByLogicalId.set(
+              operation.logicalId,
+              verification,
+            );
+          } else if (
+            operation.kind === "create-table" &&
+            isTableVerification(verification)
+          ) {
+            finalTablesByLogicalId.set(
+              operation.logicalId,
+              verification,
+            );
+          } else {
+            throw new Error(
+              `Lakehouse DDL operation '${operation.operationId}' returned an incompatible verification payload.`,
+            );
+          }
           operationResults.push({
+            resourceKind:
+              operation.kind === "create-schema"
+                ? "schema"
+                : "table",
             operationId: operation.operationId,
             operationHash: operation.operationHash,
             logicalId: operation.logicalId,
@@ -707,8 +852,21 @@ export class LakehouseTablesAdapter {
             verification,
           });
         }
+        const schemas = (definition.schemas ?? []).map((schema) => {
+          const verification = finalSchemasByLogicalId.get(
+            schema.logicalId,
+          );
+          if (!verification) {
+            throw new Error(
+              `Lakehouse schema '${schema.logicalId}' has no verified final state.`,
+            );
+          }
+          return verification;
+        });
         const tables = definition.tables.map((table) => {
-          const verification = finalByLogicalId.get(table.logicalId);
+          const verification = finalTablesByLogicalId.get(
+            table.logicalId,
+          );
           if (!verification) {
             throw new Error(
               `Lakehouse table '${table.logicalId}' has no verified final state.`,
@@ -719,8 +877,9 @@ export class LakehouseTablesAdapter {
         return {
           physicalId: lakehouseId,
           desiredHash: definition.desiredHash,
-          observedStateHash: hashVerificationState(tables),
+          observedStateHash: hashVerificationState(schemas, tables),
           operations: operationResults,
+          schemas,
           tables,
         };
       },
@@ -749,6 +908,20 @@ export class LakehouseTablesAdapter {
       execution,
       hooks,
       async (session) => {
+        const schemas: LakehouseSchemaVerification[] = [];
+        for (const loaded of definition.schemas ?? []) {
+          const observation = await this.inspectSchema(
+            workspaceId,
+            lakehouseId,
+            session,
+            loaded,
+            execution,
+            hooks,
+          );
+          schemas.push(
+            verifyObservedSchema(loaded, observation.schemaExists),
+          );
+        }
         const tables: LakehouseTableVerification[] = [];
         for (const loaded of definition.tables) {
           const observation = await this.inspectTable(
@@ -771,8 +944,11 @@ export class LakehouseTablesAdapter {
           );
         }
         return {
-          matches: tables.every((table) => table.matches),
-          observedStateHash: hashVerificationState(tables),
+          matches:
+            schemas.every((schema) => schema.matches) &&
+            tables.every((table) => table.matches),
+          observedStateHash: hashVerificationState(schemas, tables),
+          schemas,
           tables,
         };
       },
@@ -1082,12 +1258,9 @@ export class LakehouseTablesAdapter {
           response.body,
         );
         const verification = request.operation
-          ? verifyObservedTable(
-              request.operation.logicalId,
-              request.operation.desiredHash,
-              request.operation.table,
+          ? verifyCreateOperation(
+              request.operation,
               result.observation,
-              request.operation.ownership,
             )
           : undefined;
         return {
@@ -1130,10 +1303,12 @@ export class LakehouseTablesAdapter {
     lakehouseId: string,
     sessionId: string,
     statementId: number,
-    operation?: LakehouseTableCreateOperation,
+    operation?: LakehouseDdlCreateOperation,
   ): Promise<{
     statementId: number;
-    verification?: LakehouseTableVerification;
+    verification?:
+      | LakehouseSchemaVerification
+      | LakehouseTableVerification;
   }> {
     const path = `${lakehouseLivySessionsPath(
       workspaceId,
@@ -1155,16 +1330,13 @@ export class LakehouseTablesAdapter {
     if (!operation) {
       return { statementId };
     }
-    const verification = verifyObservedTable(
-      operation.logicalId,
-      operation.desiredHash,
-      operation.table,
+    const verification = verifyCreateOperation(
+      operation,
       result.observation,
-      operation.ownership,
     );
     if (!verification.matches) {
       throw new Error(
-        `Recovered Lakehouse table statement '${statementId}' did not verify: ${verification.differences.join(
+        `Recovered Lakehouse ${operation.kind === "create-schema" ? "schema" : "table"} statement '${statementId}' did not verify: ${verification.differences.join(
           "; ",
         )}`,
       );
@@ -1188,6 +1360,30 @@ export class LakehouseTablesAdapter {
         acceptedStatuses: [200, 404],
       },
     );
+  }
+
+  private async inspectSchema(
+    workspaceId: string,
+    lakehouseId: string,
+    session: ActiveSession,
+    loaded: LoadedLakehouseSchema,
+    execution: LakehouseTablesExecutionContext,
+    hooks: LakehouseTableExecutionHooks,
+  ): Promise<LakehouseTableObservation> {
+    return (
+      await this.submitAndWaitForStatement(
+        workspaceId,
+        lakehouseId,
+        session,
+        generateObserveSchemaPySpark(loaded.name),
+        execution,
+        {
+          purpose: "inspect",
+          logicalId: loaded.logicalId,
+        },
+        hooks,
+      )
+    ).observation;
   }
 
   private async inspectTable(
@@ -1542,6 +1738,47 @@ export function createLakehouseTableStatementAttemptName(
   ).slice(0, 32)}`;
 }
 
+export function buildLakehouseSchemaCreateOperations(
+  definition: LoadedLakehouseTablesDefinition,
+  execution: LakehouseTablesExecutionContext,
+): LakehouseSchemaCreateOperation[] {
+  validateExecutionContext(execution);
+  return (definition.schemas ?? []).map((loaded, order) => {
+    const operationHash = hashSchemaOperation(loaded, execution);
+    return {
+      kind: "create-schema",
+      operationId: `${loaded.logicalId}:${operationHash.slice(0, 16)}`,
+      operationHash,
+      order,
+      logicalId: loaded.logicalId,
+      desiredHash: loaded.desiredHash,
+      identifier: loaded.name,
+      schema: loaded.name,
+      ddl: generateCreateSchemaSql(loaded.name),
+    };
+  });
+}
+
+export function buildLakehouseDdlCreateOperations(
+  definition: LoadedLakehouseTablesDefinition,
+  execution: LakehouseTablesExecutionContext,
+): LakehouseDdlCreateOperation[] {
+  const schemas = buildLakehouseSchemaCreateOperations(
+    definition,
+    execution,
+  );
+  return [
+    ...schemas,
+    ...buildLakehouseTableCreateOperations(
+      definition,
+      execution,
+    ).map((operation) => ({
+      ...operation,
+      order: operation.order + schemas.length,
+    })),
+  ];
+}
+
 export function buildLakehouseTableCreateOperations(
   definition: LoadedLakehouseTablesDefinition,
   execution: LakehouseTablesExecutionContext,
@@ -1568,6 +1805,10 @@ export function buildLakehouseTableCreateOperations(
       ddl: generateCreateTableSql(ownedTable),
     };
   });
+}
+
+export function generateCreateSchemaSql(schema: string): string {
+  return `CREATE SCHEMA IF NOT EXISTS ${quoteSparkIdentifier(schema)}`;
 }
 
 export function buildLakehouseTableAdoptionOperation(
@@ -1648,6 +1889,21 @@ export function quoteSparkIdentifier(value: string): string {
 export function quoteSparkStringLiteral(value: string): string {
   validateSparkSqlLiteral(value, "Spark SQL literal");
   return `'${value.replaceAll("'", "''")}'`;
+}
+
+export function verifyObservedSchema(
+  loaded: LoadedLakehouseSchema,
+  exists: boolean,
+): LakehouseSchemaVerification {
+  return {
+    logicalId: loaded.logicalId,
+    identifier: loaded.name,
+    desiredHash: loaded.desiredHash,
+    observedHash: sha256(stableJson({ exists })),
+    observation: { exists },
+    matches: exists,
+    differences: exists ? [] : ["schema is absent"],
+  };
 }
 
 export function verifyObservedTable(
@@ -1752,9 +2008,55 @@ export function verifyObservedTable(
   };
 }
 
+function verifyCreateOperation(
+  operation: LakehouseDdlCreateOperation,
+  observation: LakehouseTableObservation,
+): LakehouseSchemaVerification | LakehouseTableVerification {
+  if (operation.kind === "create-schema") {
+    return verifyObservedSchema(
+      {
+        logicalId: operation.logicalId,
+        name: operation.schema,
+        desiredHash: operation.desiredHash,
+      },
+      observation.schemaExists,
+    );
+  }
+  return verifyObservedTable(
+    operation.logicalId,
+    operation.desiredHash,
+    operation.table,
+    observation,
+    operation.ownership,
+  );
+}
+
+function isSchemaVerification(
+  verification:
+    | LakehouseSchemaVerification
+    | LakehouseTableVerification,
+): verification is LakehouseSchemaVerification {
+  return !("expectedOwnership" in verification);
+}
+
+function isTableVerification(
+  verification:
+    | LakehouseSchemaVerification
+    | LakehouseTableVerification,
+): verification is LakehouseTableVerification {
+  return "expectedOwnership" in verification;
+}
+
 function generateCreateAndObservePySpark(
-  operation: LakehouseTableCreateOperation,
+  operation: LakehouseDdlCreateOperation,
 ): string {
+  if (operation.kind === "create-schema") {
+    return [
+      "import json",
+      `spark.sql(${JSON.stringify(operation.ddl)})`,
+      generateSchemaObservationBody(operation.schema),
+    ].join("\n");
+  }
   const schema = operation.table.schema;
   return [
     "import json",
@@ -1764,6 +2066,22 @@ function generateCreateAndObservePySpark(
     `    raise RuntimeError("Required Lakehouse schema is absent: " + _fabric_schema_name)`,
     `spark.sql(${JSON.stringify(operation.ddl)})`,
     generateObservationBody(operation.table),
+  ].join("\n");
+}
+
+function generateObserveSchemaPySpark(schema: string): string {
+  return [
+    "import json",
+    generateSchemaObservationBody(schema),
+  ].join("\n");
+}
+
+function generateSchemaObservationBody(schema: string): string {
+  return [
+    `_fabric_schema_name = ${JSON.stringify(schema)}`,
+    `_fabric_schema_exists = bool(spark.catalog.databaseExists(_fabric_schema_name))`,
+    `_fabric_result = {"schemaExists": bool(_fabric_schema_exists), "exists": False}`,
+    `print(${JSON.stringify(RESULT_MARKER)} + json.dumps(_fabric_result, sort_keys=True, separators=(",", ":"), default=str))`,
   ].join("\n");
 }
 
@@ -2181,16 +2499,42 @@ function hashManagedObservation(
 }
 
 function hashVerificationState(
+  schemas: LakehouseSchemaVerification[],
   tables: LakehouseTableVerification[],
 ): string {
+  const tableState = tables.map((table) => ({
+    logicalId: table.logicalId,
+    identifier: table.identifier,
+    observedHash: table.observedHash,
+  }));
   return sha256(
     stableJson(
-      tables.map((table) => ({
-        logicalId: table.logicalId,
-        identifier: table.identifier,
-        observedHash: table.observedHash,
-      })),
+      schemas.length === 0
+        ? tableState
+        : {
+            schemas: schemas.map((schema) => ({
+              logicalId: schema.logicalId,
+              identifier: schema.identifier,
+              observedHash: schema.observedHash,
+            })),
+            tables: tableState,
+          },
     ),
+  );
+}
+
+function hashSchemaOperation(
+  loaded: LoadedLakehouseSchema,
+  execution: LakehouseTablesExecutionContext,
+): string {
+  return sha256(
+    stableJson({
+      kind: "create-schema",
+      logicalId: loaded.logicalId,
+      sourceHash: execution.sourceHash,
+      desiredHash: loaded.desiredHash,
+      schema: loaded.name,
+    }),
   );
 }
 

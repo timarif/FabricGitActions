@@ -100,7 +100,7 @@ export const deploymentSchema = {
             items: { type: "string", minLength: 1 },
           },
           desiredState: {
-            const: "present",
+            enum: ["present", "absent"],
           },
         },
       },

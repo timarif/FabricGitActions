@@ -46,4 +46,64 @@ describe("deployment graph", () => {
       ]),
     ).toThrow("Dependency cycle detected");
   });
+
+  it("deletes dependents before their absent dependencies", () => {
+    const stages = buildDeploymentStages([
+      {
+        logicalId: "environment",
+        type: "Environment",
+        path: "environment",
+        desiredState: "absent",
+      },
+      {
+        logicalId: "notebook",
+        type: "Notebook",
+        path: "notebook",
+        desiredState: "absent",
+        dependsOn: ["environment"],
+      },
+      {
+        logicalId: "pipeline",
+        type: "DataPipeline",
+        path: "pipeline",
+        desiredState: "absent",
+        dependsOn: ["notebook"],
+      },
+    ]);
+
+    expect(stages).toEqual([
+      ["pipeline"],
+      ["notebook"],
+      ["environment"],
+    ]);
+  });
+
+  it("keeps present deployment stages ahead of reverse deletion stages", () => {
+    const stages = buildDeploymentStages([
+      {
+        logicalId: "newNotebook",
+        type: "Notebook",
+        path: "new",
+      },
+      {
+        logicalId: "oldEnvironment",
+        type: "Environment",
+        path: "old-environment",
+        desiredState: "absent",
+      },
+      {
+        logicalId: "oldNotebook",
+        type: "Notebook",
+        path: "old-notebook",
+        desiredState: "absent",
+        dependsOn: ["oldEnvironment"],
+      },
+    ]);
+
+    expect(stages).toEqual([
+      ["newNotebook"],
+      ["oldNotebook"],
+      ["oldEnvironment"],
+    ]);
+  });
 });

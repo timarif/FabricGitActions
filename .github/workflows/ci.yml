@@ -50,3 +50,47 @@ jobs:
           mode: validate
           manifest: examples/basic/fabric/deployment.yaml
           workspace-id: 00000000-0000-0000-0000-000000000001
+
+      - name: Validate live Lakehouse example
+        uses: ./
+        with:
+          mode: validate
+          manifest: examples/live-lakehouse/fabric/deployment.yaml
+          workspace-id: 00000000-0000-0000-0000-000000000001
+          variables: '{"LAKEHOUSE_DESCRIPTION":"CI example validation"}'
+
+      - name: Validate Phase 3 example
+        uses: ./
+        with:
+          mode: validate
+          manifest: examples/live-phase3/fabric/deployment.yaml
+          workspace-id: 00000000-0000-0000-0000-000000000001
+
+      - name: Validate live pipeline example
+        uses: ./
+        with:
+          mode: validate
+          manifest: examples/live-pipeline/fabric/deployment.yaml
+          workspace-id: 00000000-0000-0000-0000-000000000001
+
+      - name: Validate managed workspace example
+        uses: ./
+        with:
+          mode: validate
+          manifest: examples/workspace/fabric/deployment.yaml
+          variables: >-
+            {"WORKSPACE_NAME":"CI Managed Workspace","FABRIC_CAPACITY_ID":"00000000-0000-0000-0000-000000000002"}
+
+      - name: Validate Fabric tags example
+        uses: ./
+        with:
+          mode: validate
+          manifest: examples/tags/fabric/deployment.yaml
+          workspace-id: 00000000-0000-0000-0000-000000000001
+
+      - name: Validate guarded deletion example
+        uses: ./
+        with:
+          mode: validate
+          manifest: examples/deletion/fabric/deployment.yaml
+          variables: '{"FABRIC_WORKSPACE_ID":"00000000-0000-0000-0000-000000000001"}'

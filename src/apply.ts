@@ -8,7 +8,7 @@ import type {
   LakehouseOperationReference,
 } from "./fabric/lakehouse";
 import {
-  buildLakehouseTableCreateOperations,
+  buildLakehouseDdlCreateOperations,
   createLakehouseTablesSessionName,
   type LakehouseTableExecutionHooks,
   type LakehouseTablesAdapter,
@@ -17,6 +17,10 @@ import type {
   EnvironmentAdapter,
   EnvironmentOperationReference,
 } from "./fabric/environment";
+import {
+  isDeletableFabricItemType,
+  type ItemDeletionAdapter,
+} from "./fabric/item-deletion";
 import {
   getFabricDeploymentMarker,
   hashFabricDefinition,
@@ -55,6 +59,7 @@ import {
 } from "./fabric/spark-job-artifacts";
 import type { OneLakeArtifactStager } from "./fabric/onelake-artifacts";
 import type { WorkspaceAdapter } from "./fabric/workspace";
+import type { FabricTagAdapter } from "./fabric/tags";
 import {
   hashSparkJobDefinition,
   sparkJobIncludesPlatformPart,
@@ -97,6 +102,10 @@ export interface ApplyPlanOptions {
     EnvironmentAdapter,
     "create" | "update" | "verify" | "resumeCreate" | "plan"
   >;
+  itemDeletionAdapter?: Pick<
+    ItemDeletionAdapter,
+    "plan" | "delete" | "verifyApprovedIdentity"
+  >;
   notebookAdapter?: Pick<
     NotebookAdapter,
     "create" | "update" | "verify" | "resumeCreate" | "plan"
@@ -112,6 +121,15 @@ export interface ApplyPlanOptions {
   sparkCustomPoolAdapter?: Pick<
     SparkCustomPoolAdapter,
     "create" | "update" | "verify" | "plan"
+  >;
+  tagAdapter?: Pick<
+    FabricTagAdapter,
+    | "plan"
+    | "create"
+    | "verify"
+    | "planItemAssignment"
+    | "applyItemTags"
+    | "verifyItemAssignment"
   >;
   workspaceAdapter?: Pick<
     WorkspaceAdapter,
@@ -135,11 +153,16 @@ export interface ApplyPlanOptions {
   oneLakeBlobEndpoint?: string;
   allowCreate: boolean;
   allowUpdate: boolean;
+  allowDelete?: boolean;
+  allowLakehouseDataLoss?: boolean;
   allowWorkspaceCreate?: boolean;
   allowWorkspaceUpdate?: boolean;
   allowCapacityAssignment?: boolean;
+  allowLakehouseSchemaCreate?: boolean;
   allowLakehouseTableCreate?: boolean;
   allowOneLakeArtifactCreate?: boolean;
+  allowTagCreate?: boolean;
+  allowTagAssign?: boolean;
   checkpointFile: string;
   resultFile: string;
   itemDirectories?: string[];
@@ -270,6 +293,13 @@ export async function applyApprovedPlan(
       currentItems,
       now,
     );
+    const recoveredDeletes = await reconcilePendingDeletes(
+      runtimeOptions,
+      checkpoint,
+      approvedItems,
+      currentItems,
+      now,
+    );
     const recoveredCreates = await reconcilePendingCreates(
       runtimeOptions,
       checkpoint,
@@ -284,10 +314,19 @@ export async function applyApprovedPlan(
       currentItems,
       now,
     );
+    const recoveredTagAssignments =
+      await reconcilePendingTagAssignments(
+        runtimeOptions,
+        checkpoint,
+        approvedItems,
+        now,
+      );
     const trustedResumes = new Set([
       ...recoveredUpdates,
+      ...recoveredDeletes,
       ...recoveredCreates,
       ...resumedOperations,
+      ...recoveredTagAssignments,
     ]);
     preflightPlan(
       runtimeOptions,
@@ -315,6 +354,13 @@ export async function applyApprovedPlan(
         const itemStartedAt = now();
         const completed = getCompletedItem(checkpoint, logicalId);
         if (completed) {
+          const tagAssignment = await applyItemTagAssignment(
+            runtimeOptions,
+            checkpoint,
+            approvedItem,
+            completed.physicalId,
+            now,
+          );
           results.push({
             logicalId,
             type: approvedItem.type,
@@ -322,6 +368,7 @@ export async function applyApprovedPlan(
             status: "resumed",
             physicalId: completed.physicalId,
             durationMs: resumedDurations.get(logicalId) ?? 0,
+            ...(tagAssignment ? { tagAssignment } : {}),
           });
           continue;
         }
@@ -358,6 +405,7 @@ export async function applyApprovedPlan(
               delete checkpoint.pendingCreates[logicalId];
               delete checkpoint.pendingOperations[logicalId];
               delete checkpoint.pendingUpdates[logicalId];
+              delete checkpoint.pendingDeletes[logicalId];
               checkpoint.completedItems[logicalId] = {
                 logicalId,
                 action: approvedItem.action,
@@ -410,6 +458,26 @@ export async function applyApprovedPlan(
               delete checkpoint.pendingUpdates[logicalId];
               writeCheckpoint(options.checkpointFile, checkpoint);
             },
+            () => {
+              if (
+                approvedItem.action !== "delete" ||
+                !approvedItem.physicalId ||
+                !approvedItem.observedStateHash
+              ) {
+                throw new Error(
+                  `Deletion checkpoint proof is missing for '${logicalId}'.`,
+                );
+              }
+              checkpoint.pendingDeletes[logicalId] = {
+                logicalId,
+                action: "delete",
+                physicalId: approvedItem.physicalId,
+                observedStateHash:
+                  approvedItem.observedStateHash,
+                submittedAt: new Date(now()).toISOString(),
+              };
+              writeCheckpoint(options.checkpointFile, checkpoint);
+            },
           );
         } catch (error) {
           if (
@@ -432,14 +500,38 @@ export async function applyApprovedPlan(
             throw error;
           }
         }
+        const physicalId =
+          result.physicalId ??
+          (approvedItem.desiredState === "absent" &&
+          approvedItem.action === "no-op"
+            ? undefined
+            : requirePhysicalId(result, logicalId));
+        const tagAssignment = await applyItemTagAssignment(
+          runtimeOptions,
+          checkpoint,
+          approvedItem,
+          physicalId,
+          now,
+        );
+        if (tagAssignment) {
+          result = {
+            ...result,
+            ...(result.status === "verified" &&
+            tagAssignment.status === "updated"
+              ? { status: "updated" as const }
+              : {}),
+            tagAssignment,
+          };
+        }
         results.push(result);
         delete checkpoint.pendingCreates[logicalId];
         delete checkpoint.pendingOperations[logicalId];
         delete checkpoint.pendingUpdates[logicalId];
+        delete checkpoint.pendingDeletes[logicalId];
         checkpoint.completedItems[logicalId] = {
           logicalId,
           action: approvedItem.action,
-          physicalId: requirePhysicalId(result, logicalId),
+          ...(physicalId ? { physicalId } : {}),
           completedAt: new Date(now()).toISOString(),
         };
         writeCheckpoint(options.checkpointFile, checkpoint);
@@ -622,6 +714,15 @@ async function assertFreshItemHasNotDrifted(
     );
   }
   const live = await planDesiredItem(options, approvedItem, desired);
+  const livePhysicalId =
+    "physicalId" in live && typeof live.physicalId === "string"
+      ? live.physicalId
+      : undefined;
+  const freshTagAssignment = await planFreshTagAssignment(
+    options,
+    approvedItem,
+    livePhysicalId,
+  );
   const freshItem: PlannedItem = {
     logicalId: approvedItem.logicalId,
     type: approvedItem.type,
@@ -633,7 +734,10 @@ async function assertFreshItemHasNotDrifted(
     action: live.action,
     reason: live.reason,
     observedStateHash: live.observedStateHash,
-    ...(live.physicalId ? { physicalId: live.physicalId } : {}),
+    ...(livePhysicalId ? { physicalId: livePhysicalId } : {}),
+    ...(freshTagAssignment
+      ? { tagAssignment: freshTagAssignment }
+      : {}),
     ...(approvedItem.materializedDefinitionHash !== undefined &&
     "materializedDefinitionHash" in live &&
     typeof live.materializedDefinitionHash === "string"
@@ -652,6 +756,60 @@ async function assertFreshItemHasNotDrifted(
       : {}),
   };
   assertItemHasNotDrifted(approvedItem, freshItem);
+}
+
+async function planFreshTagAssignment(
+  options: ApplyPlanOptions,
+  item: PlannedItem,
+  itemPhysicalId: string | undefined,
+) {
+  const assignment = item.tagAssignment;
+  if (!assignment) {
+    return undefined;
+  }
+  if (!itemPhysicalId) {
+    return assignment;
+  }
+  if (!options.checkpoint) {
+    throw new Error(
+      `Apply checkpoint is missing while planning Fabric tags for '${item.logicalId}'.`,
+    );
+  }
+  const tagIds = resolveApprovedTagIds(
+    options,
+    options.checkpoint,
+    item,
+  );
+  const logicalIdByTagId = new Map(
+    tagIds.map((tagId, index) => [
+      tagId.toLowerCase(),
+      assignment.tagLogicalIds[index]!,
+    ]),
+  );
+  const live = await requireTagAdapter(
+    options,
+    item.logicalId,
+  ).planItemAssignment(
+    options.approvedPlan.workspaceId,
+    itemPhysicalId,
+    tagIds,
+  );
+  return {
+    assignmentHash: assignment.assignmentHash,
+    tagLogicalIds: assignment.tagLogicalIds,
+    missingTagLogicalIds: live.missingTagIds.map((tagId) => {
+      const logicalId = logicalIdByTagId.get(tagId.toLowerCase());
+      if (!logicalId) {
+        throw new Error(
+          `Fabric returned unexpected desired tag ID '${tagId}' for '${item.logicalId}'.`,
+        );
+      }
+      return logicalId;
+    }),
+    action: live.action,
+    observedStateHash: live.observedStateHash,
+    reason: live.reason,
+  };
 }
 
 function assertPlanIdentity(
@@ -721,11 +879,13 @@ function preflightBeforeRecovery(
       const pendingItem =
         getPendingOperation(checkpoint, logicalId) ??
         getPendingCreate(checkpoint, logicalId) ??
-        getPendingUpdate(checkpoint, logicalId);
+        getPendingUpdate(checkpoint, logicalId) ??
+        getPendingDelete(checkpoint, logicalId);
       const pending =
         pendingItem ??
         checkpoint.lakehouseTables?.[logicalId] ??
-        checkpoint.oneLakeArtifacts?.[logicalId];
+        checkpoint.oneLakeArtifacts?.[logicalId] ??
+        checkpoint.tagAssignments?.[logicalId];
       const hasArtifactState =
         checkpoint.oneLakeArtifacts?.[logicalId] !== undefined;
       if (approvedItem.type === "LakehouseTables") {
@@ -756,12 +916,13 @@ function preflightBeforeRecovery(
       }
       if (completed) {
         assertCheckpointedItemSourceUnchanged(approvedItem, currentItem);
-        if (
-          currentItem.action !== "no-op" ||
-          currentItem.physicalId !== completed.physicalId
-        ) {
+        if (!isCompletedItemCurrentNoOp(
+          approvedItem,
+          currentItem,
+          completed.physicalId,
+        )) {
           throw new Error(
-            `Checkpointed item '${logicalId}' is not a no-op for physical ID '${completed.physicalId}' in the current Fabric plan.`,
+            `Checkpointed item '${logicalId}' is not a no-op in its expected state in the current Fabric plan.`,
           );
         }
         continue;
@@ -811,7 +972,8 @@ function preflightPlan(
       const pendingItem =
         getPendingOperation(checkpoint, logicalId) ??
         getPendingCreate(checkpoint, logicalId) ??
-        getPendingUpdate(checkpoint, logicalId);
+        getPendingUpdate(checkpoint, logicalId) ??
+        getPendingDelete(checkpoint, logicalId);
       if (hasSymbolicSparkJobArtifactTarget(approvedItem)) {
         assertSymbolicSparkJobArtifactPreflightState(
           options,
@@ -827,15 +989,17 @@ function preflightPlan(
       }
       if (completed) {
         assertCheckpointedItemSourceUnchanged(approvedItem, currentItem);
+        assertTagAssignmentAuthorized(options, approvedItem);
         if (resumedOperations.has(logicalId)) {
           continue;
         }
-        if (
-          currentItem.action !== "no-op" ||
-          currentItem.physicalId !== completed.physicalId
-        ) {
+        if (!isCompletedItemCurrentNoOp(
+          approvedItem,
+          currentItem,
+          completed.physicalId,
+        )) {
           throw new Error(
-            `Checkpointed item '${logicalId}' is not a no-op for physical ID '${completed.physicalId}' in the current Fabric plan.`,
+            `Checkpointed item '${logicalId}' is not a no-op in its expected state in the current Fabric plan.`,
           );
         }
 
@@ -848,6 +1012,24 @@ function preflightPlan(
   }
 }
 
+function isCompletedItemCurrentNoOp(
+  approved: PlannedItem,
+  current: PlannedItem,
+  completedPhysicalId: string | undefined,
+): boolean {
+  if (current.action !== "no-op") {
+    return false;
+  }
+  if (approved.desiredState === "absent") {
+    return (
+      current.physicalId === undefined &&
+      (approved.action !== "delete" ||
+        completedPhysicalId === approved.physicalId)
+    );
+  }
+  return current.physicalId === completedPhysicalId;
+}
+
 function assertSupportedApplyItem(
   options: ApplyPlanOptions,
   item: PlannedItem,
@@ -858,25 +1040,44 @@ function assertSupportedApplyItem(
     item.type !== "SparkCustomPool" &&
     item.type !== "Notebook" &&
     item.type !== "SparkJobDefinition" &&
-    item.type !== "DataPipeline"
-    && item.type !== "LakehouseTables"
+    item.type !== "DataPipeline" &&
+    item.type !== "LakehouseTables" &&
+    item.type !== "FabricTag"
   ) {
     throw new Error(
       `Apply is not implemented for item '${item.logicalId}' of type ${item.type}.`,
     );
   }
-  if (item.type === "Environment" && !options.environmentAdapter) {
+  if (
+    item.desiredState === "absent" &&
+    (!isDeletableFabricItemType(item.type) ||
+      !options.itemDeletionAdapter)
+  ) {
+    throw new Error(
+      `Deletion adapter was not initialized for item '${item.logicalId}' of type ${item.type}.`,
+    );
+  }
+  if (
+    item.desiredState !== "absent" &&
+    item.type === "Environment" &&
+    !options.environmentAdapter
+  ) {
     throw new Error(
       `Environment adapter was not initialized for item '${item.logicalId}'.`,
     );
   }
-  if (item.type === "Notebook" && !options.notebookAdapter) {
+  if (
+    item.desiredState !== "absent" &&
+    item.type === "Notebook" &&
+    !options.notebookAdapter
+  ) {
     throw new Error(
       `Notebook adapter was not initialized for item '${item.logicalId}'.`,
     );
   }
   if (
     item.type === "SparkJobDefinition" &&
+    item.desiredState !== "absent" &&
     !options.sparkJobAdapter
   ) {
     throw new Error(
@@ -894,7 +1095,11 @@ function assertSupportedApplyItem(
       `OneLake artifact staging was not initialized for item '${item.logicalId}'.`,
     );
   }
-  if (item.type === "DataPipeline" && !options.pipelineAdapter) {
+  if (
+    item.desiredState !== "absent" &&
+    item.type === "DataPipeline" &&
+    !options.pipelineAdapter
+  ) {
     throw new Error(
       `Data Pipeline adapter was not initialized for item '${item.logicalId}'.`,
     );
@@ -912,12 +1117,21 @@ function assertSupportedApplyItem(
       `LakehouseTables adapter was not initialized for item '${item.logicalId}'.`,
     );
   }
+  if (
+    (item.type === "FabricTag" || item.tagAssignment) &&
+    !options.tagAdapter
+  ) {
+    throw new Error(
+      `Fabric tag adapter was not initialized for item '${item.logicalId}'.`,
+    );
+  }
 }
 
 function assertApplyActionAuthorized(
   options: ApplyPlanOptions,
   item: PlannedItem,
 ): void {
+  assertTagAssignmentAuthorized(options, item);
   if (item.sparkJobArtifacts) {
     const blocked = item.sparkJobArtifacts.artifacts.find(
       (artifact) => artifact.action === "blocked",
@@ -940,7 +1154,23 @@ function assertApplyActionAuthorized(
   }
   if (item.type === "LakehouseTables") {
     if (
-      item.action === "create" &&
+      item.lakehouseTables?.operations.some(
+        (operation) =>
+          operation.action === "create" &&
+          operation.resourceKind === "schema",
+      ) &&
+      !(options.allowLakehouseSchemaCreate ?? false)
+    ) {
+      throw new Error(
+        `Plan requires creating Lakehouse schemas for '${item.logicalId}', but allow-lakehouse-schema-create is false.`,
+      );
+    }
+    if (
+      item.lakehouseTables?.operations.some(
+        (operation) =>
+          operation.action === "create" &&
+          (operation.resourceKind ?? "table") === "table",
+      ) &&
       !(options.allowLakehouseTableCreate ?? false)
     ) {
       throw new Error(
@@ -961,6 +1191,54 @@ function assertApplyActionAuthorized(
     ) {
       throw new Error(
         `LakehouseTables item '${item.logicalId}' contains an adoption or blocked operation. Phase 3 does not execute ALTER TABLE.`,
+      );
+    }
+    return;
+  }
+  if (
+    item.type === "FabricTag" &&
+    item.action === "create" &&
+    !(options.allowTagCreate ?? false)
+  ) {
+    throw new Error(
+      `Plan requires creating Fabric tag '${item.logicalId}', but allow-tag-create is false.`,
+    );
+  }
+  if (item.type === "FabricTag" && item.action === "update") {
+    throw new Error(
+      `FabricTag item '${item.logicalId}' cannot be updated in place.`,
+    );
+  }
+  if (item.action === "delete") {
+    if (
+      item.desiredState !== "absent" ||
+      !isDeletableFabricItemType(item.type) ||
+      !item.physicalId ||
+      !item.observedStateHash
+    ) {
+      throw new Error(
+        `Delete item '${item.logicalId}' is missing its exact approved deletion proof.`,
+      );
+    }
+    if (!(options.allowDelete ?? false)) {
+      throw new Error(
+        `Plan requires deleting '${item.logicalId}', but allow-delete is false.`,
+      );
+    }
+    if (
+      item.type === "Lakehouse" &&
+      !(options.allowLakehouseDataLoss ?? false)
+    ) {
+      throw new Error(
+        `Plan requires deleting Lakehouse '${item.logicalId}', but allow-lakehouse-data-loss is false.`,
+      );
+    }
+    return;
+  }
+  if (item.desiredState === "absent") {
+    if (item.action !== "no-op" || item.physicalId) {
+      throw new Error(
+        `Absent item '${item.logicalId}' has invalid action '${item.action}'.`,
       );
     }
     return;
@@ -991,6 +1269,30 @@ function assertApplyActionAuthorized(
     throw new Error(
       `Item '${item.logicalId}' cannot be applied while action is '${item.action}'.`,
     );
+  }
+}
+
+function assertTagAssignmentAuthorized(
+  options: ApplyPlanOptions,
+  item: PlannedItem,
+): void {
+  if (item.tagAssignment) {
+    if (
+      item.tagAssignment.action === "update" &&
+      !(options.allowTagAssign ?? false)
+    ) {
+      throw new Error(
+        `Plan requires assigning Fabric tags to '${item.logicalId}', but allow-tag-assign is false.`,
+      );
+    }
+    if (
+      item.tagAssignment.action !== "update" &&
+      item.tagAssignment.action !== "no-op"
+    ) {
+      throw new Error(
+        `Fabric tag assignment for '${item.logicalId}' cannot be applied while action is '${item.tagAssignment.action}'.`,
+      );
+    }
   }
 }
 
@@ -1172,7 +1474,8 @@ async function reconcilePendingCreates(
           approvedItem.type !== "SparkCustomPool" &&
           approvedItem.type !== "Notebook" &&
           approvedItem.type !== "SparkJobDefinition" &&
-          approvedItem.type !== "DataPipeline") ||
+          approvedItem.type !== "DataPipeline" &&
+          approvedItem.type !== "FabricTag") ||
         !currentItem
       ) {
         throw new Error(
@@ -1365,6 +1668,317 @@ async function reconcilePendingUpdates(
   return recovered;
 }
 
+async function reconcilePendingDeletes(
+  options: ApplyPlanOptions,
+  checkpoint: ApplyCheckpoint,
+  approvedItems: Map<string, PlannedItem>,
+  currentItems: Map<string, PlannedItem>,
+  now: () => number,
+): Promise<Set<string>> {
+  const recovered = new Set<string>();
+  for (const stage of options.approvedPlan.stages) {
+    for (const logicalId of stage) {
+      const intent = getPendingDelete(checkpoint, logicalId);
+      if (!intent) {
+        continue;
+      }
+      const approvedItem = approvedItems.get(logicalId);
+      const currentItem = currentItems.get(logicalId);
+      if (
+        !approvedItem ||
+        approvedItem.action !== "delete" ||
+        approvedItem.desiredState !== "absent" ||
+        !isDeletableFabricItemType(approvedItem.type) ||
+        !currentItem
+      ) {
+        throw new Error(
+          `Pending delete item '${logicalId}' is missing or unsupported.`,
+        );
+      }
+      assertCheckpointedItemSourceUnchanged(
+        approvedItem,
+        currentItem,
+      );
+      const desired =
+        options.loadedManifest.itemDefinitions[logicalId];
+      if (!desired) {
+        throw new Error(
+          `Desired definition is missing for '${logicalId}'.`,
+        );
+      }
+      const adapter = requireItemDeletionAdapter(
+        options,
+        logicalId,
+      );
+      let state = await adapter.verifyApprovedIdentity(
+        options.approvedPlan.workspaceId,
+        intent.physicalId,
+        approvedItem.type,
+        desired,
+        intent.observedStateHash,
+      );
+      if (state === "unchanged") {
+        await adapter.delete(
+          options.approvedPlan.workspaceId,
+          intent.physicalId,
+        );
+        state = await adapter.verifyApprovedIdentity(
+          options.approvedPlan.workspaceId,
+          intent.physicalId,
+          approvedItem.type,
+          desired,
+          intent.observedStateHash,
+        );
+      }
+      if (state !== "absent") {
+        throw new Error(
+          `Deletion intent for '${logicalId}' was accepted, but the exact approved item is still present.`,
+        );
+      }
+      await assertDeletionIdentityIsAbsent(
+        options,
+        approvedItem,
+        desired,
+      );
+      delete checkpoint.pendingDeletes[logicalId];
+      checkpoint.completedItems[logicalId] = {
+        logicalId,
+        action: "delete",
+        physicalId: intent.physicalId,
+        completedAt: new Date(now()).toISOString(),
+      };
+      writeCheckpoint(options.checkpointFile, checkpoint);
+      recovered.add(logicalId);
+    }
+  }
+  return recovered;
+}
+
+async function reconcilePendingTagAssignments(
+  options: ApplyPlanOptions,
+  checkpoint: ApplyCheckpoint,
+  approvedItems: ReadonlyMap<string, PlannedItem>,
+  now: () => number,
+): Promise<Set<string>> {
+  const recovered = new Set<string>();
+  for (const stage of options.approvedPlan.stages) {
+    for (const logicalId of stage) {
+      if (
+        !checkpoint.tagAssignments ||
+        !Object.hasOwn(checkpoint.tagAssignments, logicalId)
+      ) {
+        continue;
+      }
+      const item = approvedItems.get(logicalId);
+      if (!item?.tagAssignment) {
+        throw new Error(
+          `Pending Fabric tag assignment item '${logicalId}' is missing from the approved plan.`,
+        );
+      }
+      const completed = getCompletedItem(checkpoint, logicalId);
+      const physicalId = completed?.physicalId ?? item.physicalId;
+      if (!physicalId) {
+        throw new Error(
+          `Pending Fabric tag assignment '${logicalId}' has no materialized item ID.`,
+        );
+      }
+      await applyItemTagAssignment(
+        options,
+        checkpoint,
+        item,
+        physicalId,
+        now,
+      );
+      if (!completed) {
+        if (item.action !== "no-op") {
+          throw new Error(
+            `Pending Fabric tag assignment '${logicalId}' cannot complete an uncheckpointed '${item.action}' item.`,
+          );
+        }
+        await resumeCompletedItem(options, item, physicalId);
+        checkpoint.completedItems[logicalId] = {
+          logicalId,
+          action: item.action,
+          physicalId,
+          completedAt: new Date(now()).toISOString(),
+        };
+        writeCheckpoint(options.checkpointFile, checkpoint);
+      }
+      recovered.add(logicalId);
+    }
+  }
+  return recovered;
+}
+
+async function applyItemTagAssignment(
+  options: ApplyPlanOptions,
+  checkpoint: ApplyCheckpoint,
+  item: PlannedItem,
+  itemPhysicalId: string | undefined,
+  now: () => number,
+): Promise<NonNullable<ApplyItemResult["tagAssignment"]> | undefined> {
+  const assignment = item.tagAssignment;
+  if (!assignment) {
+    return undefined;
+  }
+  if (!itemPhysicalId) {
+    throw new Error(
+      `Fabric tag assignment target '${item.logicalId}' has no physical ID.`,
+    );
+  }
+  const adapter = requireTagAdapter(options, item.logicalId);
+  const tagIds = resolveApprovedTagIds(options, checkpoint, item);
+  if (assignment.action === "no-op") {
+    await adapter.verifyItemAssignment(
+      options.approvedPlan.workspaceId,
+      itemPhysicalId,
+      tagIds,
+    );
+    return {
+      assignmentHash: assignment.assignmentHash,
+      tagCount: tagIds.length,
+      status: "verified",
+    };
+  }
+  if (assignment.action !== "update") {
+    throw new Error(
+      `Fabric tag assignment for '${item.logicalId}' cannot be applied while action is '${assignment.action}'.`,
+    );
+  }
+  if (!(options.allowTagAssign ?? false)) {
+    throw new Error(
+      `Plan requires assigning Fabric tags to '${item.logicalId}', but allow-tag-assign is false.`,
+    );
+  }
+
+  checkpoint.tagAssignments ??= {};
+  const existing = Object.hasOwn(
+    checkpoint.tagAssignments,
+    item.logicalId,
+  )
+    ? checkpoint.tagAssignments[item.logicalId]
+    : undefined;
+  if (
+    existing &&
+    (existing.assignmentHash !== assignment.assignmentHash ||
+      existing.itemPhysicalId !== itemPhysicalId ||
+      existing.tagIds.length !== tagIds.length ||
+      !tagIds.every((id) => existing.tagIds.includes(id)))
+  ) {
+    throw new Error(
+      `Fabric tag assignment checkpoint changed after approval for '${item.logicalId}'.`,
+    );
+  }
+  const live = await adapter.planItemAssignment(
+    options.approvedPlan.workspaceId,
+    itemPhysicalId,
+    tagIds,
+  );
+  if (live.action === "no-op") {
+    const timestamp = new Date(now()).toISOString();
+    checkpoint.tagAssignments[item.logicalId] = {
+      logicalId: item.logicalId,
+      assignmentHash: assignment.assignmentHash,
+      itemPhysicalId,
+      tagIds,
+      phase: "verified",
+      submittedAt: existing?.submittedAt ?? timestamp,
+      verifiedAt: timestamp,
+      updatedAt: timestamp,
+    };
+    writeCheckpoint(options.checkpointFile, checkpoint);
+    return {
+      assignmentHash: assignment.assignmentHash,
+      tagCount: tagIds.length,
+      status: existing?.phase === "submitting" ? "updated" : "verified",
+    };
+  }
+
+  const submittedAt =
+    existing?.submittedAt ?? new Date(now()).toISOString();
+  checkpoint.tagAssignments[item.logicalId] = {
+    logicalId: item.logicalId,
+    assignmentHash: assignment.assignmentHash,
+    itemPhysicalId,
+    tagIds,
+    phase: "submitting",
+    submittedAt,
+    updatedAt: new Date(now()).toISOString(),
+  };
+  writeCheckpoint(options.checkpointFile, checkpoint);
+  await adapter.applyItemTags(
+    options.approvedPlan.workspaceId,
+    itemPhysicalId,
+    live.missingTagIds,
+  );
+  await adapter.verifyItemAssignment(
+    options.approvedPlan.workspaceId,
+    itemPhysicalId,
+    tagIds,
+  );
+  const verifiedAt = new Date(now()).toISOString();
+  checkpoint.tagAssignments[item.logicalId] = {
+    logicalId: item.logicalId,
+    assignmentHash: assignment.assignmentHash,
+    itemPhysicalId,
+    tagIds,
+    phase: "verified",
+    submittedAt,
+    verifiedAt,
+    updatedAt: verifiedAt,
+  };
+  writeCheckpoint(options.checkpointFile, checkpoint);
+  return {
+    assignmentHash: assignment.assignmentHash,
+    tagCount: tagIds.length,
+    status: "updated",
+  };
+}
+
+function resolveApprovedTagIds(
+  options: ApplyPlanOptions,
+  checkpoint: ApplyCheckpoint,
+  item: PlannedItem,
+): string[] {
+  const assignment = item.tagAssignment;
+  if (!assignment) {
+    return [];
+  }
+  return assignment.tagLogicalIds.map((logicalId) => {
+    const tag = options.approvedPlan.items.find(
+      (candidate) => candidate.logicalId === logicalId,
+    );
+    if (!tag || tag.type !== "FabricTag") {
+      throw new Error(
+        `Fabric tag assignment '${item.logicalId}' references invalid FabricTag '${logicalId}'.`,
+      );
+    }
+    const completed = getCompletedItem(checkpoint, logicalId);
+    if (tag.action === "create") {
+      if (
+        !completed ||
+        completed.action !== "create" ||
+        !completed.physicalId
+      ) {
+        throw new Error(
+          `FabricTag '${logicalId}' has not been materialized for '${item.logicalId}'.`,
+        );
+      }
+      return completed.physicalId;
+    }
+    if (
+      tag.action !== "no-op" ||
+      !tag.physicalId ||
+      (completed && completed.physicalId !== tag.physicalId)
+    ) {
+      throw new Error(
+        `FabricTag '${logicalId}' does not have an approved physical ID for '${item.logicalId}'.`,
+      );
+    }
+    return tag.physicalId;
+  });
+}
+
 function assertCheckpointedItemSourceUnchanged(
   approved: PlannedItem,
   current: PlannedItem,
@@ -1387,6 +2001,12 @@ function comparableItemSource(item: PlannedItem): unknown {
     contentHash: item.contentHash,
     desiredState: item.desiredState,
     dependsOn: item.dependsOn,
+    tagAssignment: item.tagAssignment
+      ? {
+          assignmentHash: item.tagAssignment.assignmentHash,
+          tagLogicalIds: item.tagAssignment.tagLogicalIds,
+        }
+      : undefined,
     sparkJobArtifacts: comparableSparkJobArtifactSource(item),
     lakehouseTables: item.lakehouseTables
       ? {
@@ -1543,6 +2163,11 @@ function assertSymbolicSparkJobArtifactPreflightState(
   }
 
   const targetLakehouseId = completedTarget.physicalId;
+  if (!targetLakehouseId) {
+    throw new Error(
+      `Completed target Lakehouse '${approvedTarget.logicalId}' has no physical ID.`,
+    );
+  }
   const currentPlanStillSymbolic =
     currentTarget.action === "create" &&
     current.targetBinding === "symbolic";
@@ -2020,6 +2645,15 @@ function getPendingUpdate(
     : undefined;
 }
 
+function getPendingDelete(
+  checkpoint: ApplyCheckpoint,
+  logicalId: string,
+): ApplyCheckpoint["pendingDeletes"][string] | undefined {
+  return Object.hasOwn(checkpoint.pendingDeletes, logicalId)
+    ? checkpoint.pendingDeletes[logicalId]
+    : undefined;
+}
+
 function assertItemHasNotDrifted(
   approved: PlannedItem,
   current: PlannedItem,
@@ -2049,6 +2683,15 @@ function comparableItemState(item: PlannedItem): unknown {
     resolvedBindingsHash: item.resolvedBindingsHash,
     sparkJobArtifacts: comparableSparkJobArtifactSource(item),
     lakehouseTables: item.lakehouseTables,
+    tagAssignment: item.tagAssignment
+      ? {
+          assignmentHash: item.tagAssignment.assignmentHash,
+          tagLogicalIds: item.tagAssignment.tagLogicalIds,
+          missingTagLogicalIds:
+            item.tagAssignment.missingTagLogicalIds,
+          action: item.tagAssignment.action,
+        }
+      : undefined,
   };
 }
 
@@ -2094,7 +2737,23 @@ async function applyLakehouseTablesItem(
     );
   }
   if (
-    item.action === "create" &&
+    plan.operations.some(
+      (operation) =>
+        operation.action === "create" &&
+        operation.resourceKind === "schema",
+    ) &&
+    !(options.allowLakehouseSchemaCreate ?? false)
+  ) {
+    throw new Error(
+      `Plan requires creating Lakehouse schemas for '${item.logicalId}', but allow-lakehouse-schema-create is false.`,
+    );
+  }
+  if (
+    plan.operations.some(
+      (operation) =>
+        operation.action === "create" &&
+        (operation.resourceKind ?? "table") === "table",
+    ) &&
     !(options.allowLakehouseTableCreate ?? false)
   ) {
     throw new Error(
@@ -2134,7 +2793,7 @@ async function applyLakehouseTablesItem(
     targetLakehouseLogicalId:
       plan.targetLakehouseLogicalId,
   };
-  const operations = buildLakehouseTableCreateOperations(
+  const operations = buildLakehouseDdlCreateOperations(
     definition,
     execution,
   );
@@ -2404,7 +3063,7 @@ function assertLakehouseTablesOperationProof(
   definition: NonNullable<
     LoadedManifest["lakehouseTablesDefinitions"]
   >[string],
-  operations: ReturnType<typeof buildLakehouseTableCreateOperations>,
+  operations: ReturnType<typeof buildLakehouseDdlCreateOperations>,
 ): void {
   const plan = item.lakehouseTables;
   if (
@@ -2424,6 +3083,8 @@ function assertLakehouseTablesOperationProof(
       approved.operationId !== operation.operationId ||
       approved.operationHash !== operation.operationHash ||
       approved.order !== operation.order ||
+      (approved.resourceKind ?? "table") !==
+        (operation.kind === "create-schema" ? "schema" : "table") ||
       approved.logicalId !== operation.logicalId ||
       approved.identifier !== operation.identifier ||
       approved.desiredHash !== operation.desiredHash
@@ -2440,7 +3101,7 @@ async function recoverLakehouseTablesCheckpoint(
     checkpoint: ApplyCheckpoint,
     item: PlannedItem,
     targetLakehouseId: string,
-    operations: ReturnType<typeof buildLakehouseTableCreateOperations>,
+    operations: ReturnType<typeof buildLakehouseDdlCreateOperations>,
     now: () => number,
   ): Promise<void> {
     const state = checkpoint.lakehouseTables?.[item.logicalId];
@@ -2951,6 +3612,7 @@ async function applyItem(
     state?: DefinitionItemUpdateRecoveryState,
   ) => void,
   onUpdateRejected: () => void,
+  onDeleteSubmitting: () => void,
 ): Promise<ApplyItemResult> {
   if (
     item.type !== "Lakehouse" &&
@@ -2958,7 +3620,8 @@ async function applyItem(
     item.type !== "SparkCustomPool" &&
     item.type !== "Notebook" &&
     item.type !== "SparkJobDefinition" &&
-    item.type !== "DataPipeline"
+    item.type !== "DataPipeline" &&
+    item.type !== "FabricTag"
   ) {
     throw new Error(
       `Apply is not implemented for item '${item.logicalId}' of type ${item.type}.`,
@@ -2969,10 +3632,106 @@ async function applyItem(
     throw new Error(`Desired definition is missing for '${item.logicalId}'.`);
   }
 
+  if (item.action === "delete") {
+    if (!(options.allowDelete ?? false)) {
+      throw new Error(
+        `Plan requires deleting '${item.logicalId}', but allow-delete is false.`,
+      );
+    }
+    if (
+      item.type === "Lakehouse" &&
+      !(options.allowLakehouseDataLoss ?? false)
+    ) {
+      throw new Error(
+        `Plan requires deleting Lakehouse '${item.logicalId}', but allow-lakehouse-data-loss is false.`,
+      );
+    }
+    if (
+      !item.physicalId ||
+      !item.observedStateHash ||
+      !isDeletableFabricItemType(item.type)
+    ) {
+      throw new Error(
+        `Delete item '${item.logicalId}' is missing its exact approved deletion proof.`,
+      );
+    }
+    const adapter = requireItemDeletionAdapter(
+      options,
+      item.logicalId,
+    );
+    const before = await adapter.verifyApprovedIdentity(
+      options.approvedPlan.workspaceId,
+      item.physicalId,
+      item.type,
+      desired,
+      item.observedStateHash,
+    );
+    if (before === "unchanged") {
+      await adapter.delete(
+        options.approvedPlan.workspaceId,
+        item.physicalId,
+        onDeleteSubmitting,
+      );
+    }
+    const after = await adapter.verifyApprovedIdentity(
+      options.approvedPlan.workspaceId,
+      item.physicalId,
+      item.type,
+      desired,
+      item.observedStateHash,
+    );
+    if (after !== "absent") {
+      throw new Error(
+        `Delete item '${item.logicalId}' is still present after Fabric accepted the request.`,
+      );
+    }
+    await assertDeletionIdentityIsAbsent(options, item, desired);
+    return {
+      logicalId: item.logicalId,
+      type: item.type,
+      action: item.action,
+      status: "deleted",
+      physicalId: item.physicalId,
+      durationMs: now() - startedAt,
+    };
+  }
+
+  if (item.desiredState === "absent") {
+    if (item.action !== "no-op") {
+      throw new Error(
+        `Absent item '${item.logicalId}' cannot be applied while action is '${item.action}'.`,
+      );
+    }
+    const live = await planDesiredItem(options, item, desired);
+    if (
+      live.action !== "no-op" ||
+      ("physicalId" in live && live.physicalId !== undefined)
+    ) {
+      throw new Error(
+        `Absent item '${item.logicalId}' is no longer absent.`,
+      );
+    }
+    return {
+      logicalId: item.logicalId,
+      type: item.type,
+      action: item.action,
+      status: "verified",
+      durationMs: now() - startedAt,
+    };
+  }
+
   if (item.action === "create") {
     if (!options.allowCreate) {
       throw new Error(
         `Plan requires creating '${item.logicalId}', but allow-create is false.`,
+      );
+    }
+    if (
+      item.type === "FabricTag" &&
+      !(options.allowTagCreate ?? false)
+    ) {
+      throw new Error(
+        `Plan requires creating Fabric tag '${item.logicalId}', but allow-tag-create is false.`,
       );
     }
     const created = await createDesiredItem(
@@ -3050,8 +3809,63 @@ async function applyItem(
 async function resumeCompletedItem(
   options: ApplyPlanOptions,
   item: PlannedItem,
-  physicalId: string,
+  physicalId: string | undefined,
 ): Promise<void> {
+  if (item.desiredState === "absent") {
+    if (!isDeletableFabricItemType(item.type)) {
+      throw new Error(
+        `Checkpoint resume is not implemented for absent type ${item.type}.`,
+      );
+    }
+    const desired =
+      options.loadedManifest.itemDefinitions[item.logicalId];
+    if (!desired) {
+      throw new Error(
+        `Desired definition is missing for '${item.logicalId}'.`,
+      );
+    }
+    const adapter = requireItemDeletionAdapter(
+      options,
+      item.logicalId,
+    );
+    if (item.action === "delete") {
+      if (!physicalId || !item.observedStateHash) {
+        throw new Error(
+          `Completed deletion '${item.logicalId}' is missing its approved proof.`,
+        );
+      }
+      const state = await adapter.verifyApprovedIdentity(
+        options.approvedPlan.workspaceId,
+        physicalId,
+        item.type,
+        desired,
+        item.observedStateHash,
+      );
+      if (state !== "absent") {
+        throw new Error(
+          `Checkpointed deletion '${item.logicalId}' is no longer absent.`,
+        );
+      }
+      await assertDeletionIdentityIsAbsent(options, item, desired);
+      return;
+    }
+    const live = await adapter.plan(
+      options.approvedPlan.workspaceId,
+      item.type,
+      desired,
+    );
+    if (item.action !== "no-op" || live.action !== "no-op") {
+      throw new Error(
+        `Checkpointed absent item '${item.logicalId}' is no longer absent.`,
+      );
+    }
+    return;
+  }
+  if (!physicalId) {
+    throw new Error(
+      `Checkpointed item '${item.logicalId}' has no physical ID.`,
+    );
+  }
   if (item.type === "LakehouseTables") {
     const adapter = options.lakehouseTablesAdapter;
     const definition =
@@ -3096,7 +3910,8 @@ async function resumeCompletedItem(
     item.type !== "SparkCustomPool" &&
     item.type !== "Notebook" &&
     item.type !== "SparkJobDefinition" &&
-    item.type !== "DataPipeline"
+    item.type !== "DataPipeline" &&
+    item.type !== "FabricTag"
   ) {
     throw new Error(
       `Checkpoint resume is not implemented for type ${item.type}.`,
@@ -3132,6 +3947,26 @@ async function planDesiredItem(
   item: PlannedItem,
   desired: ItemDefinition,
 ) {
+  if (item.desiredState === "absent") {
+    if (!isDeletableFabricItemType(item.type)) {
+      throw new Error(
+        `Deletion planning is not implemented for item '${item.logicalId}' of type ${item.type}.`,
+      );
+    }
+    return requireItemDeletionAdapter(
+      options,
+      item.logicalId,
+    ).plan(
+      options.approvedPlan.workspaceId,
+      item.type,
+      desired,
+    );
+  }
+  if (item.type === "FabricTag") {
+    return requireTagAdapter(options, item.logicalId).plan(
+      desiredFabricTag(desired),
+    );
+  }
   if (item.type === "Lakehouse") {
     return options.lakehouseAdapter.plan(
       options.approvedPlan.workspaceId,
@@ -3195,6 +4030,31 @@ async function planDesiredItem(
   );
 }
 
+async function assertDeletionIdentityIsAbsent(
+  options: ApplyPlanOptions,
+  item: PlannedItem,
+  desired: ItemDefinition,
+): Promise<void> {
+  if (!isDeletableFabricItemType(item.type)) {
+    throw new Error(
+      `Deletion verification is not implemented for item '${item.logicalId}' of type ${item.type}.`,
+    );
+  }
+  const live = await requireItemDeletionAdapter(
+    options,
+    item.logicalId,
+  ).plan(
+    options.approvedPlan.workspaceId,
+    item.type,
+    desired,
+  );
+  if (live.action !== "no-op" || live.physicalId) {
+    throw new Error(
+      `A different ${item.type} now occupies the approved deletion identity for '${item.logicalId}'. Generate a new plan before deleting it.`,
+    );
+  }
+}
+
 async function createDesiredItem(
   options: ApplyPlanOptions,
   item: PlannedItem,
@@ -3211,6 +4071,15 @@ async function createDesiredItem(
   onCreateSubmitting: () => void,
   onCreateRejected: () => void,
 ) {
+  if (item.type === "FabricTag") {
+    onCreateSubmitting();
+    const created = await requireTagAdapter(
+      options,
+      item.logicalId,
+    ).create(desiredFabricTag(desired));
+    onMutationAccepted(created.id);
+    return created;
+  }
   if (item.type === "Lakehouse") {
     return options.lakehouseAdapter.create(
       options.approvedPlan.workspaceId,
@@ -3441,6 +4310,12 @@ async function verifyDesiredItem(
   physicalId: string,
   desired: ItemDefinition,
 ) {
+  if (item.type === "FabricTag") {
+    return requireTagAdapter(options, item.logicalId).verify(
+      desiredFabricTag(desired),
+      physicalId,
+    );
+  }
   if (item.type === "Lakehouse") {
     return options.lakehouseAdapter.verify(
       options.approvedPlan.workspaceId,
@@ -3494,6 +4369,37 @@ async function verifyDesiredItem(
   throw new Error(
     `Verification is not implemented for item '${item.logicalId}' of type ${item.type}.`,
   );
+}
+
+function requireTagAdapter(
+  options: ApplyPlanOptions,
+  logicalId: string,
+): NonNullable<ApplyPlanOptions["tagAdapter"]> {
+  if (!options.tagAdapter) {
+    throw new Error(
+      `Fabric tag adapter was not initialized for item '${logicalId}'.`,
+    );
+  }
+  return options.tagAdapter;
+}
+
+function desiredFabricTag(desired: ItemDefinition) {
+  return {
+    displayName: desired.displayName,
+    scope: desired.scope ?? ({ type: "Tenant" } as const),
+  };
+}
+
+function requireItemDeletionAdapter(
+  options: ApplyPlanOptions,
+  logicalId: string,
+): NonNullable<ApplyPlanOptions["itemDeletionAdapter"]> {
+  if (!options.itemDeletionAdapter) {
+    throw new Error(
+      `Deletion adapter was not initialized for item '${logicalId}'.`,
+    );
+  }
+  return options.itemDeletionAdapter;
 }
 
 function requireEnvironmentAdapter(

@@ -10,15 +10,24 @@ import type {
   PlannedItem,
 } from "../types";
 import type { EnvironmentAdapter } from "./environment";
+import {
+  isDeletableFabricItemType,
+  type ItemDeletionAdapter,
+} from "./item-deletion";
 import type { LakehouseAdapter } from "./lakehouse";
 import {
-  buildLakehouseTableCreateOperations,
+  buildLakehouseDdlCreateOperations,
   type LakehouseTablesAdapter,
 } from "./lakehouse-tables";
 import type { NotebookAdapter } from "./notebook";
 import type { PipelineAdapter } from "./pipeline";
 import type { SparkCustomPoolAdapter } from "./spark-custom-pool";
 import type { SparkJobAdapter } from "./spark-job";
+import type { FabricTagAdapter } from "./tags";
+import {
+  buildTagAssignmentHash,
+  getDesiredTagLogicalIds,
+} from "./tag-assignment";
 import {
   materializeSparkJobArtifactUris,
   planSparkJobArtifacts,
@@ -32,6 +41,7 @@ import {
 
 export interface FabricPlanAdapters {
   workspace?: Pick<WorkspaceAdapter, "plan">;
+  deletion?: Pick<ItemDeletionAdapter, "plan">;
   lakehouse: Pick<LakehouseAdapter, "plan">;
   environment: Pick<EnvironmentAdapter, "plan">;
   notebook: Pick<NotebookAdapter, "plan">;
@@ -39,6 +49,7 @@ export interface FabricPlanAdapters {
     Partial<Pick<SparkJobAdapter, "planUnresolvedReferences">>;
   pipeline: Pick<PipelineAdapter, "plan">;
   sparkCustomPool: Pick<SparkCustomPoolAdapter, "plan">;
+  tags?: Pick<FabricTagAdapter, "plan" | "planItemAssignment">;
   lakehouseTables?: Pick<LakehouseTablesAdapter, "plan">;
   oneLakeArtifacts?: {
     dfsEndpoint: string;
@@ -123,8 +134,10 @@ export async function enrichPlanWithFabric(
 
   const plannedItems = new Map<string, PlannedItem>();
   const planningOrder = [
+    ...plan.items.filter((item) => item.type === "FabricTag"),
     ...plan.items.filter(
       (item) =>
+        item.type !== "FabricTag" &&
         item.type !== "SparkJobDefinition" &&
         item.type !== "LakehouseTables",
     ),
@@ -156,7 +169,8 @@ export async function enrichPlanWithFabric(
       item.type !== "SparkCustomPool" &&
       item.type !== "Notebook" &&
       item.type !== "SparkJobDefinition" &&
-      item.type !== "DataPipeline"
+      item.type !== "DataPipeline" &&
+      item.type !== "FabricTag"
     ) {
       plannedItems.set(item.logicalId, {
         ...item,
@@ -196,19 +210,29 @@ export async function enrichPlanWithFabric(
         targetLakehouseLogicalId: targetLogicalId,
       };
       const canonicalOperations =
-        buildLakehouseTableCreateOperations(definition, execution);
+        buildLakehouseDdlCreateOperations(definition, execution);
       if (target.action === "create") {
         const targetDefinition = loaded.itemDefinitions[targetLogicalId];
+        if (targetDefinition?.enableSchemas !== true) {
+          return {
+            ...item,
+            action: "blocked",
+            reason: `New target Lakehouse '${targetLogicalId}' must set enableSchemas: true before Lakehouse schema or table DDL can be planned.`,
+          };
+        }
+        const declaredSchemaNames = new Set(
+          (definition.schemas ?? []).map((schema) => schema.name),
+        );
         const unsupported = definition.tables.find(
           (table) =>
-            targetDefinition?.enableSchemas !== true ||
-            table.table.schema !== "dbo",
+            table.table.schema !== "dbo" &&
+            !declaredSchemaNames.has(table.table.schema),
         );
         if (unsupported) {
           return {
             ...item,
             action: "blocked",
-            reason: `New target Lakehouse '${targetLogicalId}' cannot prove schema '${unsupported.table.schema}' exists. Phase 3 only symbolically plans dbo tables for schema-enabled Lakehouses.`,
+            reason: `New target Lakehouse '${targetLogicalId}' cannot prove schema '${unsupported.table.schema}' exists because it is neither dbo nor declared in this bundle.`,
           };
         }
         const observedStateHash = sha256(
@@ -220,7 +244,7 @@ export async function enrichPlanWithFabric(
         return {
           ...item,
           action: "create",
-          reason: `${canonicalOperations.length} Lakehouse table(s) require creation after the target Lakehouse is created.`,
+          reason: `${canonicalOperations.length} Lakehouse schema or table resource(s) require creation after the target Lakehouse is created.`,
           observedStateHash,
           lakehouseTables: {
             targetLakehouseLogicalId: targetLogicalId,
@@ -230,6 +254,10 @@ export async function enrichPlanWithFabric(
             observedStateHash,
             operations: canonicalOperations.map((operation) => ({
               action: "create",
+              resourceKind:
+                operation.kind === "create-schema"
+                  ? "schema"
+                  : "table",
               operationId: operation.operationId,
               operationHash: operation.operationHash,
               order: operation.order,
@@ -237,7 +265,7 @@ export async function enrichPlanWithFabric(
               identifier: operation.identifier,
               desiredHash: operation.desiredHash,
               observedHash: "absent",
-              reason: `Table '${operation.identifier}' is absent in the new Lakehouse.`,
+              reason: `${operation.kind === "create-schema" ? "Schema" : "Table"} '${operation.identifier}' is absent in the new Lakehouse.`,
             })),
           },
         };
@@ -284,27 +312,52 @@ export async function enrichPlanWithFabric(
           desiredHash: definition.desiredHash,
           sourceHash: definition.sourceHash,
           observedStateHash: live.observedStateHash,
-          operations: live.tables.map((table, order) => {
-            const canonical = operationByLogicalId.get(table.logicalId);
-            if (!canonical) {
+          operations: canonicalOperations.map((canonical, order) => {
+            const liveOperation =
+              canonical.kind === "create-schema"
+                ? (live.schemas ?? []).find(
+                    (schema) =>
+                      schema.logicalId === canonical.logicalId,
+                  )
+                : live.tables.find(
+                    (table) =>
+                      table.logicalId === canonical.logicalId,
+                  );
+            if (!liveOperation) {
               throw new Error(
-                `Lakehouse table operation '${table.logicalId}' is missing from the canonical source.`,
+                `Lakehouse ${canonical.kind === "create-schema" ? "schema" : "table"} operation '${canonical.logicalId}' is missing from live planning.`,
+              );
+            }
+            const sourceOperation = operationByLogicalId.get(
+              liveOperation.logicalId,
+            );
+            const adoptionOperation =
+              "adoptionOperation" in liveOperation
+                ? liveOperation.adoptionOperation
+                : undefined;
+            if (!sourceOperation) {
+              throw new Error(
+                `Lakehouse DDL operation '${liveOperation.logicalId}' is missing from the canonical source.`,
               );
             }
             return {
-              action: table.action,
+              action: liveOperation.action,
+              resourceKind:
+                canonical.kind === "create-schema"
+                  ? "schema"
+                  : "table",
               operationId:
-                table.adoptionOperation?.operationId ??
-                canonical.operationId,
+                adoptionOperation?.operationId ??
+                sourceOperation.operationId,
               operationHash:
-                table.adoptionOperation?.operationHash ??
-                canonical.operationHash,
+                adoptionOperation?.operationHash ??
+                sourceOperation.operationHash,
               order,
-              logicalId: table.logicalId,
-              identifier: table.identifier,
-              desiredHash: table.desiredHash,
-              observedHash: table.observedHash,
-              reason: table.reason,
+              logicalId: liveOperation.logicalId,
+              identifier: liveOperation.identifier,
+              desiredHash: liveOperation.desiredHash,
+              observedHash: liveOperation.observedHash,
+              reason: liveOperation.reason,
             };
           }),
         },
@@ -320,9 +373,45 @@ export async function enrichPlanWithFabric(
       });
       continue;
     }
+    if (item.desiredState === "absent") {
+      if (
+        !isDeletableFabricItemType(item.type) ||
+        !adapters.deletion
+      ) {
+        plannedItems.set(item.logicalId, {
+          ...item,
+          action: "blocked",
+          reason: `Online deletion planning is unavailable for ${item.type}.`,
+        });
+        continue;
+      }
+      const deletion = await adapters.deletion.plan(
+        workspaceId,
+        item.type,
+        desired,
+      );
+      plannedItems.set(item.logicalId, {
+        ...item,
+        action: deletion.action,
+        reason: deletion.reason,
+        observedStateHash: deletion.observedStateHash,
+        ...(deletion.physicalId
+          ? { physicalId: deletion.physicalId }
+          : {}),
+      });
+      continue;
+    }
 
     const result =
-      item.type === "Lakehouse"
+      item.type === "FabricTag"
+        ? await requireTagAdapter(
+            adapters,
+            item.logicalId,
+          ).plan({
+            displayName: desired.displayName,
+            scope: desired.scope ?? { type: "Tenant" },
+          })
+      : item.type === "Lakehouse"
         ? await adapters.lakehouse.plan(workspaceId, desired)
         : item.type === "Environment"
           ? await adapters.environment.plan(
@@ -440,20 +529,163 @@ export async function enrichPlanWithFabric(
     return definition;
   }
 
+  function requireTagAdapter(
+    adapters: FabricPlanAdapters,
+    logicalId: string,
+  ): NonNullable<FabricPlanAdapters["tags"]> {
+    if (!adapters.tags) {
+      throw new Error(
+        `Fabric tag adapter is missing for '${logicalId}'.`,
+      );
+    }
+    return adapters.tags;
+  }
+
+  const orderedItems = plan.items.map((item) => {
+    const planned = plannedItems.get(item.logicalId);
+    if (!planned) {
+      throw new Error(
+        `Online plan result is missing for '${item.logicalId}'.`,
+      );
+    }
+    return planned;
+  });
+  const taggedItems = await enrichTagAssignments(
+    orderedItems,
+    workspaceId,
+    loadedManifest,
+    adapters.tags,
+  );
   return rehashPlan({
     ...plan,
     workspaceId,
     ...(plannedWorkspace ? { workspace: plannedWorkspace } : {}),
-    items: plan.items.map((item) => {
-      const planned = plannedItems.get(item.logicalId);
-      if (!planned) {
-        throw new Error(
-          `Online plan result is missing for '${item.logicalId}'.`,
-        );
-      }
-      return planned;
-    }),
+    items: taggedItems,
   });
+}
+
+async function enrichTagAssignments(
+  items: PlannedItem[],
+  workspaceId: string,
+  loadedManifest: LoadedManifest,
+  adapter:
+    | Pick<FabricTagAdapter, "planItemAssignment">
+    | undefined,
+): Promise<PlannedItem[]> {
+  const plannedItems = new Map(
+    items.map((item) => [item.logicalId, item]),
+  );
+  const result: PlannedItem[] = [];
+  for (const item of items) {
+    const tagLogicalIds = getDesiredTagLogicalIds(
+      loadedManifest,
+      item.logicalId,
+    );
+    if (tagLogicalIds.length === 0) {
+      result.push(item);
+      continue;
+    }
+    const assignmentHash = buildTagAssignmentHash(
+      loadedManifest,
+      item.logicalId,
+    );
+    try {
+      if (!adapter) {
+        throw new Error("Fabric tag adapter is not initialized.");
+      }
+      if (item.action === "blocked" || item.action === "unknown") {
+        throw new Error(`Target item action is '${item.action}'.`);
+      }
+      const tagPlans = tagLogicalIds.map((logicalId) => {
+        const tag = plannedItems.get(logicalId);
+        if (!tag || tag.type !== "FabricTag") {
+          throw new Error(
+            `Tag logical ID '${logicalId}' is not a planned FabricTag.`,
+          );
+        }
+        if (tag.action === "blocked" || tag.action === "unknown") {
+          throw new Error(
+            `FabricTag '${logicalId}' action is '${tag.action}'.`,
+          );
+        }
+        return tag;
+      });
+      if (
+        !item.physicalId ||
+        tagPlans.some((tag) => !tag.physicalId)
+      ) {
+        result.push({
+          ...item,
+          tagAssignment: {
+            assignmentHash,
+            tagLogicalIds,
+            missingTagLogicalIds: tagLogicalIds,
+            action: "update",
+            observedStateHash: sha256(
+              stableJson({
+                target: item.physicalId ?? null,
+                tags: tagPlans.map((tag) => tag.physicalId ?? null),
+              }),
+            ),
+            reason:
+              "Fabric tags will be assigned after the target item and tag resources are materialized.",
+          },
+        });
+        continue;
+      }
+      const tagIdToLogicalId = new Map(
+        tagPlans.map((tag) => [
+          tag.physicalId!.toLowerCase(),
+          tag.logicalId,
+        ]),
+      );
+      const assignment = await adapter.planItemAssignment(
+        workspaceId,
+        item.physicalId,
+        tagPlans.map((tag) => tag.physicalId!),
+      );
+      result.push({
+        ...item,
+        tagAssignment: {
+          assignmentHash,
+          tagLogicalIds,
+          missingTagLogicalIds: assignment.missingTagIds.map((id) => {
+            const logicalId = tagIdToLogicalId.get(id.toLowerCase());
+            if (!logicalId) {
+              throw new Error(
+                `Fabric returned unexpected desired tag ID '${id}'.`,
+              );
+            }
+            return logicalId;
+          }),
+          action: assignment.action,
+          observedStateHash: assignment.observedStateHash,
+          reason: assignment.reason,
+        },
+      });
+    } catch (error) {
+      result.push({
+        ...item,
+        tagAssignment: {
+          assignmentHash,
+          tagLogicalIds,
+          missingTagLogicalIds: tagLogicalIds,
+          action: "blocked",
+          observedStateHash: sha256(
+            stableJson({ error: errorMessage(error) }),
+          ),
+          reason: `Fabric tag assignment planning failed: ${errorMessage(
+            error,
+          )}`,
+        },
+      });
+    }
+  }
+  return result;
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 function blockItemUntilWorkspaceExists(

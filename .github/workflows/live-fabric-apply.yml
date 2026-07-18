@@ -23,6 +23,16 @@ on:
         required: true
         default: false
         type: boolean
+      allow_delete:
+        description: Permit approved soft deletion.
+        required: true
+        default: false
+        type: boolean
+      allow_lakehouse_data_loss:
+        description: Permit approved Lakehouse deletion.
+        required: true
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -91,7 +101,7 @@ jobs:
           echo "attempt=${GITHUB_RUN_ATTEMPT}" >> "$GITHUB_OUTPUT"
 
       - name: Upload approved plan
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: ${{ steps.plan-artifact.outputs.name }}
           path: approved-plan/fabric-plan.json
@@ -108,7 +118,7 @@ jobs:
       - uses: actions/checkout@v5
 
       - name: Download approved plan
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v5
         with:
           name: ${{ needs.plan.outputs.approved-plan-artifact }}
           path: approved-plan
@@ -138,7 +148,7 @@ jobs:
 
       - name: Download prior apply artifacts
         if: ${{ steps.prior-attempt.outputs.number != '' }}
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v5
         with:
           name: fabric-apply-result-${{ github.run_id }}-${{ steps.prior-attempt.outputs.number }}
           path: prior-apply
@@ -170,13 +180,15 @@ jobs:
           approved-plan-file: approved-plan/fabric-plan.json
           allow-create: ${{ inputs.allow_create }}
           allow-update: ${{ inputs.allow_update }}
+          allow-delete: ${{ inputs.allow_delete }}
+          allow-lakehouse-data-loss: ${{ inputs.allow_lakehouse_data_loss }}
           plan-file: apply-output/current-plan.json
           checkpoint-file: apply-output/checkpoint.json
           result-file: apply-output/result.json
 
       - name: Upload apply artifacts
         if: ${{ always() }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: fabric-apply-result-${{ github.run_id }}-${{ github.run_attempt }}
           path: |

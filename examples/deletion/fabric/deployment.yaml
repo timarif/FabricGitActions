@@ -1,0 +1,21 @@
+apiVersion: fabric.deploy/v1alpha1
+kind: FabricDeployment
+
+metadata:
+  deploymentId: retire-legacy-items
+
+workspace:
+  id: ${var.FABRIC_WORKSPACE_ID}
+
+items:
+  - logicalId: legacyLakehouse
+    type: Lakehouse
+    path: items/lakehouses/legacy
+    desiredState: absent
+
+  - logicalId: legacyPipeline
+    type: DataPipeline
+    path: items/pipelines/legacy
+    desiredState: absent
+    dependsOn:
+      - legacyLakehouse

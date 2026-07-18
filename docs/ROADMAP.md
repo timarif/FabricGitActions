@@ -41,8 +41,11 @@
 
 ## Phase 4: production hardening
 
-- [ ] Explicit deletion and Lakehouse data-loss guard
+- [x] Guarded soft deletion for Environment, Notebook, Spark Job Definition, and Data Pipeline items
+- [x] Lakehouse deletion with an independent data-loss safeguard
 - [x] OneLake staging for Spark Job JVM executables and JAR libraries
-- [ ] Live sandbox E2E suite
-- [ ] Reusable dev/test/prod workflow
-- [ ] Marketplace release automation, provenance, and support documentation
+- [x] Fabric tag catalog creation and additive item assignment
+- [x] Lakehouse schema creation
+- [x] Live sandbox E2E suite
+- [x] Reusable dev/test/prod workflow
+- [x] Marketplace release automation, provenance, and support documentation

@@ -24,7 +24,11 @@ import { validateLogicalReferenceDeclarations } from "./fabric/logical-reference
 import { loadAndValidateItemDefinition } from "./item-definition";
 import { deploymentSchema } from "./schema";
 import { substituteVariables } from "./substitution";
-import type { DeploymentManifest, LoadedManifest } from "./types";
+import type {
+  DeploymentManifest,
+  ItemDefinition,
+  LoadedManifest,
+} from "./types";
 
 export interface LoadManifestOptions {
   variables?: Record<string, string>;
@@ -64,20 +68,25 @@ export function loadManifest(
 
   const manifestDirectory = path.dirname(absoluteManifestPath);
   const itemContent = validateAndHashItemPaths(manifest, manifestDirectory);
-  const logicalIds = new Set(manifest.items.map((item) => item.logicalId));
+  const itemTypes = new Map(
+    manifest.items.map((item) => [item.logicalId, item.type]),
+  );
   const itemDefinitions = Object.fromEntries(
     manifest.items.map((item) => [
       item.logicalId,
       loadAndValidateItemDefinition(
         item,
         itemContent.directories[item.logicalId] ?? "",
-        logicalIds,
+        itemTypes,
         new Set(item.dependsOn ?? []),
         options.variables ?? {},
       ),
     ]),
   );
   for (const item of manifest.items) {
+    if (item.desiredState === "absent") {
+      continue;
+    }
     const definition = itemDefinitions[item.logicalId];
     if (!definition) {
       throw new Error(
@@ -92,7 +101,10 @@ export function loadManifest(
   }
   const environmentDefinitions = Object.fromEntries(
     manifest.items
-      .filter((item) => item.type === "Environment")
+      .filter(
+        (item) =>
+          item.type === "Environment" && item.desiredState !== "absent",
+      )
       .map((item) => [
         item.logicalId,
         loadEnvironmentDefinition(
@@ -102,7 +114,10 @@ export function loadManifest(
   );
   const notebookDefinitions = Object.fromEntries(
     manifest.items
-      .filter((item) => item.type === "Notebook")
+      .filter(
+        (item) =>
+          item.type === "Notebook" && item.desiredState !== "absent",
+      )
       .map((item) => [
         item.logicalId,
         loadNotebookDefinition(
@@ -112,7 +127,10 @@ export function loadManifest(
   );
   const sparkCustomPoolDefinitions = Object.fromEntries(
     manifest.items
-      .filter((item) => item.type === "SparkCustomPool")
+      .filter(
+        (item) =>
+          item.type === "SparkCustomPool" && item.desiredState !== "absent",
+      )
       .map((item) => [
         item.logicalId,
         loadSparkCustomPoolDefinition(
@@ -122,7 +140,11 @@ export function loadManifest(
   );
   const sparkJobBundles = Object.fromEntries(
     manifest.items
-      .filter((item) => item.type === "SparkJobDefinition")
+      .filter(
+        (item) =>
+          item.type === "SparkJobDefinition" &&
+          item.desiredState !== "absent",
+      )
       .map((item) => [
         item.logicalId,
         loadSparkJobDefinitionBundle(
@@ -144,7 +166,10 @@ export function loadManifest(
   );
   const pipelineDefinitions = Object.fromEntries(
     manifest.items
-      .filter((item) => item.type === "DataPipeline")
+      .filter(
+        (item) =>
+          item.type === "DataPipeline" && item.desiredState !== "absent",
+      )
       .map((item) => [
         item.logicalId,
         loadPipelineDefinition(
@@ -154,7 +179,11 @@ export function loadManifest(
   );
   const lakehouseTablesDefinitions = Object.fromEntries(
     manifest.items
-      .filter((item) => item.type === "LakehouseTables")
+      .filter(
+        (item) =>
+          item.type === "LakehouseTables" &&
+          item.desiredState !== "absent",
+      )
       .map((item) => [
         item.logicalId,
         loadLakehouseTablesDefinition(
@@ -195,6 +224,7 @@ export function loadManifest(
     itemContent.hashes,
   );
   validateUniqueDesiredIdentities(manifest, itemDefinitions);
+  validateUniqueFabricTagIdentities(manifest, itemDefinitions);
   validateUniqueLakehouseTableIdentities(
     manifest,
     itemDefinitions,
@@ -539,6 +569,59 @@ function validateUniqueDesiredIdentities(
   }
 }
 
+function validateUniqueFabricTagIdentities(
+  manifest: DeploymentManifest,
+  definitions: LoadedManifest["itemDefinitions"],
+): void {
+  const tags: Array<{
+    logicalId: string;
+    displayName: string;
+    scope: NonNullable<ItemDefinition["scope"]>;
+  }> = [];
+  for (const item of manifest.items) {
+    if (item.type !== "FabricTag") {
+      continue;
+    }
+    const definition = definitions[item.logicalId];
+    if (!definition) {
+      continue;
+    }
+    tags.push({
+      logicalId: item.logicalId,
+      displayName: definition.displayName,
+      scope: definition.scope ?? { type: "Tenant" },
+    });
+  }
+  for (let index = 0; index < tags.length; index += 1) {
+    const current = tags[index]!;
+    for (
+      let otherIndex = index + 1;
+      otherIndex < tags.length;
+      otherIndex += 1
+    ) {
+      const other = tags[otherIndex]!;
+      if (
+        current.displayName.toLocaleLowerCase("en-US") !==
+        other.displayName.toLocaleLowerCase("en-US")
+      ) {
+        continue;
+      }
+      const scopesConflict =
+        current.scope.type === "Tenant" ||
+        other.scope.type === "Tenant" ||
+        (current.scope.type === "Domain" &&
+          other.scope.type === "Domain" &&
+          current.scope.domainId.toLowerCase() ===
+            other.scope.domainId.toLowerCase());
+      if (scopesConflict) {
+        throw new Error(
+          `FabricTag items '${current.logicalId}' and '${other.logicalId}' have conflicting displayName and scope identities.`,
+        );
+      }
+    }
+  }
+}
+
 function validateUniqueLakehouseTableIdentities(
   manifest: DeploymentManifest,
   itemDefinitions: LoadedManifest["itemDefinitions"],
@@ -550,6 +633,10 @@ function validateUniqueLakehouseTableIdentities(
     string,
     { bundleLogicalId: string; tableLogicalId: string }
   >();
+  const schemaIdentities = new Map<
+    string,
+    { bundleLogicalId: string; schemaLogicalId: string }
+  >();
   for (const item of manifest.items) {
     if (item.type !== "LakehouseTables") {
       continue;
@@ -559,6 +646,22 @@ function validateUniqueLakehouseTableIdentities(
     const definition = tableDefinitions[item.logicalId];
     if (!targetLakehouseLogicalId || !definition) {
       continue;
+    }
+    for (const schema of definition.schemas ?? []) {
+      const identity = [
+        targetLakehouseLogicalId,
+        schema.name.toLowerCase(),
+      ].join("\0");
+      const existing = schemaIdentities.get(identity);
+      if (existing) {
+        throw new Error(
+          `LakehouseTables bundles '${existing.bundleLogicalId}' schema '${existing.schemaLogicalId}' and '${item.logicalId}' schema '${schema.logicalId}' target the same schema '${schema.name}' in Lakehouse '${targetLakehouseLogicalId}'.`,
+        );
+      }
+      schemaIdentities.set(identity, {
+        bundleLogicalId: item.logicalId,
+        schemaLogicalId: schema.logicalId,
+      });
     }
     for (const table of definition.tables) {
       const identity = [
@@ -633,15 +736,26 @@ function validateLogicalIds(manifest: DeploymentManifest): void {
 }
 
 function validateDependencies(manifest: DeploymentManifest): void {
-  const logicalIds = new Set(manifest.items.map((item) => item.logicalId));
+  const items = new Map(
+    manifest.items.map((item) => [item.logicalId, item]),
+  );
   for (const item of manifest.items) {
     for (const dependency of item.dependsOn ?? []) {
       if (dependency === item.logicalId) {
         throw new Error(`Item '${item.logicalId}' cannot depend on itself.`);
       }
-      if (!logicalIds.has(dependency)) {
+      const dependencyItem = items.get(dependency);
+      if (!dependencyItem) {
         throw new Error(
           `Item '${item.logicalId}' depends on unknown logicalId '${dependency}'.`,
+        );
+      }
+      if (
+        item.desiredState !== "absent" &&
+        dependencyItem.desiredState === "absent"
+      ) {
+        throw new Error(
+          `Present item '${item.logicalId}' cannot depend on absent item '${dependency}'.`,
         );
       }
     }

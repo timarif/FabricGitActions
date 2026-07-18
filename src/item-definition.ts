@@ -28,9 +28,45 @@ const itemDefinitionSchema = {
   properties: {
     displayName: { type: "string", minLength: 1, maxLength: 256 },
     description: { type: "string", maxLength: 256 },
-    desiredState: { const: "present" },
+    desiredState: { enum: ["present", "absent"] },
     folderId: { type: "string", minLength: 1 },
     enableSchemas: { const: true },
+    scope: {
+      oneOf: [
+        {
+          type: "object",
+          additionalProperties: false,
+          required: ["type"],
+          properties: {
+            type: { const: "Tenant" },
+          },
+        },
+        {
+          type: "object",
+          additionalProperties: false,
+          required: ["type", "domainId"],
+          properties: {
+            type: { const: "Domain" },
+            domainId: {
+              type: "string",
+              pattern:
+                "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$",
+            },
+          },
+        },
+      ],
+    },
+    tags: {
+      type: "array",
+      minItems: 1,
+      maxItems: 10,
+      uniqueItems: true,
+      items: {
+        type: "string",
+        minLength: 1,
+        pattern: "^[A-Za-z][A-Za-z0-9_-]*$",
+      },
+    },
     references: {
       type: "object",
       additionalProperties: {
@@ -68,7 +104,7 @@ function formatValidationErrors(errors: ErrorObject[] | null | undefined): strin
 export function loadAndValidateItemDefinition(
   item: DeploymentItem,
   itemDirectory: string,
-  logicalIds: Set<string>,
+  itemTypes: ReadonlyMap<string, FabricItemType>,
   dependencies: Set<string>,
   variables: Record<string, string>,
 ): ItemDefinition {
@@ -90,6 +126,13 @@ export function loadAndValidateItemDefinition(
   }
 
   const definition = resolved as ItemDefinition;
+  const manifestDesiredState = item.desiredState ?? "present";
+  const definitionDesiredState = definition.desiredState ?? "present";
+  if (manifestDesiredState !== definitionDesiredState) {
+    throw new Error(
+      `Item '${item.logicalId}' item.yaml desiredState '${definitionDesiredState}' does not match deployment manifest desiredState '${manifestDesiredState}'.`,
+    );
+  }
   if (
     item.type === "LakehouseTables" &&
     (resolved === null ||
@@ -100,20 +143,60 @@ export function loadAndValidateItemDefinition(
       `Item '${item.logicalId}' (LakehouseTables) must explicitly set desiredState: present.`,
     );
   }
-  validateReferences(item.logicalId, definition, logicalIds, dependencies);
-  validateBindings(item.logicalId, definition, logicalIds, dependencies);
+  if (manifestDesiredState === "absent") {
+    validateDeletionDefinition(item, definition);
+    return definition;
+  }
+  validateReferences(item.logicalId, definition, itemTypes, dependencies);
+  validateBindings(item.logicalId, definition, itemTypes, dependencies);
+  validateTags(item, definition, itemTypes, dependencies);
   validateTypeSpecificDefinition(item, itemDirectory, definition);
   return definition;
+}
+
+function validateDeletionDefinition(
+  item: DeploymentItem,
+  definition: ItemDefinition,
+): void {
+  if (
+    definition.description !== undefined ||
+    definition.enableSchemas !== undefined ||
+    definition.scope !== undefined ||
+    definition.tags !== undefined ||
+    definition.references !== undefined ||
+    definition.bindings !== undefined
+  ) {
+    throw new Error(
+      `Deletion item '${item.logicalId}' supports only displayName, desiredState, and optional folderId.`,
+    );
+  }
+
+  switch (item.type) {
+    case "Lakehouse":
+    case "Environment":
+    case "Notebook":
+    case "SparkJobDefinition":
+    case "DataPipeline":
+      return;
+    case "FabricTag":
+    case "LakehouseTables":
+    case "SparkCustomPool":
+      throw new Error(
+        `Item '${item.logicalId}' of type ${item.type} does not support desiredState: absent.`,
+      );
+    default:
+      assertNever(item.type);
+  }
 }
 
 function validateReferences(
   logicalId: string,
   definition: ItemDefinition,
-  logicalIds: Set<string>,
+  itemTypes: ReadonlyMap<string, FabricItemType>,
   dependencies: Set<string>,
 ): void {
   for (const [name, target] of Object.entries(definition.references ?? {})) {
-    if (!logicalIds.has(target)) {
+    if (!itemTypes.has(target)) {
       throw new Error(
         `Item '${logicalId}' reference '${name}' targets unknown logicalId '${target}'.`,
       );
@@ -125,7 +208,7 @@ function validateReferences(
 function validateBindings(
   logicalId: string,
   definition: ItemDefinition,
-  logicalIds: Set<string>,
+  itemTypes: ReadonlyMap<string, FabricItemType>,
   dependencies: Set<string>,
 ): void {
   for (const binding of definition.bindings ?? []) {
@@ -134,7 +217,7 @@ function validateBindings(
     );
     if (itemMatch) {
       const target = itemMatch[1];
-      if (!target || !logicalIds.has(target)) {
+      if (!target || !itemTypes.has(target)) {
         throw new Error(
           `Item '${logicalId}' binding targets unknown logicalId '${target ?? ""}'.`,
         );
@@ -153,6 +236,45 @@ function validateBindings(
         `Item '${logicalId}' binding valueFrom '${binding.valueFrom}' is invalid.`,
       );
     }
+  }
+}
+
+function validateTags(
+  item: DeploymentItem,
+  definition: ItemDefinition,
+  itemTypes: ReadonlyMap<string, FabricItemType>,
+  dependencies: Set<string>,
+): void {
+  if (!definition.tags) {
+    return;
+  }
+  if (
+    item.type === "FabricTag" ||
+    item.type === "LakehouseTables" ||
+    item.type === "SparkCustomPool"
+  ) {
+    throw new Error(
+      `Item '${item.logicalId}' of type ${item.type} does not support Fabric tag assignment.`,
+    );
+  }
+  for (const target of definition.tags) {
+    const targetType = itemTypes.get(target);
+    if (!targetType) {
+      throw new Error(
+        `Item '${item.logicalId}' tag targets unknown logicalId '${target}'.`,
+      );
+    }
+    if (targetType !== "FabricTag") {
+      throw new Error(
+        `Item '${item.logicalId}' tag '${target}' must target a FabricTag item.`,
+      );
+    }
+    requireDependency(
+      item.logicalId,
+      target,
+      dependencies,
+      `tag '${target}'`,
+    );
   }
 }
 
@@ -179,6 +301,11 @@ function validateTypeSpecificDefinition(
       `Item '${item.logicalId}' can use enableSchemas only when type is Lakehouse.`,
     );
   }
+  if (item.type !== "FabricTag" && definition.scope !== undefined) {
+    throw new Error(
+      `Item '${item.logicalId}' can use scope only when type is FabricTag.`,
+    );
+  }
 
   switch (item.type) {
     case "Lakehouse":
@@ -194,6 +321,26 @@ function validateTypeSpecificDefinition(
       return;
     case "LakehouseTables":
       definitionDirectory(item, itemDirectory);
+      return;
+    case "FabricTag":
+      if (definition.displayName.length > 40) {
+        throw new Error(
+          `Item '${item.logicalId}' FabricTag displayName must be at most 40 characters.`,
+        );
+      }
+      if (
+        definition.description !== undefined ||
+        definition.folderId !== undefined ||
+        definition.enableSchemas !== undefined ||
+        definition.references !== undefined ||
+        definition.bindings !== undefined ||
+        definition.tags !== undefined ||
+        (item.dependsOn?.length ?? 0) > 0
+      ) {
+        throw new Error(
+          `Item '${item.logicalId}' FabricTag supports only displayName, desiredState, and scope.`,
+        );
+      }
       return;
     case "Environment":
       definitionDirectory(item, itemDirectory);

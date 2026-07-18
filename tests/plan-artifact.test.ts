@@ -100,6 +100,51 @@ describe("approved plan loading", () => {
     );
   });
 
+  it("validates exact deletion proofs and desired-state action pairing", () => {
+    const root = mkdtempSync(path.join(tmpdir(), "fabric-plan-"));
+    const planPath = path.join(root, "plan.json");
+    const plan = createPlan();
+    plan.items[0] = {
+      ...plan.items[0]!,
+      type: "Notebook",
+      desiredState: "absent",
+      action: "delete",
+      reason: "approved soft deletion",
+      physicalId: "22222222-2222-4222-8222-222222222222",
+      observedStateHash: "a".repeat(64),
+    };
+    const approved = rehashPlan(plan);
+    writeFileSync(planPath, JSON.stringify(approved), "utf8");
+
+    expect(loadApprovedPlan(planPath).items[0]).toMatchObject({
+      desiredState: "absent",
+      action: "delete",
+      physicalId: "22222222-2222-4222-8222-222222222222",
+    });
+
+    delete approved.items[0]!.physicalId;
+    writeFileSync(
+      planPath,
+      JSON.stringify(rehashPlan(approved)),
+      "utf8",
+    );
+    expect(() => loadApprovedPlan(planPath)).toThrow(
+      "invalid structure",
+    );
+
+    approved.items[0]!.physicalId =
+      "22222222-2222-4222-8222-222222222222";
+    approved.items[0]!.desiredState = "present";
+    writeFileSync(
+      planPath,
+      JSON.stringify(rehashPlan(approved)),
+      "utf8",
+    );
+    expect(() => loadApprovedPlan(planPath)).toThrow(
+      "invalid structure",
+    );
+  });
+
   it("rejects a managed workspace changed after approval", () => {
     const root = mkdtempSync(path.join(tmpdir(), "fabric-plan-"));
     const planPath = path.join(root, "plan.json");
@@ -186,6 +231,62 @@ describe("approved plan loading", () => {
       "symbolic";
     const invalid = rehashPlan(approved);
     writeFileSync(planPath, JSON.stringify(invalid), "utf8");
+    expect(() => loadApprovedPlan(planPath)).toThrow(
+      "invalid structure",
+    );
+  });
+
+  it("validates FabricTag resources and item assignment proofs", () => {
+    const root = mkdtempSync(path.join(tmpdir(), "fabric-plan-"));
+    const planPath = path.join(root, "plan.json");
+    const plan = createPlan();
+    plan.items.unshift({
+      logicalId: "reviewTag",
+      type: "FabricTag",
+      path: "items/tags/review",
+      dependsOn: [],
+      desiredState: "present",
+      contentHash: "tag-content",
+      displayName: "Phase 4 Review",
+      physicalId: "22222222-2222-4222-8222-222222222222",
+      observedStateHash: "tag-state",
+      action: "no-op",
+      reason: "exists",
+    });
+    plan.items[1] = {
+      ...plan.items[1]!,
+      dependsOn: ["reviewTag"],
+      physicalId: "33333333-3333-4333-8333-333333333333",
+      observedStateHash: "lakehouse-state",
+      action: "no-op",
+      reason: "exists",
+      tagAssignment: {
+        assignmentHash: "a".repeat(64),
+        tagLogicalIds: ["reviewTag"],
+        missingTagLogicalIds: ["reviewTag"],
+        action: "update",
+        observedStateHash: "tags-absent",
+        reason: "missing",
+      },
+    };
+    plan.stages = [["reviewTag"], ["lakehouse"]];
+    const approved = rehashPlan(plan);
+    writeFileSync(planPath, JSON.stringify(approved), "utf8");
+
+    expect(
+      loadApprovedPlan(planPath).items[1]?.tagAssignment,
+    ).toMatchObject({
+      action: "update",
+      tagLogicalIds: ["reviewTag"],
+    });
+
+    approved.items[1]!.tagAssignment!.tagLogicalIds = ["lakehouse"];
+    approved.items[1]!.tagAssignment!.missingTagLogicalIds = ["lakehouse"];
+    writeFileSync(
+      planPath,
+      JSON.stringify(rehashPlan(approved)),
+      "utf8",
+    );
     expect(() => loadApprovedPlan(planPath)).toThrow(
       "invalid structure",
     );

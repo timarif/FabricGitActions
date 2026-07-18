@@ -590,7 +590,7 @@ describe("WorkspaceAdapter", () => {
     ).rejects.toThrow("expected 'capacity-1' with progress 'Completed'");
   });
 
-  it("hashes stable workspace state while excluding derived and progress fields", () => {
+  it("hashes stable workspace state while excluding derived, progress, and unmanaged tag fields", () => {
     const first: WorkspaceInfo = {
       id: "workspace-1",
       type: "Workspace",
@@ -627,7 +627,7 @@ describe("WorkspaceAdapter", () => {
         blobEndpoint: "https://second.blob.example",
         dfsEndpoint: "https://second.dfs.example",
       },
-      tags: [...(first.tags ?? [])].reverse(),
+      tags: [{ id: "tag-3", displayName: "Third" }],
     };
 
     expect(hashObservedWorkspace(first)).toBe(

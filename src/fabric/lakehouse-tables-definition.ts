@@ -44,6 +44,12 @@ const RESERVED_IDENTIFIERS = new Set([
   "tblproperties",
   "using",
 ]);
+const RESERVED_MANAGED_SCHEMA_NAMES = new Set([
+  "default",
+  "dbo",
+  "information_schema",
+  "sys",
+]);
 
 const DATA_TYPE_ALIASES: Record<string, string> = {
   boolean: "boolean",
@@ -87,11 +93,18 @@ export interface LoadedLakehouseTable {
   desiredHash: string;
 }
 
+export interface LoadedLakehouseSchema {
+  logicalId: string;
+  name: string;
+  desiredHash: string;
+}
+
 export interface LoadedLakehouseTablesDefinition {
   apiVersion: typeof TABLES_API_VERSION;
   kind: typeof TABLES_KIND;
   defaultSchema?: string;
   adoptExisting: boolean;
+  schemas?: LoadedLakehouseSchema[];
   tables: LoadedLakehouseTable[];
   sourceHash: string;
   desiredHash: string;
@@ -108,9 +121,15 @@ interface TablesManifestEntry {
   dependsOn: string[];
 }
 
+interface SchemasManifestEntry {
+  logicalId: string;
+  name: string;
+}
+
 interface ValidatedTablesManifest {
   defaultSchema?: string;
   adoptExisting: boolean;
+  schemas: SchemasManifestEntry[];
   tables: TablesManifestEntry[];
 }
 
@@ -152,6 +171,17 @@ export function loadLakehouseTablesDefinition(
 
   const tablesDirectory = path.join(definitionDirectory, "tables");
   validateTablesDirectory(tablesDirectory, manifest.tables);
+  const schemas = manifest.schemas
+    .map((schema) => ({
+      logicalId: schema.logicalId,
+      name: schema.name,
+      desiredHash: hashCanonicalLakehouseSchema(schema.name),
+    }))
+    .sort(
+      (left, right) =>
+        compareCanonicalStrings(left.name, right.name) ||
+        compareCanonicalStrings(left.logicalId, right.logicalId),
+    );
 
   const loadedByLogicalId = new Map<string, LoadedLakehouseTable>();
   const identifiers = new Map<string, string>();
@@ -203,6 +233,14 @@ export function loadLakehouseTablesDefinition(
       kind: TABLES_KIND,
       defaultSchema: manifest.defaultSchema ?? null,
       adoptExisting: manifest.adoptExisting,
+      ...(schemas.length === 0
+        ? {}
+        : {
+            schemas: schemas.map((schema) => ({
+              logicalId: schema.logicalId,
+              name: schema.name,
+            })),
+          }),
       tables: orderedTables.map((table) => ({
         logicalId: table.logicalId,
         dependsOn: table.dependsOn,
@@ -216,6 +254,14 @@ export function loadLakehouseTablesDefinition(
       kind: TABLES_KIND,
       defaultSchema: manifest.defaultSchema ?? null,
       adoptExisting: manifest.adoptExisting,
+      ...(schemas.length === 0
+        ? {}
+        : {
+            schemas: schemas.map((schema) => ({
+              logicalId: schema.logicalId,
+              name: schema.name,
+            })),
+          }),
       tables: orderedTables.map((table) => ({
         logicalId: table.logicalId,
         file: table.file,
@@ -232,6 +278,7 @@ export function loadLakehouseTablesDefinition(
       ? {}
       : { defaultSchema: manifest.defaultSchema }),
     adoptExisting: manifest.adoptExisting,
+    ...(schemas.length === 0 ? {} : { schemas }),
     tables: orderedTables,
     sourceHash,
     desiredHash,
@@ -269,11 +316,22 @@ export function hashCanonicalLakehouseTable(
   return sha256(stableJson(table));
 }
 
+export function hashCanonicalLakehouseSchema(name: string): string {
+  return sha256(stableJson({ name }));
+}
+
 function validateManifest(value: unknown): ValidatedTablesManifest {
   const object = requireObject(value, "definition/tables.yaml");
   assertOnlyProperties(
     object,
-    ["apiVersion", "kind", "defaultSchema", "adoptExisting", "tables"],
+    [
+      "apiVersion",
+      "kind",
+      "defaultSchema",
+      "adoptExisting",
+      "schemas",
+      "tables",
+    ],
     "definition/tables.yaml",
   );
   if (object.apiVersion !== TABLES_API_VERSION) {
@@ -297,13 +355,71 @@ function validateManifest(value: unknown): ValidatedTablesManifest {
   ) {
     throw new Error("LakehouseTables adoptExisting must be a boolean.");
   }
-  if (!Array.isArray(object.tables) || object.tables.length === 0) {
-    throw new Error("LakehouseTables tables must be a non-empty array.");
+  if (
+    object.schemas !== undefined &&
+    !Array.isArray(object.schemas)
+  ) {
+    throw new Error("LakehouseTables schemas must be an array.");
+  }
+  if (
+    object.tables !== undefined &&
+    !Array.isArray(object.tables)
+  ) {
+    throw new Error("LakehouseTables tables must be an array.");
+  }
+  const schemaValues = Array.isArray(object.schemas)
+    ? object.schemas
+    : [];
+  const tableValues = Array.isArray(object.tables)
+    ? object.tables
+    : [];
+  if (schemaValues.length === 0 && tableValues.length === 0) {
+    throw new Error(
+      "LakehouseTables must declare at least one schema or table.",
+    );
   }
 
   const logicalIds = new Set<string>();
+  const schemaNames = new Set<string>();
+  const schemas = schemaValues.map((entry, index) => {
+    const description = `LakehouseTables schemas[${index}]`;
+    const schema = requireObject(entry, description);
+    assertOnlyProperties(
+      schema,
+      ["logicalId", "name"],
+      description,
+    );
+    const logicalId = validateManifestLogicalId(
+      schema.logicalId,
+      `${description}.logicalId`,
+    );
+    if (logicalIds.has(logicalId)) {
+      throw new Error(
+        `Duplicate Lakehouse DDL logicalId '${logicalId}'.`,
+      );
+    }
+    logicalIds.add(logicalId);
+    const name = validateSqlIdentifier(
+      requireString(schema.name, `${description}.name`),
+      `${description}.name`,
+    );
+    if (RESERVED_MANAGED_SCHEMA_NAMES.has(name)) {
+      throw new Error(
+        `${description}.name '${name}' is a reserved Lakehouse schema and cannot be managed.`,
+      );
+    }
+    if (schemaNames.has(name)) {
+      throw new Error(
+        `Duplicate managed Lakehouse schema name '${name}'.`,
+      );
+    }
+    schemaNames.add(name);
+    return { logicalId, name };
+  });
+
   const files = new Set<string>();
-  const tables = object.tables.map((entry, index) => {
+  const tableLogicalIds = new Set<string>();
+  const tables = tableValues.map((entry, index) => {
     const description = `LakehouseTables tables[${index}]`;
     const table = requireObject(entry, description);
     assertOnlyProperties(
@@ -311,19 +427,17 @@ function validateManifest(value: unknown): ValidatedTablesManifest {
       ["logicalId", "file", "dependsOn"],
       description,
     );
-    const logicalId = requireString(
+    const logicalId = validateManifestLogicalId(
       table.logicalId,
       `${description}.logicalId`,
     );
-    if (!LOGICAL_ID_PATTERN.test(logicalId)) {
+    if (logicalIds.has(logicalId)) {
       throw new Error(
-        `${description}.logicalId '${logicalId}' is invalid.`,
+        `Duplicate Lakehouse DDL logicalId '${logicalId}'.`,
       );
     }
-    if (logicalIds.has(logicalId)) {
-      throw new Error(`Duplicate Lakehouse table logicalId '${logicalId}'.`);
-    }
     logicalIds.add(logicalId);
+    tableLogicalIds.add(logicalId);
 
     const file = requireString(table.file, `${description}.file`);
     if (!TABLE_FILE_PATTERN.test(file)) {
@@ -351,7 +465,7 @@ function validateManifest(value: unknown): ValidatedTablesManifest {
           `Lakehouse table '${table.logicalId}' cannot depend on itself.`,
         );
       }
-      if (!logicalIds.has(dependency)) {
+      if (!tableLogicalIds.has(dependency)) {
         throw new Error(
           `Lakehouse table '${table.logicalId}' depends on unknown table '${dependency}'.`,
         );
@@ -368,6 +482,7 @@ function validateManifest(value: unknown): ValidatedTablesManifest {
   return {
     ...(defaultSchema === undefined ? {} : { defaultSchema }),
     adoptExisting: object.adoptExisting === true,
+    schemas,
     tables,
   };
 }
@@ -380,6 +495,9 @@ function validateTablesDirectory(
     !existsSync(tablesDirectory) ||
     !statSync(tablesDirectory).isDirectory()
   ) {
+    if (entries.length === 0) {
+      return;
+    }
     throw new Error(
       "LakehouseTables definition requires a definition/tables directory.",
     );
@@ -1081,6 +1199,17 @@ function validateSqlIdentifier(
     );
   }
   return value;
+}
+
+function validateManifestLogicalId(
+  value: unknown,
+  description: string,
+): string {
+  const logicalId = requireString(value, description);
+  if (!LOGICAL_ID_PATTERN.test(logicalId)) {
+    throw new Error(`${description} '${logicalId}' is invalid.`);
+  }
+  return logicalId;
 }
 
 function validateDependenciesValue(

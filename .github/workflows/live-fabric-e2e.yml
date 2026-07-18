@@ -1,0 +1,514 @@
+name: Live Fabric Sandbox E2E
+
+on:
+  workflow_dispatch:
+    inputs:
+      retain_workspace_on_failure:
+        description: Retain the disposable workspace when the E2E job fails.
+        required: true
+        default: false
+        type: boolean
+  schedule:
+    - cron: "23 5 * * 1"
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: live-fabric-sandbox-e2e
+  cancel-in-progress: false
+
+jobs:
+  e2e:
+    if: >-
+      ${{
+        github.event_name == 'workflow_dispatch'
+        || vars.FABRIC_E2E_ENABLED == 'true'
+      }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      E2E_WORKSPACE_NAME: >-
+        fga-FabricDeploy-E2E-${{ github.run_id }}-${{ github.run_attempt }}
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Validate live E2E configuration
+        shell: bash
+        env:
+          FABRIC_TENANT_ID: ${{ vars.FABRIC_TENANT_ID }}
+          FABRIC_CLIENT_ID: ${{ vars.FABRIC_CLIENT_ID }}
+          FABRIC_CAPACITY_ID: ${{ vars.FABRIC_CAPACITY_ID }}
+        run: |
+          set -euo pipefail
+          test -n "$FABRIC_TENANT_ID"
+          test -n "$FABRIC_CLIENT_ID"
+          test -n "$FABRIC_CAPACITY_ID"
+
+      - name: Build workspace variables
+        id: workspace-vars
+        shell: bash
+        env:
+          FABRIC_CAPACITY_ID: ${{ vars.FABRIC_CAPACITY_ID }}
+        run: |
+          set -euo pipefail
+          variables="$(
+            jq -cn \
+              --arg workspaceName "$E2E_WORKSPACE_NAME" \
+              --arg capacityId "$FABRIC_CAPACITY_ID" \
+              '{
+                WORKSPACE_NAME: $workspaceName,
+                FABRIC_CAPACITY_ID: $capacityId
+              }'
+          )"
+          echo "json=$variables" >> "$GITHUB_OUTPUT"
+
+      - name: Plan disposable workspace
+        id: workspace-plan
+        uses: ./
+        with:
+          mode: plan
+          manifest: examples/workspace/fabric/deployment.yaml
+          environment: live-e2e
+          variables: ${{ steps.workspace-vars.outputs.json }}
+          auth-mode: oidc
+          tenant-id: ${{ vars.FABRIC_TENANT_ID }}
+          client-id: ${{ vars.FABRIC_CLIENT_ID }}
+          plan-file: e2e-output/workspace/approved-plan.json
+
+      - name: Verify workspace create plan
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "${{ steps.workspace-plan.outputs.item-count }}" = "0"
+          jq -e '
+            .workspace.action == "create"
+            and (.items | length) == 0
+          ' e2e-output/workspace/approved-plan.json
+
+      - name: Create disposable workspace
+        id: workspace-apply
+        uses: ./
+        with:
+          mode: apply
+          manifest: examples/workspace/fabric/deployment.yaml
+          environment: live-e2e
+          variables: ${{ steps.workspace-vars.outputs.json }}
+          auth-mode: oidc
+          tenant-id: ${{ vars.FABRIC_TENANT_ID }}
+          client-id: ${{ vars.FABRIC_CLIENT_ID }}
+          approved-plan-file: e2e-output/workspace/approved-plan.json
+          allow-workspace-create: "true"
+          allow-capacity-assignment: "true"
+          plan-file: e2e-output/workspace/current-plan.json
+          checkpoint-file: e2e-output/workspace/checkpoint.json
+          result-file: e2e-output/workspace/result.json
+
+      - name: Record disposable workspace
+        shell: bash
+        env:
+          WORKSPACE_ID: ${{ steps.workspace-apply.outputs.workspace-id }}
+        run: |
+          set -euo pipefail
+          test -n "$WORKSPACE_ID"
+          test "${{ steps.workspace-apply.outputs.workspace-action }}" = "create"
+          echo "E2E_WORKSPACE_ID=$WORKSPACE_ID" >> "$GITHUB_ENV"
+          {
+            echo "### Live Fabric sandbox"
+            echo
+            echo "- Workspace: \`$E2E_WORKSPACE_NAME\`"
+            echo "- Workspace ID: \`$WORKSPACE_ID\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Plan core data engineering fixture
+        id: phase3-plan
+        uses: ./
+        with:
+          mode: plan
+          manifest: examples/live-phase3/fabric/deployment.yaml
+          environment: live-e2e
+          workspace-id: ${{ steps.workspace-apply.outputs.workspace-id }}
+          auth-mode: oidc
+          tenant-id: ${{ vars.FABRIC_TENANT_ID }}
+          client-id: ${{ vars.FABRIC_CLIENT_ID }}
+          plan-file: e2e-output/phase3/approved-plan.json
+
+      - name: Verify core fixture plan
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "${{ steps.phase3-plan.outputs.item-count }}" = "6"
+          jq -e '
+            (.items | length) == 6
+            and all(
+              .items[];
+              .action == "create"
+              or .action == "update"
+              or .action == "no-op"
+            )
+          ' e2e-output/phase3/approved-plan.json
+
+      - name: Apply core data engineering fixture
+        uses: ./
+        with:
+          mode: apply
+          manifest: examples/live-phase3/fabric/deployment.yaml
+          environment: live-e2e
+          workspace-id: ${{ steps.workspace-apply.outputs.workspace-id }}
+          auth-mode: oidc
+          tenant-id: ${{ vars.FABRIC_TENANT_ID }}
+          client-id: ${{ vars.FABRIC_CLIENT_ID }}
+          approved-plan-file: e2e-output/phase3/approved-plan.json
+          allow-create: "true"
+          allow-update: "true"
+          allow-lakehouse-schema-create: "true"
+          allow-lakehouse-table-create: "true"
+          plan-file: e2e-output/phase3/current-plan.json
+          checkpoint-file: e2e-output/phase3/checkpoint.json
+          result-file: e2e-output/phase3/result.json
+
+      - name: Verify core fixture apply
+        shell: bash
+        run: |
+          set -euo pipefail
+          jq -e '
+            .status == "succeeded"
+            and (.items | length) == 6
+            and all(.items[]; .status != "failed")
+          ' e2e-output/phase3/result.json
+
+      - name: Plan pipeline fixture
+        id: pipeline-plan
+        uses: ./
+        with:
+          mode: plan
+          manifest: examples/live-pipeline/fabric/deployment.yaml
+          environment: live-e2e
+          workspace-id: ${{ steps.workspace-apply.outputs.workspace-id }}
+          auth-mode: oidc
+          tenant-id: ${{ vars.FABRIC_TENANT_ID }}
+          client-id: ${{ vars.FABRIC_CLIENT_ID }}
+          plan-file: e2e-output/pipeline/approved-plan.json
+
+      - name: Verify pipeline fixture plan
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "${{ steps.pipeline-plan.outputs.item-count }}" = "1"
+          jq -e '
+            (.items | length) == 1
+            and .items[0].type == "DataPipeline"
+            and all(
+              .items[];
+              .action == "create"
+              or .action == "update"
+              or .action == "no-op"
+            )
+          ' e2e-output/pipeline/approved-plan.json
+
+      - name: Apply pipeline fixture
+        uses: ./
+        with:
+          mode: apply
+          manifest: examples/live-pipeline/fabric/deployment.yaml
+          environment: live-e2e
+          workspace-id: ${{ steps.workspace-apply.outputs.workspace-id }}
+          auth-mode: oidc
+          tenant-id: ${{ vars.FABRIC_TENANT_ID }}
+          client-id: ${{ vars.FABRIC_CLIENT_ID }}
+          approved-plan-file: e2e-output/pipeline/approved-plan.json
+          allow-create: "true"
+          allow-update: "true"
+          plan-file: e2e-output/pipeline/current-plan.json
+          checkpoint-file: e2e-output/pipeline/checkpoint.json
+          result-file: e2e-output/pipeline/result.json
+
+      - name: Verify pipeline fixture apply
+        shell: bash
+        run: |
+          set -euo pipefail
+          jq -e '
+            .status == "succeeded"
+            and (.items | length) == 1
+            and any(
+              .items[];
+              .type == "DataPipeline" and .status != "failed"
+            )
+          ' e2e-output/pipeline/result.json
+
+      - name: Plan tag fixture
+        id: tag-plan
+        uses: ./
+        with:
+          mode: plan
+          manifest: examples/tags/fabric/deployment.yaml
+          environment: live-e2e
+          workspace-id: ${{ steps.workspace-apply.outputs.workspace-id }}
+          auth-mode: oidc
+          tenant-id: ${{ vars.FABRIC_TENANT_ID }}
+          client-id: ${{ vars.FABRIC_CLIENT_ID }}
+          plan-file: e2e-output/tags/approved-plan.json
+
+      - name: Verify tag fixture plan
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "${{ steps.tag-plan.outputs.item-count }}" = "2"
+          jq -e '
+            (.items | length) == 2
+            and any(.items[]; .type == "FabricTag")
+            and all(
+              .items[];
+              .action == "create"
+              or .action == "update"
+              or .action == "no-op"
+            )
+          ' e2e-output/tags/approved-plan.json
+
+      - name: Apply tag fixture
+        uses: ./
+        with:
+          mode: apply
+          manifest: examples/tags/fabric/deployment.yaml
+          environment: live-e2e
+          workspace-id: ${{ steps.workspace-apply.outputs.workspace-id }}
+          auth-mode: oidc
+          tenant-id: ${{ vars.FABRIC_TENANT_ID }}
+          client-id: ${{ vars.FABRIC_CLIENT_ID }}
+          approved-plan-file: e2e-output/tags/approved-plan.json
+          allow-create: "true"
+          allow-update: "true"
+          allow-tag-create: "true"
+          allow-tag-assign: "true"
+          plan-file: e2e-output/tags/current-plan.json
+          checkpoint-file: e2e-output/tags/checkpoint.json
+          result-file: e2e-output/tags/result.json
+
+      - name: Verify tag fixture apply
+        shell: bash
+        run: |
+          set -euo pipefail
+          jq -e '
+            .status == "succeeded"
+            and (.items | length) == 2
+            and any(
+              .items[];
+              .type == "FabricTag" and .status != "failed"
+            )
+          ' e2e-output/tags/result.json
+
+      - name: Replan core fixture
+        uses: ./
+        with:
+          mode: plan
+          manifest: examples/live-phase3/fabric/deployment.yaml
+          environment: live-e2e
+          workspace-id: ${{ steps.workspace-apply.outputs.workspace-id }}
+          auth-mode: oidc
+          tenant-id: ${{ vars.FABRIC_TENANT_ID }}
+          client-id: ${{ vars.FABRIC_CLIENT_ID }}
+          plan-file: e2e-output/noop/phase3.json
+
+      - name: Replan pipeline fixture
+        uses: ./
+        with:
+          mode: plan
+          manifest: examples/live-pipeline/fabric/deployment.yaml
+          environment: live-e2e
+          workspace-id: ${{ steps.workspace-apply.outputs.workspace-id }}
+          auth-mode: oidc
+          tenant-id: ${{ vars.FABRIC_TENANT_ID }}
+          client-id: ${{ vars.FABRIC_CLIENT_ID }}
+          plan-file: e2e-output/noop/pipeline.json
+
+      - name: Replan tag fixture
+        uses: ./
+        with:
+          mode: plan
+          manifest: examples/tags/fabric/deployment.yaml
+          environment: live-e2e
+          workspace-id: ${{ steps.workspace-apply.outputs.workspace-id }}
+          auth-mode: oidc
+          tenant-id: ${{ vars.FABRIC_TENANT_ID }}
+          client-id: ${{ vars.FABRIC_CLIENT_ID }}
+          plan-file: e2e-output/noop/tags.json
+
+      - name: Verify idempotent no-op plans
+        shell: bash
+        run: |
+          set -euo pipefail
+          for plan in \
+            e2e-output/noop/phase3.json \
+            e2e-output/noop/pipeline.json \
+            e2e-output/noop/tags.json
+          do
+            jq -e '
+              (.items | length) > 0
+              and all(.items[]; .action == "no-op")
+            ' "$plan"
+          done
+
+      - name: Delete disposable workspace
+        if: >-
+          ${{
+            always()
+            && (
+              success()
+              || !inputs.retain_workspace_on_failure
+            )
+          }}
+        shell: bash
+        env:
+          FABRIC_TENANT_ID: ${{ vars.FABRIC_TENANT_ID }}
+          FABRIC_CLIENT_ID: ${{ vars.FABRIC_CLIENT_ID }}
+          FABRIC_API_ENDPOINT: https://api.fabric.microsoft.com
+        run: |
+          set -euo pipefail
+
+          printf -v github_authorization \
+            'Authorization: Bearer %s' \
+            "$ACTIONS_ID_TOKEN_REQUEST_TOKEN"
+          oidc_response="$(
+            curl --fail-with-body --silent --show-error \
+              --header "$github_authorization" \
+              "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=api%3A%2F%2FAzureADTokenExchange"
+          )"
+          oidc_token="$(jq -er '.value' <<< "$oidc_response")"
+          echo "::add-mask::$oidc_token"
+
+          token_response="$(
+            curl --fail-with-body --silent --show-error \
+              --request POST \
+              --header "Content-Type: application/x-www-form-urlencoded" \
+              --data-urlencode "client_id=$FABRIC_CLIENT_ID" \
+              --data-urlencode "grant_type=client_credentials" \
+              --data-urlencode "scope=https://api.fabric.microsoft.com/.default" \
+              --data-urlencode \
+                "client_assertion_type=urn:ietf:params:oauth:client-assertion-type:jwt-bearer" \
+              --data-urlencode "client_assertion=$oidc_token" \
+              "https://login.microsoftonline.com/${FABRIC_TENANT_ID}/oauth2/v2.0/token"
+          )"
+          fabric_token="$(jq -er '.access_token' <<< "$token_response")"
+          echo "::add-mask::$fabric_token"
+          printf -v fabric_authorization \
+            'Authorization: Bearer %s' "$fabric_token"
+
+          workspace_id="${E2E_WORKSPACE_ID:-}"
+          if [[ -z "$workspace_id" && -f e2e-output/workspace/checkpoint.json ]]; then
+            workspace_id="$(
+              jq -r '.workspace.physicalId // empty' \
+                e2e-output/workspace/checkpoint.json
+            )"
+          fi
+
+          if [[ -z "$workspace_id" ]]; then
+            mkdir -p e2e-output/cleanup
+            : > e2e-output/cleanup/workspace-matches.txt
+            next_url="${FABRIC_API_ENDPOINT}/v1/workspaces"
+            while [[ -n "$next_url" ]]; do
+              page="$(
+                curl --fail-with-body --silent --show-error \
+                  --header "$fabric_authorization" \
+                  --header "Accept: application/json" \
+                  "$next_url"
+              )"
+              jq -r \
+                --arg displayName "$E2E_WORKSPACE_NAME" '
+                  .value[]
+                  | select(.displayName == $displayName)
+                  | select(.type == "Workspace")
+                  | .id
+                ' <<< "$page" \
+                >> e2e-output/cleanup/workspace-matches.txt
+
+              continuation_uri="$(
+                jq -r '.continuationUri // empty' <<< "$page"
+              )"
+              continuation_token="$(
+                jq -r '.continuationToken // empty' <<< "$page"
+              )"
+              if [[ -n "$continuation_uri" ]]; then
+                if [[ "$continuation_uri" == http://* || "$continuation_uri" == https://* ]]; then
+                  next_url="$continuation_uri"
+                else
+                  next_url="${FABRIC_API_ENDPOINT}${continuation_uri}"
+                fi
+              elif [[ -n "$continuation_token" ]]; then
+                encoded_token="$(
+                  jq -rn --arg value "$continuation_token" \
+                    '$value | @uri'
+                )"
+                next_url="${FABRIC_API_ENDPOINT}/v1/workspaces?continuationToken=${encoded_token}"
+              else
+                next_url=""
+              fi
+            done
+
+            mapfile -t workspace_matches \
+              < e2e-output/cleanup/workspace-matches.txt
+            if (( ${#workspace_matches[@]} > 1 )); then
+              echo "::error::Multiple disposable workspaces have the exact E2E name."
+              exit 1
+            fi
+            workspace_id="${workspace_matches[0]:-}"
+          fi
+
+          if [[ -z "$workspace_id" ]]; then
+            echo "No disposable workspace was created."
+            exit 0
+          fi
+
+          mkdir -p e2e-output/cleanup
+          delete_status="$(
+            curl --silent --show-error \
+              --request DELETE \
+              --header "$fabric_authorization" \
+              --header "Accept: application/json" \
+              --output e2e-output/cleanup/delete-response.json \
+              --write-out "%{http_code}" \
+              "${FABRIC_API_ENDPOINT}/v1/workspaces/${workspace_id}"
+          )"
+          case "$delete_status" in
+            200|202|204|404)
+              ;;
+            *)
+              echo "::error::Workspace deletion returned HTTP ${delete_status}."
+              cat e2e-output/cleanup/delete-response.json
+              exit 1
+              ;;
+          esac
+
+          for attempt in {1..60}; do
+            get_status="$(
+              curl --silent --show-error \
+                --header "$fabric_authorization" \
+                --header "Accept: application/json" \
+                --output e2e-output/cleanup/get-response.json \
+                --write-out "%{http_code}" \
+                "${FABRIC_API_ENDPOINT}/v1/workspaces/${workspace_id}"
+            )"
+            if [[ "$get_status" == "404" ]]; then
+              echo "Deleted disposable workspace ${workspace_id}."
+              exit 0
+            fi
+            if [[ "$get_status" != "200" && "$get_status" != "429" && "$get_status" -lt 500 ]]; then
+              echo "::error::Workspace verification returned HTTP ${get_status}."
+              cat e2e-output/cleanup/get-response.json
+              exit 1
+            fi
+            sleep 10
+          done
+
+          echo "::error::Disposable workspace still exists after 10 minutes."
+          exit 1
+
+      - name: Upload live E2E evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v5
+        with:
+          name: live-fabric-e2e-${{ github.run_id }}-${{ github.run_attempt }}
+          path: e2e-output
+          if-no-files-found: warn
+          retention-days: 14

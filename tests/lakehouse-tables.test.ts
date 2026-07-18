@@ -4,10 +4,12 @@ import type { FetchLike } from "../src/fabric/auth";
 import { FabricClient } from "../src/fabric/client";
 import {
   hashCanonicalLakehouseTable,
+  hashCanonicalLakehouseSchema,
   parseLakehouseTableSql,
   type LoadedLakehouseTablesDefinition,
 } from "../src/fabric/lakehouse-tables-definition";
 import {
+  buildLakehouseDdlCreateOperations,
   buildLakehouseTableCreateOperations,
   createLakehouseTablesSessionName,
   FABRIC_TABLE_DESIRED_HASH_PROPERTY,
@@ -17,6 +19,7 @@ import {
   FABRIC_TABLE_OWNER_SCHEME_V1,
   FABRIC_TABLE_SOURCE_HASH_PROPERTY,
   generateCreateTableSql,
+  generateCreateSchemaSql,
   LakehouseTableAdoptionRequiredError,
   LakehouseTablesAdapter,
   PHASE3_DELTA_PROTOCOL_POLICY,
@@ -49,6 +52,7 @@ function sessionUuid(index: number): string {
 function definition(
   entries: Array<{ logicalId: string; sql: string }>,
   adoptExisting = false,
+  schemas: Array<{ logicalId: string; name: string }> = [],
 ): LoadedLakehouseTablesDefinition {
   const tables = entries.map((entry, index) => {
     const table = parseLakehouseTableSql(entry.sql);
@@ -65,6 +69,14 @@ function definition(
     apiVersion: "fabric.deploy/tables/v1alpha1",
     kind: "LakehouseTables",
     adoptExisting,
+    ...(schemas.length === 0
+      ? {}
+      : {
+          schemas: schemas.map((schema) => ({
+            ...schema,
+            desiredHash: hashCanonicalLakehouseSchema(schema.name),
+          })),
+        }),
     tables,
     sourceHash: "b".repeat(64),
     desiredHash: "a".repeat(64),
@@ -270,6 +282,186 @@ function orderedObservationAdapter(
 }
 
 describe("LakehouseTables Livy adapter", () => {
+  it("builds deterministic schema operations before table operations", () => {
+    const desired = definition(
+      [
+        {
+          logicalId: "orders",
+          sql: "CREATE TABLE IF NOT EXISTS sales.orders (id BIGINT) USING DELTA",
+        },
+      ],
+      false,
+      [{ logicalId: "salesSchema", name: "sales" }],
+    );
+
+    const operations = buildLakehouseDdlCreateOperations(
+      desired,
+      EXECUTION,
+    );
+
+    expect(operations).toMatchObject([
+      {
+        kind: "create-schema",
+        order: 0,
+        logicalId: "salesSchema",
+        identifier: "sales",
+        ddl: "CREATE SCHEMA IF NOT EXISTS `sales`",
+      },
+      {
+        kind: "create-table",
+        order: 1,
+        logicalId: "orders",
+        identifier: "sales.orders",
+      },
+    ]);
+    expect(generateCreateSchemaSql("sales")).toBe(
+      "CREATE SCHEMA IF NOT EXISTS `sales`",
+    );
+  });
+
+  it("plans and applies a managed schema before its table", async () => {
+    const desired = definition(
+      [
+        {
+          logicalId: "orders",
+          sql: "CREATE TABLE IF NOT EXISTS sales.orders (id BIGINT) USING DELTA",
+        },
+      ],
+      false,
+      [{ logicalId: "salesSchema", name: "sales" }],
+    );
+    const operations = buildLakehouseDdlCreateOperations(
+      desired,
+      EXECUTION,
+    );
+    const tableOperation = operations.find(
+      (operation) => operation.kind === "create-table",
+    )!;
+
+    const plan = await orderedObservationAdapter([
+      absentObservation(false),
+      absentObservation(false),
+    ]).plan("workspace", "lakehouse", desired, EXECUTION);
+
+    expect(plan.action).toBe("create");
+    expect(plan.schemas).toMatchObject([
+      {
+        logicalId: "salesSchema",
+        action: "create",
+        observation: { exists: false },
+      },
+    ]);
+    expect(plan.tables).toMatchObject([
+      {
+        logicalId: "orders",
+        action: "create",
+        observation: { schemaExists: false, exists: false },
+      },
+    ]);
+
+    const applied = await orderedObservationAdapter([
+      absentObservation(false),
+      absentObservation(false),
+      absentObservation(true),
+      observation(tableOperation.table, {
+        ownership: tableOperation.ownership,
+      }),
+    ]).apply("workspace", "lakehouse", desired, EXECUTION);
+
+    expect(applied.operations.map((operation) => operation.resourceKind))
+      .toEqual(["schema", "table"]);
+    expect(applied.schemas).toMatchObject([
+      {
+        logicalId: "salesSchema",
+        matches: true,
+        observation: { exists: true },
+      },
+    ]);
+    expect(applied.tables[0]?.matches).toBe(true);
+  });
+
+  it("supports schema-only create and existing-schema no-op plans", async () => {
+    const desired = definition([], false, [
+      { logicalId: "salesSchema", name: "sales" },
+    ]);
+
+    const createPlan = await orderedObservationAdapter([
+      absentObservation(false),
+    ]).plan("workspace", "lakehouse", desired, EXECUTION);
+    expect(createPlan.action).toBe("create");
+    expect(createPlan.tables).toEqual([]);
+
+    const noOpPlan = await orderedObservationAdapter([
+      absentObservation(true),
+    ]).plan("workspace", "lakehouse", desired, EXECUTION);
+    expect(noOpPlan.action).toBe("no-op");
+    expect(noOpPlan.schemas?.[0]?.action).toBe("no-op");
+  });
+
+  it("emits schema observations without the table-exists marker", async () => {
+    const desired = definition([], false, [
+      { logicalId: "salesSchema", name: "sales" },
+    ]);
+    const codes: string[] = [];
+    let nextStatementId = 0;
+    const fetchImpl = vi.fn(
+      async (input: string | URL, init?: RequestInit) => {
+        const url = String(input);
+        const method = init?.method ?? "GET";
+        if (method === "POST" && url.endsWith("/sessions")) {
+          return new Response(JSON.stringify({ id: SESSION_UUID }), {
+            status: 202,
+          });
+        }
+        if (
+          method === "GET" &&
+          url.endsWith(`/sessions/${SESSION_UUID}`)
+        ) {
+          return new Response(JSON.stringify({ state: "idle" }), {
+            status: 200,
+          });
+        }
+        if (method === "POST" && url.endsWith("/statements")) {
+          const body = JSON.parse(String(init?.body)) as {
+            code: string;
+          };
+          codes.push(body.code);
+          return new Response(
+            JSON.stringify({
+              id: nextStatementId++,
+              state: "waiting",
+            }),
+            { status: 200 },
+          );
+        }
+        const statement = /\/statements\/(\d+)$/.exec(url);
+        if (method === "GET" && statement) {
+          return new Response(
+            JSON.stringify(
+              statementAvailable(
+                absentObservation(Number(statement[1]) === 1),
+              ),
+            ),
+            { status: 200 },
+          );
+        }
+        if (method === "DELETE") {
+          return new Response(undefined, { status: 200 });
+        }
+        return new Response("not found", { status: 404 });
+      },
+    );
+
+    await createAdapter(fetchImpl).apply(
+      "workspace",
+      "lakehouse",
+      desired,
+      EXECUTION,
+    );
+
+    expect(codes[1]).toContain('"exists": False');
+  });
+
   it("uses deterministic attempts, lifecycle hooks, owned CREATE DDL, polling, and sanitized results", async () => {
     const desired = definition([
       {
@@ -1100,6 +1292,77 @@ describe("LakehouseTables Livy adapter", () => {
       state: "running",
     });
     expect(requests.every((request) => request.method === "GET")).toBe(true);
+  });
+
+  it("recovers an accepted schema-create statement without resubmitting it", async () => {
+    const sessionName = "fabric-deploy-tables-schema-recovery";
+    const desired = definition([], false, [
+      { logicalId: "salesSchema", name: "sales" },
+    ]);
+    const operation = buildLakehouseDdlCreateOperations(
+      desired,
+      EXECUTION,
+    )[0]!;
+    const requests: string[] = [];
+    const fetchImpl = vi.fn(
+      async (input: string | URL, init?: RequestInit) => {
+        const method = init?.method ?? "GET";
+        const url = String(input);
+        requests.push(`${method} ${url}`);
+        if (
+          method === "GET" &&
+          url.includes("/sessions?$top=100&$skip=0")
+        ) {
+          return new Response(
+            JSON.stringify({
+              items: [
+                {
+                  id: SESSION_UUID,
+                  name: sessionName,
+                  livyState: "idle",
+                },
+              ],
+              totalCountOfMatchedItems: 1,
+              pageSize: 1,
+            }),
+            { status: 200 },
+          );
+        }
+        if (method === "GET" && url.endsWith("/statements/7")) {
+          return new Response(
+            JSON.stringify(
+              statementAvailable(absentObservation(true)),
+            ),
+            { status: 200 },
+          );
+        }
+        return new Response("not found", { status: 404 });
+      },
+    );
+
+    await expect(
+      createAdapter(fetchImpl).assessAmbiguousStatement(
+        "workspace",
+        "lakehouse",
+        {
+          sessionName,
+          statementId: 7,
+          operation,
+        },
+      ),
+    ).resolves.toMatchObject({
+      outcome: "completed",
+      statementId: 7,
+      verification: {
+        logicalId: "salesSchema",
+        identifier: "sales",
+        matches: true,
+        observation: { exists: true },
+      },
+    });
+    expect(
+      requests.some((request) => request.startsWith("POST ")),
+    ).toBe(false);
   });
 
   it("discovers one exact tagged session across pages and matches one statement marker/hash", async () => {

@@ -1,0 +1,10 @@
+apiVersion: fabric.deploy/v1alpha1
+kind: FabricDeployment
+
+metadata:
+  deploymentId: live-pipeline
+
+items:
+  - logicalId: livePipeline
+    type: DataPipeline
+    path: items/pipelines/live-pipeline

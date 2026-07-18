@@ -221,6 +221,76 @@ function addSecondTable(root: string): void {
   );
 }
 
+function addManagedSalesSchema(root: string): void {
+  writeFileSync(
+    path.join(root, "items/tables/definition/tables.yaml"),
+    [
+      "apiVersion: fabric.deploy/tables/v1alpha1",
+      "kind: LakehouseTables",
+      "adoptExisting: false",
+      "schemas:",
+      "  - logicalId: salesSchema",
+      "    name: sales",
+      "tables:",
+      "  - logicalId: helloWorld",
+      "    file: tables/001-hello.sql",
+      "",
+    ].join("\n"),
+    "utf8",
+  );
+  writeFileSync(
+    path.join(
+      root,
+      "items/tables/definition/tables/001-hello.sql",
+    ),
+    [
+      "CREATE TABLE IF NOT EXISTS sales.hello_world (",
+      "  id BIGINT NOT NULL,",
+      "  message STRING",
+      ")",
+      "USING DELTA;",
+      "",
+    ].join("\n"),
+    "utf8",
+  );
+}
+
+function addSchemaBundle(
+  root: string,
+  directoryName: string,
+  targetLakehouseLogicalId: string,
+  schemaLogicalId: string,
+  schemaName: string,
+): void {
+  const directory = path.join(root, "items", directoryName);
+  mkdirSync(path.join(directory, "definition"), {
+    recursive: true,
+  });
+  writeFileSync(
+    path.join(directory, "item.yaml"),
+    [
+      `displayName: ${directoryName}`,
+      "desiredState: present",
+      "references:",
+      `  lakehouse: ${targetLakehouseLogicalId}`,
+      "",
+    ].join("\n"),
+    "utf8",
+  );
+  writeFileSync(
+    path.join(directory, "definition/tables.yaml"),
+    [
+      "apiVersion: fabric.deploy/tables/v1alpha1",
+      "kind: LakehouseTables",
+      "schemas:",
+      `  - logicalId: ${schemaLogicalId}`,
+      `    name: ${schemaName}`,
+      "",
+    ].join("\n"),
+    "utf8",
+  );
+}
+
 function addTableBundle(
   root: string,
   directoryName: string,
@@ -363,6 +433,33 @@ describe("LakehouseTables integration", () => {
 
     expect(() => loadManifest(fixture.manifestPath)).toThrow(
       "bundles 'tables' table 'helloWorld' and 'tablesTwo' table 'otherHello'",
+    );
+  });
+
+  it("rejects duplicate managed schemas across bundles targeting the same Lakehouse", () => {
+    const fixture = createFixture();
+    addManagedSalesSchema(fixture.root);
+    addSchemaBundle(
+      fixture.root,
+      "schemas-two",
+      "lakehouse",
+      "otherSalesSchema",
+      "sales",
+    );
+    writeFileSync(
+      fixture.manifestPath,
+      `${readFileSync(fixture.manifestPath, "utf8")}
+  - logicalId: schemasTwo
+    type: LakehouseTables
+    path: items/schemas-two
+    dependsOn:
+      - lakehouse
+`,
+      "utf8",
+    );
+
+    expect(() => loadManifest(fixture.manifestPath)).toThrow(
+      "bundles 'tables' schema 'salesSchema' and 'schemasTwo' schema 'otherSalesSchema'",
     );
   });
 
@@ -534,6 +631,80 @@ describe("LakehouseTables integration", () => {
     expect(ddlPlan).not.toHaveBeenCalled();
   });
 
+  it("plans managed schemas before tables for a same-plan schema-enabled Lakehouse", async () => {
+    const fixture = createFixture();
+    addManagedSalesSchema(fixture.root);
+    const loaded = loadManifest(fixture.manifestPath);
+    const offline = buildPlan(loaded, {
+      mode: "plan",
+      environment: "dev",
+    });
+
+    const online = await enrichPlanWithFabric(offline, loaded, {
+      ...otherAdapters(),
+      lakehouse: {
+        plan: async () => ({
+          action: "create" as const,
+          reason: "missing",
+          observedStateHash: "absent",
+        }),
+      },
+      lakehouseTables: { plan: vi.fn() },
+    });
+
+    expect(
+      online.items.find((item) => item.logicalId === "tables")
+        ?.lakehouseTables?.operations,
+    ).toMatchObject([
+      {
+        resourceKind: "schema",
+        logicalId: "salesSchema",
+        identifier: "sales",
+        action: "create",
+        order: 0,
+      },
+      {
+        resourceKind: "table",
+        logicalId: "helloWorld",
+        identifier: "sales.hello_world",
+        action: "create",
+        order: 1,
+      },
+    ]);
+
+    writeFileSync(
+      path.join(fixture.root, "items/lakehouse/item.yaml"),
+      "displayName: DdlLakehouse\ndesiredState: present\n",
+      "utf8",
+    );
+    const disabled = loadManifest(fixture.manifestPath);
+    const disabledOffline = buildPlan(disabled, {
+      mode: "plan",
+      environment: "dev",
+    });
+    const blocked = await enrichPlanWithFabric(
+      disabledOffline,
+      disabled,
+      {
+        ...otherAdapters(),
+        lakehouse: {
+          plan: async () => ({
+            action: "create" as const,
+            reason: "missing",
+            observedStateHash: "absent",
+          }),
+        },
+        lakehouseTables: { plan: vi.fn() },
+      },
+    );
+    expect(
+      blocked.items.find((item) => item.logicalId === "tables"),
+    ).toMatchObject({
+      action: "blocked",
+      reason: expect.stringContaining("enableSchemas: true"),
+    });
+  });
+
   it("binds every table operation into the approved artifact and validates nested structure", async () => {
     const fixture = createFixture();
     const loaded = loadManifest(fixture.manifestPath);
@@ -565,6 +736,18 @@ describe("LakehouseTables integration", () => {
     tampered.items[1].lakehouseTables.operations[0].order = 7;
     const malformed = rehashPlan(tampered);
     writeFileSync(planPath, JSON.stringify(malformed), "utf8");
+    expect(() => loadApprovedPlan(planPath)).toThrow(
+      "invalid structure",
+    );
+
+    tampered.items[1].lakehouseTables.operations[0].order = 0;
+    tampered.items[1].lakehouseTables.operations[0].resourceKind =
+      "database";
+    writeFileSync(
+      planPath,
+      JSON.stringify(rehashPlan(tampered)),
+      "utf8",
+    );
     expect(() => loadApprovedPlan(planPath)).toThrow(
       "invalid structure",
     );
@@ -719,6 +902,7 @@ describe("LakehouseTables integration", () => {
 
   it("requires independent authorization and materializes the same-apply Lakehouse ID", async () => {
     const fixture = createFixture();
+    addManagedSalesSchema(fixture.root);
     const loaded = loadManifest(fixture.manifestPath);
     const offline = buildPlan(loaded, {
       mode: "plan",
@@ -823,6 +1007,18 @@ describe("LakehouseTables integration", () => {
     await expect(
       applyApprovedPlan({
         ...common,
+        allowLakehouseSchemaCreate: false,
+        allowLakehouseTableCreate: true,
+      }),
+    ).rejects.toThrow("allow-lakehouse-schema-create is false");
+    expect(lakehouseAdapter.create).not.toHaveBeenCalled();
+
+    await expect(
+      applyApprovedPlan({
+        ...common,
+        checkpointFile: path.join(root, "checkpoint-table-blocked.json"),
+        resultFile: path.join(root, "result-table-blocked.json"),
+        allowLakehouseSchemaCreate: true,
         allowLakehouseTableCreate: false,
       }),
     ).rejects.toThrow("allow-lakehouse-table-create is false");
@@ -832,6 +1028,7 @@ describe("LakehouseTables integration", () => {
       ...common,
       checkpointFile: path.join(root, "checkpoint-allowed.json"),
       resultFile: path.join(root, "result-allowed.json"),
+      allowLakehouseSchemaCreate: true,
       allowLakehouseTableCreate: true,
     });
     expect(ddlApply).toHaveBeenCalledWith(

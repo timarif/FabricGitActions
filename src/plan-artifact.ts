@@ -13,6 +13,7 @@ import {
 const PLANNED_ACTIONS = new Set<PlannedAction>([
   "create",
   "update",
+  "delete",
   "no-op",
   "blocked",
   "unknown",
@@ -73,6 +74,31 @@ function isDeploymentPlan(value: unknown): value is DeploymentPlan {
     }
 
     const itemIds = items.map((item) => (item as PlannedItem).logicalId);
+    const plannedItems = new Map(
+      items.map((item) => {
+        const planned = item as PlannedItem;
+        return [planned.logicalId, planned] as const;
+      }),
+    );
+    if (
+      items.some((value) => {
+        const item = value as PlannedItem;
+        const assignment = item.tagAssignment;
+        return (
+          assignment !== undefined &&
+          assignment.tagLogicalIds.some((logicalId) => {
+            const target = plannedItems.get(logicalId);
+            return (
+              !target ||
+              target.type !== "FabricTag" ||
+              !item.dependsOn.includes(logicalId)
+            );
+          })
+        );
+      })
+    ) {
+      return false;
+    }
     const stagedIds: string[] = [];
     for (const stage of plan.stages as unknown[]) {
       if (
@@ -130,7 +156,8 @@ function isPlannedItem(value: unknown): value is PlannedItem {
     typeof item.path === "string" &&
     Array.isArray(item.dependsOn) &&
     item.dependsOn.every((dependency) => typeof dependency === "string") &&
-    item.desiredState === "present" &&
+    (item.desiredState === "present" ||
+      item.desiredState === "absent") &&
     typeof item.contentHash === "string" &&
     typeof item.displayName === "string" &&
     PLANNED_ACTIONS.has(item.action as PlannedAction) &&
@@ -138,6 +165,16 @@ function isPlannedItem(value: unknown): value is PlannedItem {
     (item.physicalId === undefined || typeof item.physicalId === "string") &&
     (item.observedStateHash === undefined ||
       typeof item.observedStateHash === "string") &&
+    (item.desiredState === "absent"
+      ? item.action !== "create" &&
+        item.action !== "update" &&
+        item.tagAssignment === undefined &&
+        item.lakehouseTables === undefined &&
+        item.sparkJobArtifacts === undefined
+      : item.action !== "delete") &&
+    (item.action !== "delete" ||
+      (typeof item.physicalId === "string" &&
+        isHash(item.observedStateHash))) &&
     (item.materializedDefinitionHash === undefined ||
       /^[a-f0-9]{64}$/.test(item.materializedDefinitionHash)) &&
     (item.resolvedBindingsHash === undefined ||
@@ -152,7 +189,51 @@ function isPlannedItem(value: unknown): value is PlannedItem {
     (item.type === "SparkJobDefinition"
       ? item.sparkJobArtifacts === undefined ||
         isPlannedSparkJobArtifacts(item.sparkJobArtifacts)
-      : item.sparkJobArtifacts === undefined)
+      : item.sparkJobArtifacts === undefined) &&
+    (item.tagAssignment === undefined ||
+      (item.type !== "FabricTag" &&
+        item.type !== "LakehouseTables" &&
+        item.type !== "SparkCustomPool" &&
+        isPlannedItemTagAssignment(item.tagAssignment)))
+  );
+}
+
+function isPlannedItemTagAssignment(value: unknown): boolean {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    return false;
+  }
+  const assignment = value as Record<string, unknown>;
+  const tagLogicalIds = assignment.tagLogicalIds;
+  const missingTagLogicalIds = assignment.missingTagLogicalIds;
+  if (
+    !isHash(assignment.assignmentHash) ||
+    !Array.isArray(tagLogicalIds) ||
+    tagLogicalIds.length === 0 ||
+    new Set(tagLogicalIds).size !== tagLogicalIds.length ||
+    !tagLogicalIds.every(
+      (logicalId) => typeof logicalId === "string",
+    ) ||
+    !Array.isArray(missingTagLogicalIds) ||
+    new Set(missingTagLogicalIds).size !==
+      missingTagLogicalIds.length ||
+    !missingTagLogicalIds.every(
+      (logicalId) =>
+        typeof logicalId === "string" &&
+        tagLogicalIds.includes(logicalId),
+    ) ||
+    !["update", "no-op", "blocked", "unknown"].includes(
+      String(assignment.action),
+    ) ||
+    typeof assignment.observedStateHash !== "string" ||
+    typeof assignment.reason !== "string"
+  ) {
+    return false;
+  }
+  return (
+    (assignment.action !== "no-op" ||
+      missingTagLogicalIds.length === 0) &&
+    (assignment.action !== "update" ||
+      missingTagLogicalIds.length > 0)
   );
 }
 
@@ -308,6 +389,12 @@ function isPlannedLakehouseTables(value: unknown): boolean {
       ["create", "adopt", "no-op", "blocked"].includes(
         String(entry.action),
       ) &&
+      (entry.resourceKind === undefined ||
+        entry.resourceKind === "schema" ||
+        entry.resourceKind === "table") &&
+      (entry.resourceKind !== "schema" ||
+        entry.action === "create" ||
+        entry.action === "no-op") &&
       typeof entry.operationId === "string" &&
       isHash(entry.operationHash) &&
       entry.order === index &&

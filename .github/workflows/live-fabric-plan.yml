@@ -19,9 +19,10 @@ jobs:
         uses: ./
         with:
           mode: plan
-          manifest: examples/basic/fabric/deployment.yaml
+          manifest: examples/live-lakehouse/fabric/deployment.yaml
           environment: live-test
           workspace-id: ${{ vars.FABRIC_WORKSPACE_ID }}
+          variables: '{"LAKEHOUSE_DESCRIPTION":"Live Fabric planning validation"}'
           auth-mode: oidc
           tenant-id: ${{ vars.FABRIC_TENANT_ID }}
           client-id: ${{ vars.FABRIC_CLIENT_ID }}
@@ -30,7 +31,7 @@ jobs:
       - name: Verify live Lakehouse classification
         shell: bash
         run: |
-          test "${{ steps.fabric-plan.outputs.item-count }}" = "5"
+          test "${{ steps.fabric-plan.outputs.item-count }}" = "1"
           jq -e '
             .items[]
             | select(.type == "Lakehouse")
@@ -41,7 +42,7 @@ jobs:
           ' live-output/fabric-plan.json
 
       - name: Upload live plan
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: live-fabric-plan
           path: live-output/fabric-plan.json

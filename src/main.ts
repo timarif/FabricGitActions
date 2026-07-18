@@ -15,6 +15,7 @@ import {
 import { FabricClient } from "./fabric/client";
 import { parseFabricEndpoints } from "./fabric/config";
 import { EnvironmentAdapter } from "./fabric/environment";
+import { ItemDeletionAdapter } from "./fabric/item-deletion";
 import { LakehouseAdapter } from "./fabric/lakehouse";
 import { LakehouseTablesAdapter } from "./fabric/lakehouse-tables";
 import { buildLakehouseLivyApiEndpoints } from "./fabric/livy";
@@ -25,6 +26,7 @@ import { PipelineAdapter } from "./fabric/pipeline";
 import { SparkCustomPoolAdapter } from "./fabric/spark-custom-pool";
 import { assertSparkJobArtifactEndpoints } from "./fabric/spark-job-artifacts";
 import { SparkJobAdapter } from "./fabric/spark-job";
+import { FabricTagAdapter } from "./fabric/tags";
 import { WorkspaceAdapter } from "./fabric/workspace";
 import { loadManifest } from "./manifest";
 import { loadApprovedPlan } from "./plan-artifact";
@@ -147,10 +149,12 @@ export async function run(): Promise<void> {
     }
     let lakehouseAdapter: LakehouseAdapter | undefined;
     let environmentAdapter: EnvironmentAdapter | undefined;
+    let itemDeletionAdapter: ItemDeletionAdapter | undefined;
     let notebookAdapter: NotebookAdapter | undefined;
     let sparkJobAdapter: SparkJobAdapter | undefined;
     let pipelineAdapter: PipelineAdapter | undefined;
     let sparkCustomPoolAdapter: SparkCustomPoolAdapter | undefined;
+    let tagAdapter: FabricTagAdapter | undefined;
     let workspaceAdapter: WorkspaceAdapter | undefined;
     let lakehouseTablesAdapter: LakehouseTablesAdapter | undefined;
     let oneLakeArtifactStager: OneLakeArtifactStager | undefined;
@@ -181,10 +185,12 @@ export async function run(): Promise<void> {
       lakehouseAdapter = new LakehouseAdapter(client);
       lakehouseTablesAdapter = new LakehouseTablesAdapter(client);
       environmentAdapter = new EnvironmentAdapter(client);
+      itemDeletionAdapter = new ItemDeletionAdapter(client);
       notebookAdapter = new NotebookAdapter(client);
       sparkJobAdapter = new SparkJobAdapter(client);
       pipelineAdapter = new PipelineAdapter(client);
       sparkCustomPoolAdapter = new SparkCustomPoolAdapter(client);
+      tagAdapter = new FabricTagAdapter(client);
       workspaceAdapter = new WorkspaceAdapter(client);
       oneLakeArtifactStager = new OneLakeArtifactStager({
         dfsEndpoint: endpoints.oneLakeEndpoint,
@@ -193,12 +199,14 @@ export async function run(): Promise<void> {
       });
       plan = await enrichPlanWithFabric(plan, loadedManifest, {
         workspace: workspaceAdapter,
+        deletion: itemDeletionAdapter,
         lakehouse: lakehouseAdapter,
         environment: environmentAdapter,
         notebook: notebookAdapter,
         sparkJob: sparkJobAdapter,
         pipeline: pipelineAdapter,
         sparkCustomPool: sparkCustomPoolAdapter,
+        tags: tagAdapter,
         lakehouseTables: lakehouseTablesAdapter,
         oneLakeArtifacts: {
           dfsEndpoint: endpoints.oneLakeEndpoint,
@@ -227,6 +235,10 @@ export async function run(): Promise<void> {
       String(plan.items.filter((item) => item.action === "update").length),
     );
     core.setOutput(
+      "delete-count",
+      String(plan.items.filter((item) => item.action === "delete").length),
+    );
+    core.setOutput(
       "noop-count",
       String(plan.items.filter((item) => item.action === "no-op").length),
     );
@@ -253,10 +265,12 @@ export async function run(): Promise<void> {
         !resultFile ||
         !lakehouseAdapter ||
         !environmentAdapter ||
+        !itemDeletionAdapter ||
         !notebookAdapter ||
         !sparkJobAdapter ||
         !pipelineAdapter ||
         !sparkCustomPoolAdapter ||
+        !tagAdapter ||
         !workspaceAdapter
         || !lakehouseTablesAdapter ||
         !oneLakeArtifactStager
@@ -269,10 +283,12 @@ export async function run(): Promise<void> {
         loadedManifest,
         lakehouseAdapter,
         environmentAdapter,
+        itemDeletionAdapter,
         notebookAdapter,
         sparkJobAdapter,
         pipelineAdapter,
         sparkCustomPoolAdapter,
+        tagAdapter,
         workspaceAdapter,
         lakehouseTablesAdapter,
         oneLakeArtifactStager,
@@ -280,6 +296,10 @@ export async function run(): Promise<void> {
         oneLakeBlobEndpoint: endpoints.oneLakeBlobEndpoint,
         allowCreate: readBooleanInput("allow-create"),
         allowUpdate: readBooleanInput("allow-update"),
+        allowDelete: readBooleanInput("allow-delete"),
+        allowLakehouseDataLoss: readBooleanInput(
+          "allow-lakehouse-data-loss",
+        ),
         allowWorkspaceCreate: readBooleanInput(
           "allow-workspace-create",
         ),
@@ -289,12 +309,17 @@ export async function run(): Promise<void> {
         allowCapacityAssignment: readBooleanInput(
           "allow-capacity-assignment",
         ),
+        allowLakehouseSchemaCreate: readBooleanInput(
+          "allow-lakehouse-schema-create",
+        ),
         allowLakehouseTableCreate: readBooleanInput(
           "allow-lakehouse-table-create",
         ),
         allowOneLakeArtifactCreate: readBooleanInput(
           "allow-onelake-artifact-create",
         ),
+        allowTagCreate: readBooleanInput("allow-tag-create"),
+        allowTagAssign: readBooleanInput("allow-tag-assign"),
         checkpointFile,
         resultFile,
         itemDirectories: Object.values(loadedManifest.itemDirectories),

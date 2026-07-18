@@ -208,6 +208,7 @@ export async function writeJobSummary(plan: DeploymentPlan): Promise<void> {
   const tableOperations = plan.items.flatMap((item) =>
     (item.lakehouseTables?.operations ?? []).map((operation) => [
       item.logicalId,
+      operation.resourceKind ?? "table",
       operation.identifier,
       operation.action,
       operation.operationId,
@@ -215,10 +216,11 @@ export async function writeJobSummary(plan: DeploymentPlan): Promise<void> {
     ]),
   );
   if (tableOperations.length > 0) {
-    core.summary.addHeading("Lakehouse table operations", 2).addTable([
+    core.summary.addHeading("Lakehouse DDL operations", 2).addTable([
       [
         { data: "Bundle", header: true },
-        { data: "Table", header: true },
+        { data: "Kind", header: true },
+        { data: "Resource", header: true },
         { data: "Action", header: true },
         { data: "Operation ID", header: true },
         { data: "Reason", header: true },
@@ -245,6 +247,29 @@ export async function writeJobSummary(plan: DeploymentPlan): Promise<void> {
         { data: "Reason", header: true },
       ],
       ...artifactOperations,
+    ]);
+  }
+  const tagAssignments = plan.items.flatMap((item) =>
+    item.tagAssignment
+      ? [
+          [
+            item.logicalId,
+            item.tagAssignment.tagLogicalIds.join(", "),
+            item.tagAssignment.action,
+            item.tagAssignment.reason,
+          ],
+        ]
+      : [],
+  );
+  if (tagAssignments.length > 0) {
+    core.summary.addHeading("Fabric tag assignments", 2).addTable([
+      [
+        { data: "Item", header: true },
+        { data: "Tag logical IDs", header: true },
+        { data: "Action", header: true },
+        { data: "Reason", header: true },
+      ],
+      ...tagAssignments,
     ]);
   }
 

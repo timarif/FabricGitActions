@@ -6,6 +6,80 @@ import { rehashPlan } from "../src/planner";
 import type { LoadedManifest } from "../src/types";
 
 describe("online Fabric planning", () => {
+  it("plans supported absent items through exact deletion discovery", async () => {
+    const loaded: LoadedManifest = {
+      manifestPath: "deployment.yaml",
+      manifestDirectory: ".",
+      sourceHash: "source",
+      resolvedHash: "resolved",
+      itemContentHashes: { oldNotebook: "content" },
+      itemDirectories: {
+        oldNotebook: "items/notebooks/old",
+      },
+      itemDefinitions: {
+        oldNotebook: {
+          displayName: "Old Notebook",
+          desiredState: "absent",
+        },
+      },
+      environmentDefinitions: {},
+      notebookDefinitions: {},
+      sparkJobDefinitions: {},
+      pipelineDefinitions: {},
+      sparkCustomPoolDefinitions: {},
+      manifest: {
+        apiVersion: "fabric.deploy/v1alpha1",
+        kind: "FabricDeployment",
+        metadata: { deploymentId: "delete-notebook" },
+        workspace: { id: "workspace" },
+        items: [
+          {
+            logicalId: "oldNotebook",
+            type: "Notebook",
+            path: "items/notebooks/old",
+            desiredState: "absent",
+          },
+        ],
+      },
+    };
+    const offline = buildPlan(loaded, {
+      mode: "plan",
+      environment: "dev",
+    });
+    const fail = vi.fn(async () => {
+      throw new Error("Present-state adapter should not be called.");
+    });
+    const deletion = vi.fn(async () => ({
+      action: "delete" as const,
+      reason: "approved soft deletion",
+      physicalId: "notebook-1",
+      observedStateHash: "a".repeat(64),
+    }));
+
+    const online = await enrichPlanWithFabric(offline, loaded, {
+      deletion: { plan: deletion },
+      lakehouse: { plan: fail },
+      environment: { plan: fail },
+      notebook: { plan: fail },
+      sparkJob: { plan: fail },
+      pipeline: { plan: fail },
+      sparkCustomPool: { plan: fail },
+    });
+
+    expect(deletion).toHaveBeenCalledWith(
+      "workspace",
+      "Notebook",
+      loaded.itemDefinitions.oldNotebook,
+    );
+    expect(fail).not.toHaveBeenCalled();
+    expect(online.items[0]).toMatchObject({
+      desiredState: "absent",
+      action: "delete",
+      physicalId: "notebook-1",
+      observedStateHash: "a".repeat(64),
+    });
+  });
+
   it("plans workspace creation before blocking child item planning", async () => {
     const loaded: LoadedManifest = {
       manifestPath: "deployment.yaml",

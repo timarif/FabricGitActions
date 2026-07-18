@@ -69,7 +69,7 @@
             }
           },
           "desiredState": {
-            "const": "present"
+            "enum": ["present", "absent"]
           }
         }
       }

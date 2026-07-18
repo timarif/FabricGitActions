@@ -1,0 +1,4 @@
+displayName: Fabric Deploy Phase 4 Review
+desiredState: present
+scope:
+  type: Tenant

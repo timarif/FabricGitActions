@@ -18,6 +18,21 @@ on:
         required: true
         default: false
         type: boolean
+      allow_delete:
+        description: Permit approved soft deletion.
+        required: true
+        default: false
+        type: boolean
+      allow_lakehouse_data_loss:
+        description: Permit approved Lakehouse deletion.
+        required: true
+        default: false
+        type: boolean
+      allow_lakehouse_schema_create:
+        description: Permit approved Lakehouse schema creation.
+        required: true
+        default: false
+        type: boolean
       allow_lakehouse_table_create:
         description: Permit approved Lakehouse managed Delta table creation.
         required: true
@@ -180,7 +195,7 @@ jobs:
             >> "$GITHUB_OUTPUT"
 
       - name: Upload approved plan
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: ${{ steps.plan-artifact.outputs.name }}
           path: approved-plan/fabric-plan.json
@@ -189,7 +204,7 @@ jobs:
 
       - name: Upload recovered checkpoint
         if: ${{ github.run_attempt > 1 }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: ${{ steps.plan-artifact.outputs.recovery-name }}
           path: recovery/checkpoint.json
@@ -200,19 +215,20 @@ jobs:
     if: ${{ inputs.confirmation == 'APPLY' }}
     needs: plan
     runs-on: ubuntu-latest
+    environment: fabric-live-apply
 
     steps:
       - uses: actions/checkout@v5
 
       - name: Download approved plan
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v5
         with:
           name: ${{ needs.plan.outputs.approved-plan-artifact }}
           path: approved-plan
 
       - name: Download recovered checkpoint
         if: ${{ github.run_attempt > 1 }}
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v5
         with:
           name: ${{ needs.plan.outputs.recovery-checkpoint-artifact }}
           path: recovered-checkpoint
@@ -244,6 +260,9 @@ jobs:
           approved-plan-file: approved-plan/fabric-plan.json
           allow-create: ${{ inputs.allow_create }}
           allow-update: ${{ inputs.allow_update }}
+          allow-delete: ${{ inputs.allow_delete }}
+          allow-lakehouse-data-loss: ${{ inputs.allow_lakehouse_data_loss }}
+          allow-lakehouse-schema-create: ${{ inputs.allow_lakehouse_schema_create }}
           allow-lakehouse-table-create: ${{ inputs.allow_lakehouse_table_create }}
           plan-file: apply-output/current-plan.json
           checkpoint-file: apply-output/checkpoint.json
@@ -251,7 +270,7 @@ jobs:
 
       - name: Upload apply artifacts
         if: ${{ always() }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: phase3-apply-result-${{ github.run_id }}-${{ github.run_attempt }}
           path: |

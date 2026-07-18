@@ -77,12 +77,32 @@ inputs:
     description: Allow apply mode to update Fabric items.
     required: false
     default: "false"
+  allow-delete:
+    description: Allow apply mode to soft-delete approved Fabric items.
+    required: false
+    default: "false"
+  allow-lakehouse-data-loss:
+    description: Permit approved Lakehouse deletion when allow-delete is also true.
+    required: false
+    default: "false"
+  allow-lakehouse-schema-create:
+    description: Permit approved Lakehouse schema creation in LakehouseTables bundles.
+    required: false
+    default: "false"
   allow-lakehouse-table-create:
     description: Permit approved managed Delta table creation in LakehouseTables bundles.
     required: false
     default: "false"
   allow-onelake-artifact-create:
     description: Permit approved immutable Spark Job artifact creation in OneLake.
+    required: false
+    default: "false"
+  allow-tag-create:
+    description: Permit approved Fabric tenant or domain tag creation.
+    required: false
+    default: "false"
+  allow-tag-assign:
+    description: Permit approved additive Fabric tag assignment to supported items.
     required: false
     default: "false"
   allow-workspace-create:
@@ -119,6 +139,8 @@ outputs:
     description: Number of items planned for creation.
   update-count:
     description: Number of items planned for update.
+  delete-count:
+    description: Number of items planned for deletion.
   noop-count:
     description: Number of items with no detected changes.
   unknown-count:

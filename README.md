@@ -3,18 +3,30 @@
 A GitHub Marketplace action for declarative Microsoft Fabric deployments, with
 an initial focus on Data Engineering workloads.
 
-> **Current status:** Phases 1 through 3 are complete. Phase 4 production
-> hardening has started with deterministic OneLake staging for Spark Job JVM
-> executables and JAR libraries. Deployments support authenticated planning and guarded
-> create/update/no-op apply with approved-plan binding, drift detection,
-> checkpoints, and result artifacts. See
+> **Current status:** Phases 1 through 4 are implemented. Production
+> hardening includes deterministic OneLake staging for Spark Job JVM
+> executables and JAR libraries plus managed Fabric tag creation and additive
+> item assignment, Lakehouse schema creation, and guarded soft deletion for
+> selected workspace items, disposable live E2E validation, reusable
+> promotion, and provenance-attested releases. Deployments support authenticated planning and
+> guarded create/update/delete/no-op apply with approved-plan binding, drift
+> detection, checkpoints, and result artifacts. See
 > [the roadmap](docs/ROADMAP.md).
+
+For sequential environment deployment, see the
+[dev/test/prod promotion guide](docs/PROMOTION.md).
+The [live sandbox E2E guide](docs/LIVE_E2E.md) describes disposable
+workspace validation and cleanup.
+For operational help and release verification, see
+[`SUPPORT.md`](SUPPORT.md), [`SECURITY.md`](SECURITY.md), and the
+[release guide](docs/RELEASING.md).
 
 ## Initial workload scope
 
 - Workspace
 - Lakehouse
 - Lakehouse table DDL
+- Fabric tags and item tag assignment
 - Environment
 - Notebook
 - Workspace custom Spark pool
@@ -96,8 +108,9 @@ deletion and capacity unassignment are intentionally unsupported.
 
 Without authentication, `plan` is offline and reports item actions as
 `unknown`. With Fabric authentication configured, Lakehouses, Environments, Notebooks,
-LakehouseTables bundles, Spark Job Definitions, Data Pipelines, and workspace custom Spark pools are
-classified as `create`, `update`, `no-op`, or `blocked`; later workload
+LakehouseTables bundles, Fabric tags, Spark Job Definitions, Data Pipelines,
+and workspace custom Spark pools are
+classified as `create`, `update`, `delete`, `no-op`, or `blocked`; later workload
 adapters remain `unknown`.
 
 ## Authenticated Fabric plan with GitHub OIDC
@@ -154,7 +167,12 @@ that exact file to a separate apply job:
     approved-plan-file: approved/fabric-plan.json
     allow-create: "true"
     allow-update: "false"
+    allow-delete: "false"
+    allow-lakehouse-data-loss: "false"
+    allow-lakehouse-schema-create: "true"
     allow-lakehouse-table-create: "true"
+    allow-tag-create: "true"
+    allow-tag-assign: "true"
     return-livy-api-endpoint: "true"
     plan-file: apply-output/current-plan.json
     checkpoint-file: apply-output/checkpoint.json
@@ -171,8 +189,8 @@ Apply recomputes the current authenticated plan and rejects:
 - Modified or malformed approved plans
 - Source commit, source content, environment, workspace, or graph mismatches
 - Fabric state drift after approval
-- Creates or updates without their explicit allow flag
-- Blocked, unknown, deletion, or unsupported workload actions
+- Creates, updates, or deletions without their explicit allow flag
+- Blocked, unknown, or unsupported workload actions
 
 When the approved workspace action is `create`, blocked child items are not
 mutated; the successful workspace bootstrap explicitly requires a fresh item
@@ -197,8 +215,7 @@ intermediate state before continuing. Notebook definition updates checkpoint
 their metadata and definition phases and fail closed when an interrupted
 update cannot be proven safe to resume.
 `plan-hash` identifies the freshly generated `plan-file`;
-`approved-plan-hash` identifies the plan authorized for apply. Deletion is not
-implemented.
+`approved-plan-hash` identifies the plan authorized for apply.
 
 ## Manifest
 
@@ -235,12 +252,103 @@ references:
 References and item-ID bindings must target known logical IDs and must also be
 declared in `dependsOn`.
 
+### Guarded item deletion
+
+Lakehouse, Environment, Notebook, Spark Job Definition, and Data Pipeline
+items can declare `desiredState: absent`. Deletion intent must be explicit in
+both the deployment manifest and `item.yaml`:
+
+```yaml
+# deployment.yaml
+items:
+  - logicalId: retiredNotebook
+    type: Notebook
+    path: items/notebooks/retired
+    desiredState: absent
+```
+
+```yaml
+# items/notebooks/retired/item.yaml
+displayName: Retired Notebook
+desiredState: absent
+folderId: 11111111-1111-1111-1111-111111111111 # optional
+```
+
+Deletion-only items do not require a `definition/` directory and cannot
+declare descriptions, references, bindings, or tags. Apply performs Fabric's
+default soft deletion; it does not request permanent deletion. A delete plan
+is bound to the exact physical item ID and observed identity metadata. Apply
+requires `allow-delete: "true"`, checkpoints intent before the DELETE request,
+verifies the exact approved ID is absent, and refuses to delete a replacement
+item that appears under the same name and folder.
+
+Dependencies between absent items run in reverse order so dependents are
+deleted before their dependencies. A present item cannot depend on an absent
+item. Lakehouse deletion additionally requires
+`allow-lakehouse-data-loss: "true"` so a generic delete approval cannot remove
+Lakehouse data. FabricTag, LakehouseTables, and workspace custom Spark pool
+deletion remain unsupported.
+
+See [`examples/deletion`](examples/deletion) for a Lakehouse and dependent
+Data Pipeline retirement manifest.
+
+### Fabric tags
+
+Declare a tenant or domain tag as a managed `FabricTag` resource:
+
+```yaml
+items:
+  - logicalId: phase4ReviewTag
+    type: FabricTag
+    path: items/tags/phase4-review
+
+  - logicalId: bronzeLakehouse
+    type: Lakehouse
+    path: items/lakehouses/bronze
+    dependsOn:
+      - phase4ReviewTag
+```
+
+```yaml
+# items/tags/phase4-review/item.yaml
+displayName: Fabric Deploy Phase 4 Review
+scope:
+  type: Tenant
+```
+
+```yaml
+# items/lakehouses/bronze/item.yaml
+displayName: Bronze
+tags:
+  - phase4ReviewTag
+```
+
+Domain tags use `scope.type: Domain` plus a Fabric domain GUID. Tag references
+must target `FabricTag` logical IDs and must be declared in `dependsOn`, which
+ensures same-plan tags are created before assignment. A tag name is limited to
+40 characters and an item can declare at most 10 tags.
+
+Tag ownership is additive: apply adds missing desired tags and verifies the
+desired subset, but never removes unrelated tags or tags omitted from the
+manifest. `FabricTag` resources are create/no-op only; rename, scope change,
+unassignment, and deletion are intentionally unsupported.
+
+Tag creation requires both `allow-create` and the independent
+`allow-tag-create` safeguard. Assignment requires `allow-tag-assign`. All
+default to `false`. Creating catalog tags uses the Fabric administrator API
+and requires the corresponding tenant permission; assigning tags requires
+Contributor or higher on the target workspace.
+
 Definition-bearing workloads are structurally validated:
+
+The required definitions below apply to `desiredState: present`. Supported
+deletion-only items use only `item.yaml` as described above.
 
 | Type | Required definition |
 | --- | --- |
 | Lakehouse | `item.yaml` |
 | LakehouseTables | `definition/tables.yaml` plus every declared `definition/tables/*.sql` file |
+| FabricTag | `item.yaml`; no `definition/` directory |
 | Environment | `definition/environment.yml`; optional `Sparkcompute.yml`, `.platform`, and custom libraries |
 | Notebook | Exactly one `.py`, `.scala`, `.r`, `.sql`, or `.ipynb` file under `definition/`; optional `.platform` |
 | Spark Job Definition | Exactly one `definition/main.py` or `definition/main.jar`; optional `SparkJobDefinitionV1.json`, `.platform`, and files under `definition/libs/` |
@@ -266,26 +374,36 @@ references:
 ```yaml
 apiVersion: fabric.deploy/tables/v1alpha1
 kind: LakehouseTables
-defaultSchema: dbo
 adoptExisting: false
+schemas:
+  - logicalId: salesSchema
+    name: sales
 tables:
   - logicalId: helloWorld
     file: tables/001-hello-world.sql
 ```
 
-Phase 3 accepts one restricted managed Delta
+`schemas` and `tables` are independently optional, but at least one must be
+non-empty. Managed schema declarations generate only
+`CREATE SCHEMA IF NOT EXISTS`; reserved system schemas are rejected. Existing
+schemas are left unchanged, and schemas omitted from the bundle are unmanaged.
+Schema operations are always planned and executed before table operations.
+
+The action accepts one restricted managed Delta
 `CREATE TABLE IF NOT EXISTS ... USING DELTA` statement per file. It rejects
 ALTER/DROP, CTAS, LOCATION, OPTIONS, external tables, non-Delta providers,
 protocol-changing properties, and multiple statements. Schemas are never
-created implicitly; the target Lakehouse must be schema-enabled and the
-referenced schema must already exist. Verification pins the Delta protocol to
+created from table SQL; a missing table schema must be declared in the same
+bundle. The target Lakehouse must be schema-enabled. Verification pins the Delta protocol to
 reader version 1 and writer version 2, permits only Fabric's legacy
 `appendOnly` and `invariants` capability metadata, and blocks newer table
 features.
 
 Authenticated planning observes Spark catalog and Delta metadata through the
-Lakehouse-scoped Fabric Livy session API. Apply requires the independent
-`allow-lakehouse-table-create` flag. Existing structurally matching tables are
+Lakehouse-scoped Fabric Livy session API. Schema and table mutations require
+the independent `allow-lakehouse-schema-create` and
+`allow-lakehouse-table-create` flags respectively; mixed bundles require both.
+Existing structurally matching tables are
 accepted only when their reserved deployment ownership properties match.
 Ownership scheme `v1` hashes the deployment ID, bundle logical ID, target
 Lakehouse logical ID, and table logical ID, and separately stores the canonical
@@ -439,6 +557,7 @@ The action currently implements:
 - Immutable OneLake staging for Spark Job JVM executables and JAR libraries
 - Data Pipeline definition mapping, create/update, and read-back verification
 - Workspace custom Spark pool mapping, create/update, and read-back verification
+- Fabric tenant/domain tag creation and additive item tag assignment
 - Published Environment definition proof and target-version advancement checks
 - Regional Fabric long-running-operation polling for trusted operation URLs
 - Authenticated create/update/no-op planning

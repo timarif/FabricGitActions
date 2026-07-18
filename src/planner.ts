@@ -1,4 +1,5 @@
 import { sha256, stableJson } from "./hash";
+import { buildOfflineTagAssignment } from "./fabric/tag-assignment";
 import { buildDeploymentStages } from "./graph";
 import type {
   ActionMode,
@@ -42,6 +43,10 @@ export function buildPlan(
     contentHash: loadedManifest.itemContentHashes[item.logicalId] ?? "",
     displayName:
       loadedManifest.itemDefinitions[item.logicalId]?.displayName ?? item.logicalId,
+    tagAssignment: buildOfflineTagAssignment(
+      loadedManifest,
+      item.logicalId,
+    ),
     action: "unknown",
     reason:
       options.mode === "validate"

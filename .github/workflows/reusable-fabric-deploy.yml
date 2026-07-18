@@ -1,0 +1,401 @@
+name: Reusable Fabric Deploy
+
+on:
+  workflow_call:
+    inputs:
+      github_environment:
+        description: GitHub Environment that protects the apply job.
+        required: true
+        type: string
+      deployment_environment:
+        description: Environment value bound into the Fabric plan.
+        required: true
+        type: string
+      manifest:
+        description: Deployment manifest path.
+        required: false
+        default: fabric/deployment.yaml
+        type: string
+      workspace_id:
+        description: Existing Fabric workspace ID. Leave empty for a managed workspace manifest.
+        required: false
+        default: ""
+        type: string
+      variables:
+        description: Non-sensitive deployment variables as a JSON object.
+        required: false
+        default: "{}"
+        type: string
+      tenant_id:
+        description: Microsoft Entra tenant ID.
+        required: true
+        type: string
+      client_id:
+        description: OIDC-enabled deployment application client ID.
+        required: true
+        type: string
+      fabric_api_endpoint:
+        description: Fabric API endpoint.
+        required: false
+        default: https://api.fabric.microsoft.com
+        type: string
+      onelake_endpoint:
+        description: OneLake DFS endpoint.
+        required: false
+        default: https://onelake.dfs.fabric.microsoft.com
+        type: string
+      onelake_blob_endpoint:
+        description: OneLake Blob endpoint. Empty derives it from the DFS endpoint.
+        required: false
+        default: ""
+        type: string
+      allow_create:
+        required: false
+        default: false
+        type: boolean
+      allow_update:
+        required: false
+        default: false
+        type: boolean
+      allow_delete:
+        required: false
+        default: false
+        type: boolean
+      allow_lakehouse_data_loss:
+        required: false
+        default: false
+        type: boolean
+      allow_workspace_create:
+        required: false
+        default: false
+        type: boolean
+      allow_workspace_update:
+        required: false
+        default: false
+        type: boolean
+      allow_capacity_assignment:
+        required: false
+        default: false
+        type: boolean
+      allow_lakehouse_schema_create:
+        required: false
+        default: false
+        type: boolean
+      allow_lakehouse_table_create:
+        required: false
+        default: false
+        type: boolean
+      allow_onelake_artifact_create:
+        required: false
+        default: false
+        type: boolean
+      allow_tag_create:
+        required: false
+        default: false
+        type: boolean
+      allow_tag_assign:
+        required: false
+        default: false
+        type: boolean
+      artifact_retention_days:
+        description: Retention for approved plan, checkpoint, and result artifacts.
+        required: false
+        default: 30
+        type: number
+    outputs:
+      plan_hash:
+        description: Approved plan hash for this environment.
+        value: ${{ jobs.plan.outputs.plan-hash }}
+      approved_plan_artifact:
+        description: Approved plan artifact generated for this attempt.
+        value: ${{ jobs.plan.outputs.approved-plan-artifact }}
+      result_artifact:
+        description: Apply result and checkpoint artifact.
+        value: ${{ jobs.apply.outputs.result-artifact }}
+      workspace_id:
+        description: Resolved Fabric workspace ID.
+        value: ${{ jobs.apply.outputs.workspace-id }}
+
+permissions:
+  actions: read
+  contents: read
+  id-token: write
+
+concurrency:
+  group: fabric-deploy-${{ inputs.deployment_environment }}-${{ inputs.workspace_id || 'managed' }}
+  cancel-in-progress: false
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      approved-plan-artifact: ${{ steps.artifact-names.outputs.approved }}
+      plan-hash: ${{ steps.inspect-plan.outputs.plan-hash }}
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Normalize artifact name
+        id: environment-name
+        shell: bash
+        env:
+          DEPLOYMENT_ENVIRONMENT: ${{ inputs.deployment_environment }}
+        run: |
+          set -euo pipefail
+          slug="$(
+            printf '%s' "$DEPLOYMENT_ENVIRONMENT" \
+              | tr '[:upper:]' '[:lower:]' \
+              | sed -E 's/[^a-z0-9._-]+/-/g; s/^-+|-+$//g'
+          )"
+          test -n "$slug"
+          echo "slug=$slug" >> "$GITHUB_OUTPUT"
+
+      - name: Create approved Fabric plan
+        if: ${{ github.run_attempt == 1 }}
+        uses: ./
+        with:
+          mode: plan
+          manifest: ${{ inputs.manifest }}
+          environment: ${{ inputs.deployment_environment }}
+          workspace-id: ${{ inputs.workspace_id }}
+          variables: ${{ inputs.variables }}
+          auth-mode: oidc
+          tenant-id: ${{ inputs.tenant_id }}
+          client-id: ${{ inputs.client_id }}
+          fabric-api-endpoint: ${{ inputs.fabric_api_endpoint }}
+          onelake-endpoint: ${{ inputs.onelake_endpoint }}
+          onelake-blob-endpoint: ${{ inputs.onelake_blob_endpoint }}
+          plan-file: approved-plan/fabric-plan.json
+
+      - name: Restore original approved plan
+        if: ${{ github.run_attempt > 1 }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+          ENVIRONMENT_SLUG: ${{ steps.environment-name.outputs.slug }}
+        run: |
+          set -euo pipefail
+          mkdir -p artifact-restore approved-plan
+          test "$RUN_ATTEMPT" -gt 1
+          approved_name="approved-fabric-plan-${ENVIRONMENT_SLUG}-${RUN_ID}-1"
+
+          gh api --paginate --slurp \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "/repos/${REPOSITORY}/actions/runs/${RUN_ID}/artifacts?per_page=100" \
+            > artifact-restore/pages.json
+          jq '{artifacts: [.[].artifacts[]]}' \
+            artifact-restore/pages.json \
+            > artifact-restore/artifacts.json
+
+          approved_url="$(
+            jq -er --arg name "$approved_name" '
+              [
+                .artifacts[]
+                | select(.expired == false and .name == $name)
+              ]
+              | if length == 1
+                then .[0].archive_download_url
+                else error("Expected exactly one original approved plan artifact")
+                end
+            ' artifact-restore/artifacts.json
+          )"
+          printf -v authorization_header \
+            'Authorization: Bearer %s' "$GH_TOKEN"
+          curl --fail-with-body --location --silent --show-error \
+            --header "$authorization_header" \
+            --header "Accept: application/vnd.github+json" \
+            --header "X-GitHub-Api-Version: 2022-11-28" \
+            --output artifact-restore/approved.zip \
+            "$approved_url"
+          unzip -q artifact-restore/approved.zip \
+            -d artifact-restore/approved
+
+          mapfile -d '' plans < <(
+            find artifact-restore/approved -type f \
+              -name fabric-plan.json -print0
+          )
+          test "${#plans[@]}" -eq 1
+          cp -- "${plans[0]}" approved-plan/fabric-plan.json
+
+      - name: Inspect approved plan
+        id: inspect-plan
+        shell: bash
+        run: |
+          set -euo pipefail
+          jq -e '
+            .mode == "plan"
+            and (
+              .workspace == null
+              or (
+                .workspace.action != "blocked"
+                and .workspace.action != "unknown"
+              )
+            )
+            and all(
+              .items[];
+              .action != "blocked"
+              and .action != "unknown"
+            )
+          ' approved-plan/fabric-plan.json
+          echo "plan-hash=$(jq -r '.planHash' approved-plan/fabric-plan.json)" \
+            >> "$GITHUB_OUTPUT"
+
+      - name: Record artifact names
+        id: artifact-names
+        shell: bash
+        env:
+          ENVIRONMENT_SLUG: ${{ steps.environment-name.outputs.slug }}
+        run: |
+          echo "approved=approved-fabric-plan-${ENVIRONMENT_SLUG}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
+            >> "$GITHUB_OUTPUT"
+
+      - name: Upload approved plan
+        uses: actions/upload-artifact@v5
+        with:
+          name: ${{ steps.artifact-names.outputs.approved }}
+          path: approved-plan/fabric-plan.json
+          if-no-files-found: error
+          retention-days: ${{ inputs.artifact_retention_days }}
+
+  apply:
+    needs: plan
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.github_environment }}
+    outputs:
+      result-artifact: ${{ steps.artifact-name.outputs.value }}
+      workspace-id: ${{ steps.fabric-apply.outputs.workspace-id }}
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Download approved plan
+        uses: actions/download-artifact@v5
+        with:
+          name: ${{ needs.plan.outputs.approved-plan-artifact }}
+          path: approved-plan
+
+      - name: Restore prior checkpoint
+        if: ${{ github.run_attempt > 1 }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+          DEPLOYMENT_ENVIRONMENT: ${{ inputs.deployment_environment }}
+        run: |
+          set -euo pipefail
+          slug="$(
+            printf '%s' "$DEPLOYMENT_ENVIRONMENT" \
+              | tr '[:upper:]' '[:lower:]' \
+              | sed -E 's/[^a-z0-9._-]+/-/g; s/^-+|-+$//g'
+          )"
+          test -n "$slug"
+          previous_attempt=$((10#$RUN_ATTEMPT - 1))
+          artifact_name="fabric-apply-${slug}-${RUN_ID}-${previous_attempt}"
+          mkdir -p artifact-restore apply-output
+
+          gh api --paginate --slurp \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "/repos/${REPOSITORY}/actions/runs/${RUN_ID}/artifacts?per_page=100" \
+            > artifact-restore/pages.json
+          jq '{artifacts: [.[].artifacts[]]}' \
+            artifact-restore/pages.json \
+            > artifact-restore/artifacts.json
+          checkpoint_url="$(
+            jq -er --arg name "$artifact_name" '
+              [
+                .artifacts[]
+                | select(.expired == false and .name == $name)
+              ]
+              | if length == 1
+                then .[0].archive_download_url
+                else error("Expected exactly one apply artifact from the previous attempt")
+                end
+            ' artifact-restore/artifacts.json
+          )"
+          printf -v authorization_header \
+            'Authorization: Bearer %s' "$GH_TOKEN"
+          curl --fail-with-body --location --silent --show-error \
+            --header "$authorization_header" \
+            --header "Accept: application/vnd.github+json" \
+            --header "X-GitHub-Api-Version: 2022-11-28" \
+            --output artifact-restore/checkpoint.zip \
+            "$checkpoint_url"
+          unzip -q artifact-restore/checkpoint.zip \
+            -d artifact-restore/checkpoint
+          mapfile -d '' checkpoints < <(
+            find artifact-restore/checkpoint -type f \
+              -name checkpoint.json -print0
+          )
+          test "${#checkpoints[@]}" -eq 1
+          cp -- "${checkpoints[0]}" apply-output/checkpoint.json
+
+      - name: Apply approved Fabric plan
+        id: fabric-apply
+        uses: ./
+        with:
+          mode: apply
+          manifest: ${{ inputs.manifest }}
+          environment: ${{ inputs.deployment_environment }}
+          workspace-id: ${{ inputs.workspace_id }}
+          variables: ${{ inputs.variables }}
+          auth-mode: oidc
+          tenant-id: ${{ inputs.tenant_id }}
+          client-id: ${{ inputs.client_id }}
+          fabric-api-endpoint: ${{ inputs.fabric_api_endpoint }}
+          onelake-endpoint: ${{ inputs.onelake_endpoint }}
+          onelake-blob-endpoint: ${{ inputs.onelake_blob_endpoint }}
+          approved-plan-file: approved-plan/fabric-plan.json
+          allow-create: ${{ inputs.allow_create }}
+          allow-update: ${{ inputs.allow_update }}
+          allow-delete: ${{ inputs.allow_delete }}
+          allow-lakehouse-data-loss: ${{ inputs.allow_lakehouse_data_loss }}
+          allow-workspace-create: ${{ inputs.allow_workspace_create }}
+          allow-workspace-update: ${{ inputs.allow_workspace_update }}
+          allow-capacity-assignment: ${{ inputs.allow_capacity_assignment }}
+          allow-lakehouse-schema-create: ${{ inputs.allow_lakehouse_schema_create }}
+          allow-lakehouse-table-create: ${{ inputs.allow_lakehouse_table_create }}
+          allow-onelake-artifact-create: ${{ inputs.allow_onelake_artifact_create }}
+          allow-tag-create: ${{ inputs.allow_tag_create }}
+          allow-tag-assign: ${{ inputs.allow_tag_assign }}
+          plan-file: apply-output/current-plan.json
+          checkpoint-file: apply-output/checkpoint.json
+          result-file: apply-output/result.json
+
+      - name: Verify apply result
+        if: ${{ success() }}
+        shell: bash
+        run: jq -e '.status == "succeeded"' apply-output/result.json
+
+      - name: Record result artifact
+        if: ${{ always() }}
+        id: artifact-name
+        shell: bash
+        env:
+          DEPLOYMENT_ENVIRONMENT: ${{ inputs.deployment_environment }}
+        run: |
+          slug="$(
+            printf '%s' "$DEPLOYMENT_ENVIRONMENT" \
+              | tr '[:upper:]' '[:lower:]' \
+              | sed -E 's/[^a-z0-9._-]+/-/g; s/^-+|-+$//g'
+          )"
+          echo "value=fabric-apply-${slug}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
+            >> "$GITHUB_OUTPUT"
+
+      - name: Upload apply result and checkpoint
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v5
+        with:
+          name: ${{ steps.artifact-name.outputs.value }}
+          path: |
+            apply-output/current-plan.json
+            apply-output/checkpoint.json
+            apply-output/result.json
+          if-no-files-found: warn
+          retention-days: ${{ inputs.artifact_retention_days }}

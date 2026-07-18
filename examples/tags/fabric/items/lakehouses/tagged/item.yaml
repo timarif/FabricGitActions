@@ -1,0 +1,5 @@
+displayName: FabricDeploy_Tagged_Lakehouse
+description: Demonstrates additive Fabric tag assignment
+desiredState: present
+tags:
+  - phase4ReviewTag

@@ -2,10 +2,12 @@ import type { FabricDefinition } from "./fabric/definition";
 import type { LoadedLakehouseTablesDefinition } from "./fabric/lakehouse-tables-definition";
 import type { SparkJobArtifactSource } from "./fabric/spark-job-definition";
 import type { SparkCustomPoolDefinition } from "./fabric/spark-custom-pool-definition";
+import type { FabricTagScope } from "./fabric/tags";
 
 export const FABRIC_ITEM_TYPES = [
   "Lakehouse",
   "LakehouseTables",
+  "FabricTag",
   "Environment",
   "SparkCustomPool",
   "Notebook",
@@ -15,7 +17,14 @@ export const FABRIC_ITEM_TYPES = [
 
 export type FabricItemType = (typeof FABRIC_ITEM_TYPES)[number];
 export type ActionMode = "validate" | "plan" | "apply";
-export type PlannedAction = "create" | "update" | "no-op" | "blocked" | "unknown";
+export type DesiredState = "present" | "absent";
+export type PlannedAction =
+  | "create"
+  | "update"
+  | "delete"
+  | "no-op"
+  | "blocked"
+  | "unknown";
 
 export interface ItemBinding {
   target: string;
@@ -25,9 +34,11 @@ export interface ItemBinding {
 export interface ItemDefinition {
   displayName: string;
   description?: string;
-  desiredState?: "present";
+  desiredState?: DesiredState;
   folderId?: string;
   enableSchemas?: true;
+  scope?: FabricTagScope;
+  tags?: string[];
   references?: Record<string, string>;
   bindings?: ItemBinding[];
 }
@@ -37,7 +48,7 @@ export interface DeploymentItem {
   type: FabricItemType;
   path: string;
   dependsOn?: string[];
-  desiredState?: "present";
+  desiredState?: DesiredState;
 }
 
 export interface WorkspaceDefinition {
@@ -83,6 +94,7 @@ export interface LoadedManifest {
 
 export interface PlannedLakehouseTableOperation {
   action: "create" | "adopt" | "no-op" | "blocked";
+  resourceKind?: "schema" | "table";
   operationId: string;
   operationHash: string;
   order: number;
@@ -138,7 +150,7 @@ export interface PlannedItem {
   type: FabricItemType;
   path: string;
   dependsOn: string[];
-  desiredState: "present";
+  desiredState: DesiredState;
   contentHash: string;
   displayName: string;
   physicalId?: string;
@@ -147,7 +159,17 @@ export interface PlannedItem {
   resolvedBindingsHash?: string;
   lakehouseTables?: PlannedLakehouseTables;
   sparkJobArtifacts?: PlannedSparkJobArtifacts;
+  tagAssignment?: PlannedItemTagAssignment;
   action: PlannedAction;
+  reason: string;
+}
+
+export interface PlannedItemTagAssignment {
+  assignmentHash: string;
+  tagLogicalIds: string[];
+  missingTagLogicalIds: string[];
+  action: Extract<PlannedAction, "update" | "no-op" | "blocked" | "unknown">;
+  observedStateHash: string;
   reason: string;
 }
 
@@ -181,6 +203,7 @@ export interface DeploymentPlan {
 export type ApplyItemStatus =
   | "created"
   | "updated"
+  | "deleted"
   | "verified"
   | "resumed"
   | "failed";
@@ -197,6 +220,11 @@ export interface ApplyItemResult {
     desiredHash: string;
     observedStateHash: string;
     operationCount: number;
+  };
+  tagAssignment?: {
+    assignmentHash: string;
+    tagCount: number;
+    status: "updated" | "verified";
   };
 }
 
@@ -226,7 +254,7 @@ export interface ApplyWorkspaceResult {
 export interface ApplyCheckpointItem {
   logicalId: string;
   action: PlannedAction;
-  physicalId: string;
+  physicalId?: string;
   completedAt: string;
 }
 
@@ -267,6 +295,14 @@ export interface ApplyCheckpointUpdateIntent {
   resolvedBindingsHash?: string;
 }
 
+export interface ApplyCheckpointDeleteIntent {
+  logicalId: string;
+  action: "delete";
+  physicalId: string;
+  observedStateHash: string;
+  submittedAt: string;
+}
+
 export interface DefinitionItemUpdateRecoveryState {
   phase: NonNullable<ApplyCheckpointUpdateIntent["phase"]>;
   stagedDefinitionHash: string;
@@ -287,8 +323,21 @@ export interface ApplyCheckpoint {
   pendingOperations: Record<string, ApplyCheckpointOperation>;
   pendingCreates: Record<string, ApplyCheckpointCreateIntent>;
   pendingUpdates: Record<string, ApplyCheckpointUpdateIntent>;
+  pendingDeletes: Record<string, ApplyCheckpointDeleteIntent>;
   lakehouseTables?: Record<string, ApplyCheckpointLakehouseTables>;
   oneLakeArtifacts?: Record<string, ApplyCheckpointOneLakeArtifacts>;
+  tagAssignments?: Record<string, ApplyCheckpointTagAssignment>;
+}
+
+export interface ApplyCheckpointTagAssignment {
+  logicalId: string;
+  assignmentHash: string;
+  itemPhysicalId: string;
+  tagIds: string[];
+  phase: "submitting" | "verified";
+  submittedAt: string;
+  verifiedAt?: string;
+  updatedAt: string;
 }
 
 export interface ApplyCheckpointOneLakeArtifact {

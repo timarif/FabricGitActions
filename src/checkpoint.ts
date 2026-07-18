@@ -38,8 +38,10 @@ export function loadCheckpoint(
     pendingOperations: parsed.pendingOperations ?? {},
     pendingCreates: parsed.pendingCreates ?? {},
     pendingUpdates: parsed.pendingUpdates ?? {},
+    pendingDeletes: parsed.pendingDeletes ?? {},
     lakehouseTables: parsed.lakehouseTables ?? {},
     oneLakeArtifacts: parsed.oneLakeArtifacts ?? {},
+    tagAssignments: parsed.tagAssignments ?? {},
   };
   assertCheckpointMatchesPlan(checkpoint, approvedPlan);
   return checkpoint;
@@ -57,8 +59,10 @@ export function createCheckpoint(plan: DeploymentPlan): ApplyCheckpoint {
     pendingOperations: {},
     pendingCreates: {},
     pendingUpdates: {},
+    pendingDeletes: {},
     lakehouseTables: {},
     oneLakeArtifacts: {},
+    tagAssignments: {},
   };
 }
 
@@ -169,7 +173,14 @@ function assertCheckpointMatchesPlan(
     if (
       !planned ||
       completed.logicalId !== logicalId ||
-      completed.action !== planned.action
+      completed.action !== planned.action ||
+      (planned.action === "delete" &&
+        completed.physicalId !== planned.physicalId) ||
+      (planned.desiredState === "absent" &&
+        planned.action === "no-op" &&
+        completed.physicalId !== undefined) ||
+      (planned.desiredState === "present" &&
+        !completed.physicalId)
     ) {
       throw new Error(
         `Checkpoint item '${logicalId}' does not match the approved deployment plan.`,
@@ -290,6 +301,24 @@ function assertCheckpointMatchesPlan(
       );
     }
   }
+  for (const [logicalId, pending] of Object.entries(
+    checkpoint.pendingDeletes,
+  )) {
+    const planned = plannedItems.get(logicalId);
+    if (
+      !planned ||
+      pending.logicalId !== logicalId ||
+      pending.action !== "delete" ||
+      planned.action !== "delete" ||
+      planned.physicalId !== pending.physicalId ||
+      planned.observedStateHash !== pending.observedStateHash ||
+      Object.hasOwn(checkpoint.completedItems, logicalId)
+    ) {
+      throw new Error(
+        `Checkpoint delete intent '${logicalId}' does not match the approved deployment plan.`,
+      );
+    }
+  }
   for (const [logicalId, state] of Object.entries(
     checkpoint.oneLakeArtifacts ?? {},
   )) {
@@ -360,6 +389,37 @@ function assertCheckpointMatchesPlan(
       );
     }
   }
+  for (const [logicalId, state] of Object.entries(
+    checkpoint.tagAssignments ?? {},
+  )) {
+    const planned = plannedItems.get(logicalId);
+    const assignment = planned?.tagAssignment;
+    const expectedItemId =
+      planned?.physicalId ??
+      checkpoint.completedItems[logicalId]?.physicalId;
+    const expectedTagIds = assignment?.tagLogicalIds.map(
+      (tagLogicalId) =>
+        plannedItems.get(tagLogicalId)?.physicalId ??
+        checkpoint.completedItems[tagLogicalId]?.physicalId,
+    );
+    if (
+      !planned ||
+      !assignment ||
+      assignment.action !== "update" ||
+      state.logicalId !== logicalId ||
+      state.assignmentHash !== assignment.assignmentHash ||
+      !expectedItemId ||
+      state.itemPhysicalId !== expectedItemId ||
+      !expectedTagIds ||
+      expectedTagIds.some((id) => !id) ||
+      state.tagIds.length !== expectedTagIds.length ||
+      !expectedTagIds.every((id) => state.tagIds.includes(id!))
+    ) {
+      throw new Error(
+        `Checkpoint Fabric tag assignment '${logicalId}' does not match the approved deployment plan.`,
+      );
+    }
+  }
 }
 
 function checkpointProofMatchesPlan(
@@ -408,6 +468,10 @@ function isCheckpoint(value: unknown): value is ApplyCheckpoint {
       (checkpoint.pendingUpdates !== null &&
         typeof checkpoint.pendingUpdates === "object" &&
         !Array.isArray(checkpoint.pendingUpdates))) &&
+    (checkpoint.pendingDeletes === undefined ||
+      (checkpoint.pendingDeletes !== null &&
+        typeof checkpoint.pendingDeletes === "object" &&
+        !Array.isArray(checkpoint.pendingDeletes))) &&
     (checkpoint.lakehouseTables === undefined ||
       (checkpoint.lakehouseTables !== null &&
         typeof checkpoint.lakehouseTables === "object" &&
@@ -416,6 +480,10 @@ function isCheckpoint(value: unknown): value is ApplyCheckpoint {
       (checkpoint.oneLakeArtifacts !== null &&
         typeof checkpoint.oneLakeArtifacts === "object" &&
         !Array.isArray(checkpoint.oneLakeArtifacts))) &&
+    (checkpoint.tagAssignments === undefined ||
+      (checkpoint.tagAssignments !== null &&
+        typeof checkpoint.tagAssignments === "object" &&
+        !Array.isArray(checkpoint.tagAssignments))) &&
     (checkpoint.workspace === undefined ||
       isCheckpointWorkspace(checkpoint.workspace)) &&
     (checkpoint.sourceCommit === undefined ||
@@ -435,6 +503,9 @@ function isCheckpoint(value: unknown): value is ApplyCheckpoint {
       Object.entries(checkpoint.pendingUpdates ?? {}).every(
         ([logicalId, intent]) => isCheckpointUpdateIntent(logicalId, intent),
       ) &&
+      Object.entries(checkpoint.pendingDeletes ?? {}).every(
+        ([logicalId, intent]) => isCheckpointDeleteIntent(logicalId, intent),
+      ) &&
       Object.entries(checkpoint.lakehouseTables ?? {}).every(
         ([logicalId, state]) =>
           isCheckpointLakehouseTables(logicalId, state),
@@ -442,7 +513,43 @@ function isCheckpoint(value: unknown): value is ApplyCheckpoint {
       Object.entries(checkpoint.oneLakeArtifacts ?? {}).every(
         ([logicalId, state]) =>
           isCheckpointOneLakeArtifacts(logicalId, state),
+      ) &&
+      Object.entries(checkpoint.tagAssignments ?? {}).every(
+        ([logicalId, state]) =>
+          isCheckpointTagAssignment(logicalId, state),
       )
+    );
+  }
+
+  function isCheckpointTagAssignment(
+    logicalId: string,
+    value: unknown,
+  ): boolean {
+    if (value === null || typeof value !== "object" || Array.isArray(value)) {
+      return false;
+    }
+    const state = value as Record<string, unknown>;
+    return (
+      state.logicalId === logicalId &&
+      /^[a-f0-9]{64}$/.test(String(state.assignmentHash)) &&
+      typeof state.itemPhysicalId === "string" &&
+      state.itemPhysicalId.length > 0 &&
+      Array.isArray(state.tagIds) &&
+      state.tagIds.length > 0 &&
+      new Set(state.tagIds).size === state.tagIds.length &&
+      state.tagIds.every(
+        (tagId) => typeof tagId === "string" && tagId.length > 0,
+      ) &&
+      (state.phase === "submitting" || state.phase === "verified") &&
+      typeof state.submittedAt === "string" &&
+      !Number.isNaN(Date.parse(state.submittedAt)) &&
+      (state.verifiedAt === undefined ||
+        (typeof state.verifiedAt === "string" &&
+          !Number.isNaN(Date.parse(state.verifiedAt)))) &&
+      (state.phase !== "verified" ||
+        typeof state.verifiedAt === "string") &&
+      typeof state.updatedAt === "string" &&
+      !Number.isNaN(Date.parse(state.updatedAt))
     );
   }
 
@@ -653,6 +760,28 @@ function isCheckpoint(value: unknown): value is ApplyCheckpoint {
     );
   }
 
+  function isCheckpointDeleteIntent(
+    logicalId: string,
+    value: unknown,
+  ): boolean {
+    if (value === null || typeof value !== "object") {
+      return false;
+    }
+    const intent = value as Partial<
+      ApplyCheckpoint["pendingDeletes"][string]
+    >;
+    return (
+      intent.logicalId === logicalId &&
+      intent.action === "delete" &&
+      typeof intent.physicalId === "string" &&
+      intent.physicalId.length > 0 &&
+      typeof intent.observedStateHash === "string" &&
+      /^[a-f0-9]{64}$/.test(intent.observedStateHash) &&
+      typeof intent.submittedAt === "string" &&
+      !Number.isNaN(Date.parse(intent.submittedAt))
+    );
+  }
+
   function isCheckpointCreateIntent(
     logicalId: string,
     value: unknown,
@@ -773,9 +902,11 @@ function isCheckpointItem(logicalId: string, value: unknown): boolean {
     item.logicalId === logicalId &&
     (item.action === "create" ||
       item.action === "update" ||
+      item.action === "delete" ||
       item.action === "no-op") &&
-    typeof item.physicalId === "string" &&
-    item.physicalId.length > 0 &&
+    (item.physicalId === undefined ||
+      (typeof item.physicalId === "string" &&
+        item.physicalId.length > 0)) &&
     typeof item.completedAt === "string" &&
     !Number.isNaN(Date.parse(item.completedAt))
   );

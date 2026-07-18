@@ -1,0 +1,146 @@
+name: Promote Fabric Deployment
+
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: Highest environment to deploy.
+        required: true
+        default: dev
+        type: choice
+        options:
+          - dev
+          - test
+          - prod
+      manifest:
+        description: Deployment manifest path.
+        required: true
+        default: fabric/deployment.yaml
+        type: string
+      allow_create:
+        required: true
+        default: false
+        type: boolean
+      allow_update:
+        required: true
+        default: false
+        type: boolean
+      allow_delete:
+        required: true
+        default: false
+        type: boolean
+      allow_lakehouse_data_loss:
+        required: true
+        default: false
+        type: boolean
+      allow_workspace_create:
+        required: true
+        default: false
+        type: boolean
+      allow_workspace_update:
+        required: true
+        default: false
+        type: boolean
+      allow_capacity_assignment:
+        required: true
+        default: false
+        type: boolean
+      allow_lakehouse_schema_create:
+        required: true
+        default: false
+        type: boolean
+      allow_lakehouse_table_create:
+        required: true
+        default: false
+        type: boolean
+      allow_onelake_artifact_create:
+        required: true
+        default: false
+        type: boolean
+      allow_tag_create:
+        required: true
+        default: false
+        type: boolean
+      allow_tag_assign:
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  actions: read
+  contents: read
+  id-token: write
+
+jobs:
+  dev:
+    uses: ./.github/workflows/reusable-fabric-deploy.yml
+    with:
+      github_environment: fabric-dev
+      deployment_environment: dev
+      manifest: ${{ inputs.manifest }}
+      workspace_id: ${{ vars.FABRIC_DEV_WORKSPACE_ID }}
+      variables: ${{ vars.FABRIC_DEV_VARIABLES_JSON || '{}' }}
+      tenant_id: ${{ vars.FABRIC_TENANT_ID }}
+      client_id: ${{ vars.FABRIC_CLIENT_ID }}
+      allow_create: ${{ inputs.allow_create }}
+      allow_update: ${{ inputs.allow_update }}
+      allow_delete: ${{ inputs.allow_delete }}
+      allow_lakehouse_data_loss: ${{ inputs.allow_lakehouse_data_loss }}
+      allow_workspace_create: ${{ inputs.allow_workspace_create }}
+      allow_workspace_update: ${{ inputs.allow_workspace_update }}
+      allow_capacity_assignment: ${{ inputs.allow_capacity_assignment }}
+      allow_lakehouse_schema_create: ${{ inputs.allow_lakehouse_schema_create }}
+      allow_lakehouse_table_create: ${{ inputs.allow_lakehouse_table_create }}
+      allow_onelake_artifact_create: ${{ inputs.allow_onelake_artifact_create }}
+      allow_tag_create: ${{ inputs.allow_tag_create }}
+      allow_tag_assign: ${{ inputs.allow_tag_assign }}
+
+  test:
+    if: ${{ success() && (inputs.target == 'test' || inputs.target == 'prod') }}
+    needs: dev
+    uses: ./.github/workflows/reusable-fabric-deploy.yml
+    with:
+      github_environment: fabric-test
+      deployment_environment: test
+      manifest: ${{ inputs.manifest }}
+      workspace_id: ${{ vars.FABRIC_TEST_WORKSPACE_ID }}
+      variables: ${{ vars.FABRIC_TEST_VARIABLES_JSON || '{}' }}
+      tenant_id: ${{ vars.FABRIC_TENANT_ID }}
+      client_id: ${{ vars.FABRIC_CLIENT_ID }}
+      allow_create: ${{ inputs.allow_create }}
+      allow_update: ${{ inputs.allow_update }}
+      allow_delete: ${{ inputs.allow_delete }}
+      allow_lakehouse_data_loss: ${{ inputs.allow_lakehouse_data_loss }}
+      allow_workspace_create: ${{ inputs.allow_workspace_create }}
+      allow_workspace_update: ${{ inputs.allow_workspace_update }}
+      allow_capacity_assignment: ${{ inputs.allow_capacity_assignment }}
+      allow_lakehouse_schema_create: ${{ inputs.allow_lakehouse_schema_create }}
+      allow_lakehouse_table_create: ${{ inputs.allow_lakehouse_table_create }}
+      allow_onelake_artifact_create: ${{ inputs.allow_onelake_artifact_create }}
+      allow_tag_create: ${{ inputs.allow_tag_create }}
+      allow_tag_assign: ${{ inputs.allow_tag_assign }}
+
+  prod:
+    if: ${{ success() && inputs.target == 'prod' }}
+    needs: test
+    uses: ./.github/workflows/reusable-fabric-deploy.yml
+    with:
+      github_environment: fabric-prod
+      deployment_environment: prod
+      manifest: ${{ inputs.manifest }}
+      workspace_id: ${{ vars.FABRIC_PROD_WORKSPACE_ID }}
+      variables: ${{ vars.FABRIC_PROD_VARIABLES_JSON || '{}' }}
+      tenant_id: ${{ vars.FABRIC_TENANT_ID }}
+      client_id: ${{ vars.FABRIC_CLIENT_ID }}
+      allow_create: ${{ inputs.allow_create }}
+      allow_update: ${{ inputs.allow_update }}
+      allow_delete: ${{ inputs.allow_delete }}
+      allow_lakehouse_data_loss: ${{ inputs.allow_lakehouse_data_loss }}
+      allow_workspace_create: ${{ inputs.allow_workspace_create }}
+      allow_workspace_update: ${{ inputs.allow_workspace_update }}
+      allow_capacity_assignment: ${{ inputs.allow_capacity_assignment }}
+      allow_lakehouse_schema_create: ${{ inputs.allow_lakehouse_schema_create }}
+      allow_lakehouse_table_create: ${{ inputs.allow_lakehouse_table_create }}
+      allow_onelake_artifact_create: ${{ inputs.allow_onelake_artifact_create }}
+      allow_tag_create: ${{ inputs.allow_tag_create }}
+      allow_tag_assign: ${{ inputs.allow_tag_assign }}

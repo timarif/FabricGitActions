@@ -514,7 +514,44 @@ items:
     ).toThrow("path escapes the manifest directory");
   });
 
-  it("rejects deletion intent until deletion ordering is implemented", () => {
+  it("loads minimal supported deletion items without workload definitions", () => {
+    const root = mkdtempSync(path.join(tmpdir(), "fabric-deploy-"));
+    const itemDirectory = path.join(root, "items", "notebooks", "old");
+    mkdirSync(itemDirectory, { recursive: true });
+    writeFileSync(
+      path.join(itemDirectory, "item.yaml"),
+      "displayName: Old Notebook\ndesiredState: absent\n",
+      "utf8",
+    );
+    const manifestPath = path.join(root, "deployment.yaml");
+    writeFileSync(
+      manifestPath,
+      `
+apiVersion: fabric.deploy/v1alpha1
+kind: FabricDeployment
+metadata:
+  deploymentId: delete-notebook
+workspace:
+  id: workspace-1
+items:
+  - logicalId: oldNotebook
+    type: Notebook
+    path: items/notebooks/old
+    desiredState: absent
+`,
+      "utf8",
+    );
+
+    const loaded = loadManifest(manifestPath);
+
+    expect(loaded.itemDefinitions.oldNotebook).toEqual({
+      displayName: "Old Notebook",
+      desiredState: "absent",
+    });
+    expect(loaded.notebookDefinitions).toEqual({});
+  });
+
+  it("requires deletion intent in both the manifest and item definition", () => {
     const root = mkdtempSync(path.join(tmpdir(), "fabric-deploy-"));
     const manifestPath = createFixture(
       root,
@@ -528,7 +565,76 @@ items:
       loadManifest(manifestPath, {
         variables: { FABRIC_WORKSPACE_ID: "workspace-1" },
       }),
-    ).toThrow("Invalid deployment manifest");
+    ).toThrow("does not match deployment manifest desiredState");
+  });
+
+  it("loads Lakehouse deletion intent for separately safeguarded apply", () => {
+    const root = mkdtempSync(path.join(tmpdir(), "fabric-deploy-"));
+    const manifestPath = createFixture(
+      root,
+      VALID_MANIFEST.replace(
+        "    path: items/lakehouses/bronze",
+        "    path: items/lakehouses/bronze\n    desiredState: absent",
+      ),
+    );
+    writeFileSync(
+      path.join(root, "items/lakehouses/bronze/item.yaml"),
+      "displayName: bronze\ndesiredState: absent\n",
+      "utf8",
+    );
+
+    const loaded = loadManifest(manifestPath, {
+      variables: { FABRIC_WORKSPACE_ID: "workspace-1" },
+    });
+
+    expect(loaded.itemDefinitions.bronze).toEqual({
+      displayName: "bronze",
+      desiredState: "absent",
+    });
+  });
+
+  it("rejects present items that depend on absent items", () => {
+    const root = mkdtempSync(path.join(tmpdir(), "fabric-deploy-"));
+    for (const [directory, content] of [
+      [
+        "items/notebooks/old",
+        "displayName: Old Notebook\ndesiredState: absent\n",
+      ],
+      ["items/notebooks/current", "displayName: Current Notebook\n"],
+    ] as const) {
+      mkdirSync(path.join(root, directory), { recursive: true });
+      writeFileSync(
+        path.join(root, directory, "item.yaml"),
+        content,
+        "utf8",
+      );
+    }
+    const manifestPath = path.join(root, "deployment.yaml");
+    writeFileSync(
+      manifestPath,
+      `
+apiVersion: fabric.deploy/v1alpha1
+kind: FabricDeployment
+metadata:
+  deploymentId: invalid-delete-dependency
+workspace:
+  id: workspace-1
+items:
+  - logicalId: oldNotebook
+    type: Notebook
+    path: items/notebooks/old
+    desiredState: absent
+  - logicalId: currentNotebook
+    type: Notebook
+    path: items/notebooks/current
+    dependsOn: [oldNotebook]
+`,
+      "utf8",
+    );
+
+    expect(() => loadManifest(manifestPath)).toThrow(
+      "Present item 'currentNotebook' cannot depend on absent item 'oldNotebook'",
+    );
   });
 
   it("applies the workspace override before variable resolution", () => {

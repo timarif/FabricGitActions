@@ -1,0 +1,16 @@
+apiVersion: fabric.deploy/v1alpha1
+kind: FabricDeployment
+
+metadata:
+  deploymentId: fabric-tags-example
+
+items:
+  - logicalId: phase4ReviewTag
+    type: FabricTag
+    path: items/tags/phase4-review
+
+  - logicalId: taggedLakehouse
+    type: Lakehouse
+    path: items/lakehouses/tagged
+    dependsOn:
+      - phase4ReviewTag

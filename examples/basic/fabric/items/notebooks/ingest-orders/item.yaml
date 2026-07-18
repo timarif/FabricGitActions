@@ -1,6 +1,2 @@
 displayName: Ingest Orders
 desiredState: present
-
-references:
-  defaultLakehouse: bronzeLakehouse
-  environment: defaultSpark

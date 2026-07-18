@@ -1,0 +1,3 @@
+displayName: Fabric Deploy Live E2E Pipeline
+description: Disposable pipeline deployed by the live sandbox E2E workflow
+desiredState: present

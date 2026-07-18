@@ -803,14 +803,6 @@ function blockedPlanResult(
 }
 
 function canonicalObservedWorkspace(workspace: Workspace) {
-  const tags = [...(workspace.tags ?? [])]
-    .map((tag) => ({
-      id: tag.id,
-      displayName: tag.displayName,
-    }))
-    .sort((left, right) =>
-      compareCanonicalStrings(stableJson(left), stableJson(right)),
-    );
   return {
     id: workspace.id,
     type: workspace.type,
@@ -818,7 +810,6 @@ function canonicalObservedWorkspace(workspace: Workspace) {
     description: normalizeDescription(workspace.description),
     capacityId: workspace.capacityId ?? null,
     domainId: workspace.domainId ?? null,
-    tags,
   };
 }
 

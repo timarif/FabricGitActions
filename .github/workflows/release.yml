@@ -1,0 +1,183 @@
+name: Marketplace Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: write
+  id-token: write
+  attestations: write
+
+concurrency:
+  group: marketplace-release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    environment: marketplace-release
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Validate immutable release tag
+        shell: bash
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Release tags must use the exact vMAJOR.MINOR.PATCH format."
+            exit 1
+          fi
+
+          package_version="$(
+            node -p "require('./package.json').version"
+          )"
+          if [[ "$RELEASE_TAG" != "v${package_version}" ]]; then
+            echo "::error::Tag ${RELEASE_TAG} does not match package version ${package_version}."
+            exit 1
+          fi
+          if [[ "$(git cat-file -t "$RELEASE_TAG")" != "tag" ]]; then
+            echo "::error::Marketplace releases require an annotated tag."
+            exit 1
+          fi
+          if [[ "$(git rev-list -n 1 "$RELEASE_TAG")" != "$GITHUB_SHA" ]]; then
+            echo "::error::The release tag does not resolve to the workflow commit."
+            exit 1
+          fi
+
+          git fetch --no-tags origin "$DEFAULT_BRANCH"
+          if ! git merge-base --is-ancestor \
+            "$GITHUB_SHA" "origin/${DEFAULT_BRANCH}"
+          then
+            echo "::error::Release commits must be reachable from the default branch."
+            exit 1
+          fi
+
+      - name: Test and package action
+        run: |
+          set -euo pipefail
+          npm ci
+          npm run check
+          npm run package
+          git diff --exit-code -- dist/index.js
+
+      - name: Build release evidence
+        id: evidence
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          mkdir -p release
+          archive="release/fabric-deploy-${RELEASE_TAG}.tar.gz"
+          sbom="release/fabric-deploy-${RELEASE_TAG}.sbom.cdx.json"
+
+          git archive \
+            --format=tar \
+            --prefix="fabric-deploy-${RELEASE_TAG}/" \
+            "$GITHUB_SHA" \
+            | gzip -n > "$archive"
+          npm sbom --omit=dev --sbom-format=cyclonedx > "$sbom"
+          sha256sum "$archive" "$sbom" > release/SHA256SUMS
+
+          echo "archive=$archive" >> "$GITHUB_OUTPUT"
+          echo "sbom=$sbom" >> "$GITHUB_OUTPUT"
+
+      - name: Attest release provenance
+        uses: actions/attest-build-provenance@v3
+        with:
+          subject-path: |
+            ${{ steps.evidence.outputs.archive }}
+            ${{ steps.evidence.outputs.sbom }}
+            release/SHA256SUMS
+
+      - name: Upload release evidence
+        uses: actions/upload-artifact@v5
+        with:
+          name: marketplace-release-${{ github.ref_name }}
+          path: release
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Create or repair GitHub release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          assets=(
+            "release/fabric-deploy-${RELEASE_TAG}.tar.gz"
+            "release/fabric-deploy-${RELEASE_TAG}.sbom.cdx.json"
+            "release/SHA256SUMS"
+          )
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            target_commit="$(
+              gh release view "$RELEASE_TAG" \
+                --json targetCommitish \
+                --jq '.targetCommitish'
+            )"
+            if [[ "$target_commit" != "$GITHUB_SHA" ]]; then
+              echo "::error::Existing release ${RELEASE_TAG} targets ${target_commit}, not ${GITHUB_SHA}."
+              exit 1
+            fi
+            gh release upload "$RELEASE_TAG" "${assets[@]}" --clobber
+          else
+            gh release create "$RELEASE_TAG" "${assets[@]}" \
+              --verify-tag \
+              --target "$GITHUB_SHA" \
+              --generate-notes \
+              --title "Microsoft Fabric Deploy ${RELEASE_TAG}"
+          fi
+
+      - name: Update Marketplace major tag
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          major_tag="${RELEASE_TAG%%.*}"
+          mapfile -t published_tags < <(
+            gh api --paginate \
+              "/repos/${GITHUB_REPOSITORY}/releases?per_page=100" \
+              --jq '
+                .[]
+                | select(.draft == false)
+                | select(.prerelease == false)
+                | .tag_name
+              '
+          )
+          stable_tags=()
+          for candidate in "${published_tags[@]}"; do
+            if [[ "$candidate" =~ ^${major_tag}\.[0-9]+\.[0-9]+$ ]]; then
+              stable_tags+=("$candidate")
+            fi
+          done
+          latest_release="$(
+            printf '%s\n' "${stable_tags[@]}" \
+              | sort --version-sort \
+              | tail -n 1
+          )"
+          if [[ "$latest_release" != "$RELEASE_TAG" ]]; then
+            echo "Keeping ${major_tag} on the latest published release ${latest_release}."
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag --annotate --force "$major_tag" "$GITHUB_SHA" \
+            --message "Microsoft Fabric Deploy ${major_tag}"
+          git push origin "refs/tags/${major_tag}" --force
