@@ -1,19 +1,41 @@
 export interface FabricEndpoints {
   fabricApiEndpoint: string;
   oneLakeEndpoint: string;
+  oneLakeBlobEndpoint: string;
 }
 
 export function parseFabricEndpoints(
   fabricApiEndpoint: string,
   oneLakeEndpoint: string,
+  oneLakeBlobEndpoint?: string,
 ): FabricEndpoints {
+  const normalizedOneLakeEndpoint = normalizeEndpoint(
+    oneLakeEndpoint,
+    "onelake-endpoint",
+  );
   return {
     fabricApiEndpoint: normalizeEndpoint(
       fabricApiEndpoint,
       "fabric-api-endpoint",
     ),
-    oneLakeEndpoint: normalizeEndpoint(oneLakeEndpoint, "onelake-endpoint"),
+    oneLakeEndpoint: normalizedOneLakeEndpoint,
+    oneLakeBlobEndpoint: normalizeEndpoint(
+      oneLakeBlobEndpoint ??
+        deriveOneLakeBlobEndpoint(normalizedOneLakeEndpoint),
+      "onelake-blob-endpoint",
+    ),
   };
+}
+
+function deriveOneLakeBlobEndpoint(dfsEndpoint: string): string {
+  const url = new URL(dfsEndpoint);
+  if (!url.hostname.includes(".dfs.")) {
+    throw new Error(
+      "onelake-blob-endpoint is required when onelake-endpoint does not use a .dfs. hostname.",
+    );
+  }
+  url.hostname = url.hostname.replace(".dfs.", ".blob.");
+  return url.toString().replace(/\/$/, "");
 }
 
 function normalizeEndpoint(value: string, inputName: string): string {

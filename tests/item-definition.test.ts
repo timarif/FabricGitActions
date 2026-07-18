@@ -105,7 +105,7 @@ describe("item definition validation", () => {
     );
   });
 
-  it("requires a Spark job main.py or main.scala entry point", () => {
+  it("requires a Spark job main.py or main.jar entry point", () => {
     const fixture = createDeployment(
       "SparkJobDefinition",
       "displayName: Spark Job\n",
@@ -113,7 +113,7 @@ describe("item definition validation", () => {
     mkdirSync(path.join(fixture.itemDirectory, "definition"));
 
     expect(() => loadManifest(fixture.manifestPath)).toThrow(
-      "requires exactly one definition/main.py or definition/main.scala",
+      "requires exactly one definition/main.py or definition/main.jar",
     );
   });
 
@@ -128,7 +128,7 @@ describe("item definition validation", () => {
     );
 
     expect(() => loadManifest(fixture.manifestPath)).toThrow(
-      "requires exactly one definition/main.py or definition/main.scala",
+      "requires exactly one definition/main.py or definition/main.jar",
     );
   });
 

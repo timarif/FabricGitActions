@@ -47,6 +47,13 @@ import type {
   SparkJobAdapter,
   SparkJobOperationReference,
 } from "./fabric/spark-job";
+import {
+  artifactDescriptor,
+  assertSparkJobArtifactEndpoints,
+  DEFAULT_LAKEHOUSE_BINDING_TARGET,
+  materializeSparkJobArtifactUris,
+} from "./fabric/spark-job-artifacts";
+import type { OneLakeArtifactStager } from "./fabric/onelake-artifacts";
 import type { WorkspaceAdapter } from "./fabric/workspace";
 import {
   hashSparkJobDefinition,
@@ -120,12 +127,19 @@ export interface ApplyPlanOptions {
     | "resumeAcceptedStatement"
     | "deleteSessionById"
   >;
+  oneLakeArtifactStager?: Pick<
+    OneLakeArtifactStager,
+    "uploadImmutable" | "verify" | "getEndpointIdentity"
+  >;
+  oneLakeDfsEndpoint?: string;
+  oneLakeBlobEndpoint?: string;
   allowCreate: boolean;
   allowUpdate: boolean;
   allowWorkspaceCreate?: boolean;
   allowWorkspaceUpdate?: boolean;
   allowCapacityAssignment?: boolean;
   allowLakehouseTableCreate?: boolean;
+  allowOneLakeArtifactCreate?: boolean;
   checkpointFile: string;
   resultFile: string;
   itemDirectories?: string[];
@@ -182,6 +196,7 @@ export async function applyApprovedPlan(
       loadCheckpoint(options.checkpointFile, options.approvedPlan) ??
       createCheckpoint(options.approvedPlan);
     writeCheckpoint(options.checkpointFile, checkpoint);
+    assertApprovedOneLakeEndpointConfiguration(options);
     if (options.approvedPlan.workspace?.action !== "create") {
       preflightBeforeRecovery(
         options,
@@ -235,6 +250,19 @@ export async function applyApprovedPlan(
       },
       checkpoint,
     };
+    const preverifiedDurations =
+      await verifyCheckpointedOneLakeArtifactTargets(
+        runtimeOptions,
+        checkpoint,
+        approvedItems,
+        now,
+      );
+    await reconcileOneLakeArtifactStaging(
+      runtimeOptions,
+      checkpoint,
+      approvedItems,
+      now,
+    );
     const recoveredUpdates = await reconcilePendingUpdates(
       runtimeOptions,
       checkpoint,
@@ -273,6 +301,7 @@ export async function applyApprovedPlan(
       checkpoint,
       approvedItems,
       now,
+      preverifiedDurations,
     );
 
     for (const stage of runtimeOptions.approvedPlan.stages) {
@@ -298,6 +327,17 @@ export async function applyApprovedPlan(
         }
 
         await assertFreshItemHasNotDrifted(runtimeOptions, approvedItem);
+        if (
+          approvedItem.type === "SparkJobDefinition" &&
+          approvedItem.sparkJobArtifacts
+        ) {
+          await applySparkJobArtifacts(
+            runtimeOptions,
+            checkpoint,
+            approvedItem,
+            now,
+          );
+        }
         let result: ApplyItemResult;
         try {
           result =
@@ -607,6 +647,9 @@ async function assertFreshItemHasNotDrifted(
     typeof live.resolvedBindingsHash === "string"
       ? { resolvedBindingsHash: live.resolvedBindingsHash }
       : {}),
+    ...(approvedItem.sparkJobArtifacts
+      ? { sparkJobArtifacts: approvedItem.sparkJobArtifacts }
+      : {}),
   };
   assertItemHasNotDrifted(approvedItem, freshItem);
 }
@@ -675,11 +718,16 @@ function preflightBeforeRecovery(
       assertApplyActionAuthorized(options, approvedItem);
 
       const completed = getCompletedItem(checkpoint, logicalId);
-      const pending =
+      const pendingItem =
         getPendingOperation(checkpoint, logicalId) ??
         getPendingCreate(checkpoint, logicalId) ??
-        getPendingUpdate(checkpoint, logicalId) ??
-        checkpoint.lakehouseTables?.[logicalId];
+        getPendingUpdate(checkpoint, logicalId);
+      const pending =
+        pendingItem ??
+        checkpoint.lakehouseTables?.[logicalId] ??
+        checkpoint.oneLakeArtifacts?.[logicalId];
+      const hasArtifactState =
+        checkpoint.oneLakeArtifacts?.[logicalId] !== undefined;
       if (approvedItem.type === "LakehouseTables") {
         assertLakehouseTablesPreflightState(
           options,
@@ -689,6 +737,20 @@ function preflightBeforeRecovery(
           completed,
           pending !== undefined,
           true,
+        );
+        continue;
+      }
+      if (hasSymbolicSparkJobArtifactTarget(approvedItem)) {
+        assertSymbolicSparkJobArtifactPreflightState(
+          options,
+          checkpoint,
+          approvedItem,
+          currentItem,
+          completed,
+          pendingItem !== undefined,
+          false,
+          true,
+          hasArtifactState || pendingItem !== undefined,
         );
         continue;
       }
@@ -742,6 +804,23 @@ function preflightPlan(
           currentItem,
           completed,
           pendingLakehouseTables !== undefined,
+        );
+        assertApplyActionAuthorized(options, approvedItem);
+        continue;
+      }
+      const pendingItem =
+        getPendingOperation(checkpoint, logicalId) ??
+        getPendingCreate(checkpoint, logicalId) ??
+        getPendingUpdate(checkpoint, logicalId);
+      if (hasSymbolicSparkJobArtifactTarget(approvedItem)) {
+        assertSymbolicSparkJobArtifactPreflightState(
+          options,
+          checkpoint,
+          approvedItem,
+          currentItem,
+          completed,
+          pendingItem !== undefined,
+          resumedOperations.has(logicalId),
         );
         assertApplyActionAuthorized(options, approvedItem);
         continue;
@@ -804,6 +883,17 @@ function assertSupportedApplyItem(
       `Spark Job Definition adapter was not initialized for item '${item.logicalId}'.`,
     );
   }
+  if (
+    item.type === "SparkJobDefinition" &&
+    item.sparkJobArtifacts &&
+    (!options.oneLakeArtifactStager ||
+      !options.oneLakeDfsEndpoint ||
+      !options.oneLakeBlobEndpoint)
+  ) {
+    throw new Error(
+      `OneLake artifact staging was not initialized for item '${item.logicalId}'.`,
+    );
+  }
   if (item.type === "DataPipeline" && !options.pipelineAdapter) {
     throw new Error(
       `Data Pipeline adapter was not initialized for item '${item.logicalId}'.`,
@@ -828,6 +918,26 @@ function assertApplyActionAuthorized(
   options: ApplyPlanOptions,
   item: PlannedItem,
 ): void {
+  if (item.sparkJobArtifacts) {
+    const blocked = item.sparkJobArtifacts.artifacts.find(
+      (artifact) => artifact.action === "blocked",
+    );
+    if (blocked) {
+      throw new Error(
+        `Spark Job artifact '${blocked.fileName}' cannot be applied because its staging action is blocked.`,
+      );
+    }
+    if (
+      item.sparkJobArtifacts.artifacts.some(
+        (artifact) => artifact.action === "create",
+      ) &&
+      !(options.allowOneLakeArtifactCreate ?? false)
+    ) {
+      throw new Error(
+        `Plan requires staging OneLake artifacts for '${item.logicalId}', but allow-onelake-artifact-create is false.`,
+      );
+    }
+  }
   if (item.type === "LakehouseTables") {
     if (
       item.action === "create" &&
@@ -1277,6 +1387,7 @@ function comparableItemSource(item: PlannedItem): unknown {
     contentHash: item.contentHash,
     desiredState: item.desiredState,
     dependsOn: item.dependsOn,
+    sparkJobArtifacts: comparableSparkJobArtifactSource(item),
     lakehouseTables: item.lakehouseTables
       ? {
           targetLakehouseLogicalId:
@@ -1296,6 +1407,332 @@ function comparableItemSource(item: PlannedItem): unknown {
         }
       : undefined,
   };
+}
+
+function assertApprovedOneLakeEndpointConfiguration(
+  options: ApplyPlanOptions,
+): void {
+  const stagedItems = options.approvedPlan.items.filter(
+    (item) => item.sparkJobArtifacts !== undefined,
+  );
+  if (stagedItems.length === 0) {
+    return;
+  }
+  const dfsEndpoint = requireOneLakeDfsEndpoint(
+    options,
+    stagedItems[0]!.logicalId,
+  );
+  const blobEndpoint = requireOneLakeBlobEndpoint(
+    options,
+    stagedItems[0]!.logicalId,
+  );
+  const stagerIdentity =
+    options.oneLakeArtifactStager?.getEndpointIdentity();
+  if (
+    !stagerIdentity ||
+    stagerIdentity.dfsEndpoint !== dfsEndpoint ||
+    stagerIdentity.blobEndpoint !== blobEndpoint
+  ) {
+    throw new Error(
+      "OneLake artifact stager endpoints do not match the apply endpoint configuration.",
+    );
+  }
+  for (const item of stagedItems) {
+    const staging = item.sparkJobArtifacts!;
+    assertSparkJobArtifactEndpoints(
+      staging,
+      dfsEndpoint,
+      blobEndpoint,
+    );
+  }
+}
+
+function hasSymbolicSparkJobArtifactTarget(
+  item: PlannedItem,
+): boolean {
+  return (
+    item.type === "SparkJobDefinition" &&
+    item.sparkJobArtifacts?.targetBinding === "symbolic"
+  );
+}
+
+function assertSymbolicSparkJobArtifactPreflightState(
+  options: ApplyPlanOptions,
+  checkpoint: ApplyCheckpoint,
+  approvedItem: PlannedItem,
+  currentItem: PlannedItem,
+  completed:
+    | ApplyCheckpoint["completedItems"][string]
+    | undefined,
+  hasPendingItem: boolean,
+  trustedResume: boolean,
+  deferPendingTargetRecovery = false,
+  requireMaterializedTarget = false,
+): void {
+  const approved = approvedItem.sparkJobArtifacts;
+  const current = currentItem.sparkJobArtifacts;
+  if (
+    approvedItem.type !== "SparkJobDefinition" ||
+    approved?.targetBinding !== "symbolic" ||
+    !current
+  ) {
+    throw new Error(
+      `Symbolic Spark Job artifact plan payload is missing for '${approvedItem.logicalId}'.`,
+    );
+  }
+  assertCheckpointedItemSourceUnchanged(approvedItem, currentItem);
+
+  const approvedTarget = options.approvedPlan.items.find(
+    (candidate) =>
+      candidate.logicalId === approved.targetLakehouseLogicalId,
+  );
+  const currentTarget = options.currentPlan.items.find(
+    (candidate) =>
+      candidate.logicalId === approved.targetLakehouseLogicalId,
+  );
+  if (
+    !approvedTarget ||
+    approvedTarget.type !== "Lakehouse" ||
+    !currentTarget ||
+    currentTarget.type !== "Lakehouse"
+  ) {
+    throw new Error(
+      `Spark Job artifact target '${approved.targetLakehouseLogicalId}' is missing or is not a Lakehouse.`,
+    );
+  }
+  assertCheckpointedItemSourceUnchanged(
+    approvedTarget,
+    currentTarget,
+  );
+  if (approvedTarget.action !== "create") {
+    throw new Error(
+      `Spark Job artifact target '${approvedTarget.logicalId}' was not approved for creation.`,
+    );
+  }
+
+  const completedTarget = getCompletedItem(
+    checkpoint,
+    approvedTarget.logicalId,
+  );
+  if (!completedTarget) {
+    if (requireMaterializedTarget) {
+      throw new Error(
+        `Spark Job artifact recovery requires a completed target Lakehouse checkpoint for '${approvedItem.logicalId}'.`,
+      );
+    }
+    if (
+      deferPendingTargetRecovery &&
+      hasApprovedPendingCreateRecovery(
+        options,
+        checkpoint,
+        approvedTarget,
+      )
+    ) {
+      return;
+    }
+    if (
+      currentTarget.action !== "create" ||
+      current.targetBinding !== "symbolic"
+    ) {
+      throw new Error(
+        `Spark Job artifact target changed before creation for '${approvedItem.logicalId}'.`,
+      );
+    }
+    assertItemHasNotDrifted(approvedItem, currentItem);
+    return;
+  }
+
+  const targetLakehouseId = completedTarget.physicalId;
+  const currentPlanStillSymbolic =
+    currentTarget.action === "create" &&
+    current.targetBinding === "symbolic";
+  const currentPlanMaterialized =
+    currentTarget.action === "no-op" &&
+    currentTarget.physicalId === targetLakehouseId &&
+    current.targetBinding === "physical" &&
+    current.targetLakehousePhysicalId === targetLakehouseId;
+  if (requireMaterializedTarget && currentPlanStillSymbolic) {
+    throw new Error(
+      `Spark Job artifact recovery requires the current plan to resolve the exact checkpointed Lakehouse ID for '${approvedItem.logicalId}'.`,
+    );
+  }
+  if (
+    completedTarget.action !== "create" ||
+    (!currentPlanStillSymbolic && !currentPlanMaterialized)
+  ) {
+    throw new Error(
+      `Spark Job artifact target did not materialize to the exact checkpointed Lakehouse ID for '${approvedItem.logicalId}'.`,
+    );
+  }
+
+  if (currentPlanMaterialized) {
+    assertCurrentSparkJobArtifactMaterialization(
+      options,
+      checkpoint,
+      approvedItem,
+      currentItem,
+      targetLakehouseId,
+    );
+  } else if (
+    currentItem.materializedDefinitionHash !==
+      approvedItem.materializedDefinitionHash ||
+    currentItem.resolvedBindingsHash !==
+      approvedItem.resolvedBindingsHash
+  ) {
+    throw new Error(
+      `Spark Job Definition '${approvedItem.logicalId}' contains unexpected materialization proof while its artifact target is symbolic.`,
+    );
+  }
+
+  if (completed) {
+    if (
+      !trustedResume &&
+      (currentItem.action !== "no-op" ||
+        currentItem.physicalId !== completed.physicalId)
+    ) {
+      throw new Error(
+        `Checkpointed item '${approvedItem.logicalId}' is not a no-op for physical ID '${completed.physicalId}' in the current Fabric plan.`,
+      );
+    }
+    return;
+  }
+  if (hasPendingItem) {
+    return;
+  }
+
+  assertItemHasNotDrifted(approvedItem, {
+    ...currentItem,
+    materializedDefinitionHash:
+      approvedItem.materializedDefinitionHash,
+    resolvedBindingsHash: approvedItem.resolvedBindingsHash,
+    sparkJobArtifacts: approved,
+  });
+}
+
+function assertCurrentSparkJobArtifactMaterialization(
+  options: ApplyPlanOptions,
+  checkpoint: ApplyCheckpoint,
+  approvedItem: PlannedItem,
+  currentItem: PlannedItem,
+  targetLakehouseId: string,
+): void {
+  const approved = approvedItem.sparkJobArtifacts;
+  const current = currentItem.sparkJobArtifacts;
+  if (!approved || !current) {
+    throw new Error(
+      `Spark Job artifact materialization is missing for '${approvedItem.logicalId}'.`,
+    );
+  }
+  const sources =
+    options.loadedManifest.sparkJobArtifactSources?.[
+      approvedItem.logicalId
+    ] ?? [];
+  const expected = materializeSparkJobArtifactUris(
+    approved,
+    sources,
+    requireOneLakeDfsEndpoint(options, approvedItem.logicalId),
+    options.approvedPlan.workspaceId,
+    targetLakehouseId,
+    options.approvedPlan.deploymentId,
+    options.approvedPlan.environment,
+    approvedItem.logicalId,
+  );
+  const expectedByName = new Map(
+    expected.map((artifact) => [artifact.fileName, artifact]),
+  );
+  for (const artifact of current.artifacts) {
+    const expectedArtifact = expectedByName.get(artifact.fileName);
+    if (
+      !expectedArtifact ||
+      artifact.kind !== expectedArtifact.kind ||
+      artifact.contentHash !== expectedArtifact.contentHash ||
+      artifact.abfssUri !== expectedArtifact.abfssUri ||
+      (artifact.action !== "create" &&
+        artifact.action !== "no-op") ||
+      (artifact.action === "no-op" &&
+        artifact.observedHash !== artifact.contentHash) ||
+      (artifact.action === "create" &&
+        artifact.observedHash !== "" &&
+        artifact.observedHash !== "absent")
+    ) {
+      throw new Error(
+        `Spark Job artifact runtime materialization changed after approval for '${approvedItem.logicalId}'.`,
+      );
+    }
+  }
+
+  const hasMaterializedDefinition =
+    currentItem.materializedDefinitionHash !== undefined;
+  const hasResolvedBindings =
+    currentItem.resolvedBindingsHash !== undefined;
+  if (hasMaterializedDefinition !== hasResolvedBindings) {
+    throw new Error(
+      `Spark Job Definition '${approvedItem.logicalId}' has incomplete materialization proof.`,
+    );
+  }
+  if (
+    !allApprovedSparkJobBindingsResolved(
+      options,
+      checkpoint,
+      approvedItem.logicalId,
+    )
+  ) {
+    return;
+  }
+  const expectedDefinition = requireSparkJobRuntimeDefinition(
+    { ...options, checkpoint },
+    approvedItem.logicalId,
+  );
+  if (
+    currentItem.materializedDefinitionHash !==
+      expectedDefinition.materializedDefinitionHash ||
+    currentItem.resolvedBindingsHash !==
+      expectedDefinition.resolvedBindingsHash
+  ) {
+    throw new Error(
+      `Spark Job Definition '${approvedItem.logicalId}' materialized with different dependency or artifact IDs after approval.`,
+    );
+  }
+}
+
+function allApprovedSparkJobBindingsResolved(
+  options: ApplyPlanOptions,
+  checkpoint: ApplyCheckpoint,
+  logicalId: string,
+): boolean {
+  const item = options.loadedManifest.manifest.items.find(
+    (candidate) => candidate.logicalId === logicalId,
+  );
+  const desired =
+    options.loadedManifest.itemDefinitions[logicalId];
+  if (!item || !desired) {
+    throw new Error(
+      `Spark Job Definition declarations are missing for '${logicalId}'.`,
+    );
+  }
+  const bindings = validateLogicalReferenceDeclarations({
+    item,
+    definition: desired,
+    itemGraph: options.loadedManifest.manifest.items,
+  });
+  return Object.values(bindings).every((binding) => {
+    if (!binding) {
+      return true;
+    }
+    const approvedDependency = options.approvedPlan.items.find(
+      (candidate) => candidate.logicalId === binding.logicalId,
+    );
+    const completedDependency = getCompletedItem(
+      checkpoint,
+      binding.logicalId,
+    );
+    return (
+      completedDependency !== undefined ||
+      (approvedDependency?.physicalId !== undefined &&
+        (approvedDependency.action === "update" ||
+          approvedDependency.action === "no-op"))
+    );
+  });
 }
 
 function assertLakehouseTablesPreflightState(
@@ -1463,17 +1900,74 @@ function hasApprovedPendingCreateRecovery(
   );
 }
 
+async function verifyCheckpointedOneLakeArtifactTargets(
+  options: ApplyPlanOptions,
+  checkpoint: ApplyCheckpoint,
+  approvedItems: ReadonlyMap<string, PlannedItem>,
+  now: () => number,
+): Promise<Map<string, number>> {
+  const targetLogicalIds = new Set<string>();
+  for (const item of approvedItems.values()) {
+    const staging = item.sparkJobArtifacts;
+    if (!staging || staging.targetBinding !== "symbolic") {
+      continue;
+    }
+    const hasArtifactState =
+      checkpoint.oneLakeArtifacts?.[item.logicalId] !== undefined;
+    const hasPendingItem =
+      getPendingOperation(checkpoint, item.logicalId) !== undefined ||
+      getPendingCreate(checkpoint, item.logicalId) !== undefined ||
+      getPendingUpdate(checkpoint, item.logicalId) !== undefined;
+    if (hasArtifactState || hasPendingItem) {
+      targetLogicalIds.add(staging.targetLakehouseLogicalId);
+    }
+  }
+
+  const durations = new Map<string, number>();
+  for (const stage of options.approvedPlan.stages) {
+    for (const logicalId of stage) {
+      if (!targetLogicalIds.has(logicalId)) {
+        continue;
+      }
+      const approvedTarget = approvedItems.get(logicalId);
+      const completedTarget = getCompletedItem(
+        checkpoint,
+        logicalId,
+      );
+      if (
+        !approvedTarget ||
+        approvedTarget.type !== "Lakehouse" ||
+        !completedTarget ||
+        completedTarget.action !== "create"
+      ) {
+        throw new Error(
+          `OneLake artifact recovery target '${logicalId}' is missing its approved completed Lakehouse checkpoint.`,
+        );
+      }
+      const startedAt = now();
+      await resumeCompletedItem(
+        options,
+        approvedTarget,
+        completedTarget.physicalId,
+      );
+      durations.set(logicalId, now() - startedAt);
+    }
+  }
+  return durations;
+}
+
 async function verifyCheckpointedItems(
   options: ApplyPlanOptions,
   checkpoint: ApplyCheckpoint,
   approvedItems: Map<string, PlannedItem>,
   now: () => number,
+  previouslyVerified = new Map<string, number>(),
 ): Promise<Map<string, number>> {
-  const durations = new Map<string, number>();
+  const durations = new Map(previouslyVerified);
   for (const stage of options.approvedPlan.stages) {
     for (const logicalId of stage) {
       const completed = getCompletedItem(checkpoint, logicalId);
-      if (!completed) {
+      if (!completed || durations.has(logicalId)) {
         continue;
       }
       const approvedItem = approvedItems.get(logicalId);
@@ -1553,7 +2047,33 @@ function comparableItemState(item: PlannedItem): unknown {
     materializedDefinitionHash:
       item.materializedDefinitionHash,
     resolvedBindingsHash: item.resolvedBindingsHash,
+    sparkJobArtifacts: comparableSparkJobArtifactSource(item),
     lakehouseTables: item.lakehouseTables,
+  };
+}
+
+function comparableSparkJobArtifactSource(
+  item: PlannedItem,
+): unknown {
+  const staging = item.sparkJobArtifacts;
+  if (!staging) {
+    return undefined;
+  }
+  return {
+    targetLakehouseLogicalId: staging.targetLakehouseLogicalId,
+    oneLakeDfsEndpoint: staging.oneLakeDfsEndpoint,
+    oneLakeBlobEndpoint: staging.oneLakeBlobEndpoint,
+    stagingHash: staging.stagingHash,
+    artifacts: staging.artifacts.map((artifact) => ({
+      kind: artifact.kind,
+      operationId: artifact.operationId,
+      operationHash: artifact.operationHash,
+      fileName: artifact.fileName,
+      relativeSourcePath: artifact.relativeSourcePath,
+      contentHash: artifact.contentHash,
+      sizeBytes: artifact.sizeBytes,
+      oneLakePath: artifact.oneLakePath,
+    })),
   };
 }
 
@@ -2096,6 +2616,321 @@ function requireLakehouseTablesCheckpoint(
     return state;
 }
 
+async function reconcileOneLakeArtifactStaging(
+  options: ApplyPlanOptions,
+  checkpoint: ApplyCheckpoint,
+  approvedItems: ReadonlyMap<string, PlannedItem>,
+  now: () => number,
+): Promise<void> {
+  for (const stage of options.approvedPlan.stages) {
+    for (const logicalId of stage) {
+      const item = approvedItems.get(logicalId);
+      if (
+        !item ||
+        item.type !== "SparkJobDefinition" ||
+        !item.sparkJobArtifacts
+      ) {
+        continue;
+      }
+      const hasArtifactState =
+        checkpoint.oneLakeArtifacts?.[logicalId] !== undefined;
+      const hasPendingItem =
+        getPendingOperation(checkpoint, logicalId) !== undefined ||
+        getPendingCreate(checkpoint, logicalId) !== undefined ||
+        getPendingUpdate(checkpoint, logicalId) !== undefined;
+      if (hasArtifactState || hasPendingItem) {
+        if (hasPendingItem) {
+          assertPendingSparkJobArtifactRecoveryProof(
+            options,
+            checkpoint,
+            item,
+          );
+        }
+        await applySparkJobArtifacts(
+          options,
+          checkpoint,
+          item,
+          now,
+        );
+      }
+    }
+  }
+}
+
+function assertPendingSparkJobArtifactRecoveryProof(
+  options: ApplyPlanOptions,
+  checkpoint: ApplyCheckpoint,
+  item: PlannedItem,
+): void {
+  const staging = item.sparkJobArtifacts;
+  const state = checkpoint.oneLakeArtifacts?.[item.logicalId];
+  if (!staging || !state?.completedAt) {
+    throw new Error(
+      `Pending Spark Job write '${item.logicalId}' is missing completed OneLake artifact staging proof.`,
+    );
+  }
+  for (const artifact of staging.artifacts) {
+    if (
+      state.artifacts[artifact.operationId]?.phase !== "verified"
+    ) {
+      throw new Error(
+        `Pending Spark Job write '${item.logicalId}' has incomplete OneLake artifact staging proof.`,
+      );
+    }
+  }
+  requireSparkJobRuntimeDefinition(
+    { ...options, checkpoint },
+    item.logicalId,
+  );
+}
+
+async function applySparkJobArtifacts(
+  options: ApplyPlanOptions,
+  checkpoint: ApplyCheckpoint,
+  item: PlannedItem,
+  now: () => number,
+): Promise<void> {
+  const staging = item.sparkJobArtifacts;
+  if (!staging) {
+    return;
+  }
+  const stager = options.oneLakeArtifactStager;
+  if (!stager) {
+    throw new Error(
+      `OneLake artifact staging client is missing for '${item.logicalId}'.`,
+    );
+  }
+  const sources =
+    options.loadedManifest.sparkJobArtifactSources?.[item.logicalId] ?? [];
+  const sourceByName = new Map(
+    sources.map((source) => [source.fileName, source]),
+  );
+  const targetLakehouseId = requirePhysicalIdForLogicalDependency(
+    options,
+    staging.targetLakehouseLogicalId,
+    {},
+    item.logicalId,
+  );
+  const approvedTarget = options.approvedPlan.items.find(
+    (candidate) =>
+      candidate.logicalId ===
+      staging.targetLakehouseLogicalId,
+  );
+  if (!approvedTarget || approvedTarget.type !== "Lakehouse") {
+    throw new Error(
+      `OneLake artifact target '${staging.targetLakehouseLogicalId}' is not an approved Lakehouse.`,
+    );
+  }
+  if (
+    staging.targetBinding === "physical"
+      ? staging.targetLakehousePhysicalId !== targetLakehouseId ||
+        approvedTarget.physicalId !== targetLakehouseId
+      : approvedTarget.action !== "create" ||
+        getCompletedItem(
+          checkpoint,
+          staging.targetLakehouseLogicalId,
+        )?.physicalId !== targetLakehouseId
+  ) {
+    throw new Error(
+      `OneLake artifact target binding changed after approval for '${item.logicalId}'.`,
+    );
+  }
+  materializeSparkJobArtifactUris(
+    staging,
+    sources,
+    requireOneLakeDfsEndpoint(options, item.logicalId),
+    options.approvedPlan.workspaceId,
+    targetLakehouseId,
+    options.approvedPlan.deploymentId,
+    options.approvedPlan.environment,
+    item.logicalId,
+  );
+
+  checkpoint.oneLakeArtifacts ??= {};
+  let state = checkpoint.oneLakeArtifacts[item.logicalId];
+  if (!state) {
+    const updatedAt = new Date(now()).toISOString();
+    state = {
+      logicalId: item.logicalId,
+      targetLakehouseLogicalId:
+        staging.targetLakehouseLogicalId,
+      targetLakehouseId,
+      stagingHash: staging.stagingHash,
+      artifacts: {},
+      updatedAt,
+    };
+    checkpoint.oneLakeArtifacts[item.logicalId] = state;
+    writeCheckpoint(options.checkpointFile, checkpoint);
+  }
+  if (
+    state.targetLakehouseLogicalId !==
+      staging.targetLakehouseLogicalId ||
+    state.targetLakehouseId !== targetLakehouseId ||
+    state.stagingHash !== staging.stagingHash
+  ) {
+    throw new Error(
+      `OneLake artifact checkpoint changed target or source proof for '${item.logicalId}'.`,
+    );
+  }
+
+  for (const artifact of staging.artifacts) {
+    if (artifact.action === "blocked") {
+      throw new Error(
+        `OneLake artifact '${artifact.fileName}' is blocked and cannot be applied.`,
+      );
+    }
+    if (
+      artifact.action === "create" &&
+      !(options.allowOneLakeArtifactCreate ?? false)
+    ) {
+      throw new Error(
+        `Plan requires staging OneLake artifact '${artifact.fileName}' for '${item.logicalId}', but allow-onelake-artifact-create is false.`,
+      );
+    }
+    const source = sourceByName.get(artifact.fileName);
+    if (!source) {
+      throw new Error(
+        `OneLake artifact source '${artifact.fileName}' is missing for '${item.logicalId}'.`,
+      );
+    }
+    const descriptor = artifactDescriptor(
+      options.approvedPlan.workspaceId,
+      targetLakehouseId,
+      artifact,
+      source,
+    );
+    const checkpointArtifact = state.artifacts[artifact.operationId];
+    if (checkpointArtifact?.phase === "verified") {
+      await stager.verify(descriptor);
+      continue;
+    }
+    if (
+      checkpointArtifact?.phase === "upload-submitting" &&
+      artifact.action !== "create"
+    ) {
+      throw new Error(
+        `OneLake artifact checkpoint for '${artifact.fileName}' cannot upload under an approved no-op operation.`,
+      );
+    }
+
+    const recordSubmitting = () => {
+      const timestamp = new Date(now()).toISOString();
+      state!.artifacts[artifact.operationId] = {
+        operationId: artifact.operationId,
+        operationHash: artifact.operationHash,
+        fileName: artifact.fileName,
+        oneLakePath: artifact.oneLakePath,
+        contentHash: artifact.contentHash,
+        sizeBytes: artifact.sizeBytes,
+        phase: "upload-submitting",
+        submittedAt:
+          state!.artifacts[artifact.operationId]?.submittedAt ??
+          timestamp,
+        updatedAt: timestamp,
+      };
+      state!.updatedAt = timestamp;
+      delete state!.completedAt;
+      writeCheckpoint(options.checkpointFile, checkpoint);
+    };
+    const recordVerified = () => {
+      const timestamp = new Date(now()).toISOString();
+      const submittedAt =
+        state!.artifacts[artifact.operationId]?.submittedAt;
+      state!.artifacts[artifact.operationId] = {
+        operationId: artifact.operationId,
+        operationHash: artifact.operationHash,
+        fileName: artifact.fileName,
+        oneLakePath: artifact.oneLakePath,
+        contentHash: artifact.contentHash,
+        sizeBytes: artifact.sizeBytes,
+        phase: "verified",
+        ...(submittedAt ? { submittedAt } : {}),
+        verifiedAt: timestamp,
+        updatedAt: timestamp,
+      };
+      state!.updatedAt = timestamp;
+      writeCheckpoint(options.checkpointFile, checkpoint);
+    };
+
+    if (artifact.action === "create") {
+      await stager.uploadImmutable(descriptor, {
+        onUploadSubmitting: recordSubmitting,
+        onUploadVerified: recordVerified,
+      });
+    } else {
+      await stager.verify(descriptor);
+      recordVerified();
+    }
+  }
+
+  const completedAt = new Date(now()).toISOString();
+  state.completedAt = completedAt;
+  state.updatedAt = completedAt;
+  writeCheckpoint(options.checkpointFile, checkpoint);
+}
+
+function requireOneLakeDfsEndpoint(
+  options: ApplyPlanOptions,
+  logicalId: string,
+): string {
+  if (!options.oneLakeDfsEndpoint) {
+    throw new Error(
+      `OneLake DFS endpoint is missing for Spark Job Definition '${logicalId}'.`,
+    );
+  }
+  return options.oneLakeDfsEndpoint;
+}
+
+function requireOneLakeBlobEndpoint(
+  options: ApplyPlanOptions,
+  logicalId: string,
+): string {
+  if (!options.oneLakeBlobEndpoint) {
+    throw new Error(
+      `OneLake Blob endpoint is missing for Spark Job Definition '${logicalId}'.`,
+    );
+  }
+  return options.oneLakeBlobEndpoint;
+}
+
+function requirePhysicalIdForLogicalDependency(
+  options: ApplyPlanOptions,
+  targetLogicalId: string,
+  knownPhysicalIds: Readonly<Record<string, string>>,
+  ownerLogicalId: string,
+): string {
+  const known = knownPhysicalIds[targetLogicalId];
+  if (known) {
+    return known;
+  }
+  const completed = options.checkpoint
+    ? getCompletedItem(options.checkpoint, targetLogicalId)
+    : undefined;
+  const approved = options.approvedPlan.items.find(
+    (candidate) => candidate.logicalId === targetLogicalId,
+  );
+  const current = options.currentPlan.items.find(
+    (candidate) => candidate.logicalId === targetLogicalId,
+  );
+  const physicalId =
+    completed?.physicalId ?? approved?.physicalId ?? current?.physicalId;
+  if (
+    !approved ||
+    approved.type !== "Lakehouse" ||
+    (current && current.type !== "Lakehouse")
+  ) {
+    throw new Error(
+      `Spark Job Definition '${ownerLogicalId}' has an invalid OneLake Lakehouse dependency '${targetLogicalId}'.`,
+    );
+  }
+  if (!physicalId) {
+    throw new Error(
+      `Spark Job Definition '${ownerLogicalId}' cannot resolve Lakehouse '${targetLogicalId}' for OneLake artifact staging.`,
+    );
+  }
+  return physicalId;
+}
+
 async function applyItem(
   options: ApplyPlanOptions,
   item: PlannedItem,
@@ -2270,6 +3105,19 @@ async function resumeCompletedItem(
   const desired = options.loadedManifest.itemDefinitions[item.logicalId];
   if (!desired) {
     throw new Error(`Desired definition is missing for '${item.logicalId}'.`);
+  }
+  if (item.type === "SparkJobDefinition" && item.sparkJobArtifacts) {
+    if (!options.checkpoint) {
+      throw new Error(
+        `Apply checkpoint is missing while verifying Spark Job artifacts for '${item.logicalId}'.`,
+      );
+    }
+    await applySparkJobArtifacts(
+      options,
+      options.checkpoint,
+      item,
+      options.now ?? Date.now,
+    );
   }
   await verifyDesiredItem(
     options,
@@ -2744,7 +3592,28 @@ function requireSparkJobRuntimeDefinition(
     definition: desired,
     itemGraph: options.loadedManifest.manifest.items,
   });
-  if (Object.keys(bindings).length === 0) {
+  const artifactSources =
+    options.loadedManifest.sparkJobArtifactSources?.[logicalId] ?? [];
+  const staging = options.approvedPlan.items.find(
+    (candidate) => candidate.logicalId === logicalId,
+  )?.sparkJobArtifacts;
+  if (
+    (artifactSources.length === 0) !== (staging === undefined)
+  ) {
+    throw new Error(
+      `Spark Job artifact staging source does not match the approved plan for '${logicalId}'.`,
+    );
+  }
+  if (
+    staging &&
+    bindings[DEFAULT_LAKEHOUSE_BINDING_TARGET]?.logicalId !==
+      staging.targetLakehouseLogicalId
+  ) {
+    throw new Error(
+      `Spark Job artifact target changed after approval for '${logicalId}'.`,
+    );
+  }
+  if (Object.keys(bindings).length === 0 && !staging) {
     assertLogicalReferenceCheckpointProof(
       options,
       logicalId,
@@ -2781,10 +3650,28 @@ function requireSparkJobRuntimeDefinition(
     physicalIds[binding.logicalId] = physicalId;
   }
 
+  const artifactMaterializations = staging
+    ? materializeSparkJobArtifactUris(
+        staging,
+        artifactSources,
+        requireOneLakeDfsEndpoint(options, logicalId),
+        options.approvedPlan.workspaceId,
+        requirePhysicalIdForLogicalDependency(
+          options,
+          staging.targetLakehouseLogicalId,
+          physicalIds,
+          logicalId,
+        ),
+        options.approvedPlan.deploymentId,
+        options.approvedPlan.environment,
+        logicalId,
+      )
+    : [];
   const materialized = materializeSparkJobDefinitionWithProof(
     sourceDefinition,
     bindings,
     physicalIds,
+    artifactMaterializations,
   );
   assertLogicalReferenceCheckpointProof(
     options,

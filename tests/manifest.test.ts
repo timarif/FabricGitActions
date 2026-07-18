@@ -114,6 +114,93 @@ items: []
     );
   });
 
+  it("captures staged Spark Job JARs and requires a default Lakehouse binding", () => {
+    const root = mkdtempSync(path.join(tmpdir(), "fabric-deploy-"));
+    const manifestPath = path.join(root, "deployment.yaml");
+    const lakehouseDirectory = path.join(
+      root,
+      "items",
+      "lakehouses",
+      "bronze",
+    );
+    const sparkDirectory = path.join(
+      root,
+      "items",
+      "spark-jobs",
+      "job",
+    );
+    mkdirSync(
+      path.join(sparkDirectory, "definition", "libs"),
+      { recursive: true },
+    );
+    mkdirSync(lakehouseDirectory, { recursive: true });
+    writeFileSync(
+      manifestPath,
+      `
+apiVersion: fabric.deploy/v1alpha1
+kind: FabricDeployment
+metadata:
+  deploymentId: staging
+workspace:
+  id: 11111111-1111-1111-1111-111111111111
+items:
+  - logicalId: bronze
+    type: Lakehouse
+    path: items/lakehouses/bronze
+  - logicalId: sparkJob
+    type: SparkJobDefinition
+    path: items/spark-jobs/job
+    dependsOn: [bronze]
+`,
+      "utf8",
+    );
+    writeFileSync(
+      path.join(lakehouseDirectory, "item.yaml"),
+      "displayName: Bronze\n",
+      "utf8",
+    );
+    const itemPath = path.join(sparkDirectory, "item.yaml");
+    writeFileSync(
+      itemPath,
+      "displayName: Spark\nreferences:\n  defaultLakehouse: bronze\n",
+      "utf8",
+    );
+    writeFileSync(
+      path.join(
+        sparkDirectory,
+        "definition",
+        "SparkJobDefinitionV1.json",
+      ),
+      JSON.stringify({
+        executableFile: "main.jar",
+        language: "Scala/Java",
+        mainClass: "com.example.Main",
+      }),
+      "utf8",
+    );
+    writeFileSync(
+      path.join(sparkDirectory, "definition", "main.jar"),
+      Buffer.from("jar"),
+    );
+
+    const loaded = loadManifest(manifestPath);
+    expect(
+      loaded.sparkJobArtifactSources?.sparkJob,
+    ).toEqual([
+      expect.objectContaining({
+        kind: "executable",
+        fileName: "main.jar",
+        relativePath: "definition/main.jar",
+        sizeBytes: 3,
+      }),
+    ]);
+
+    writeFileSync(itemPath, "displayName: Spark\n", "utf8");
+    expect(() => loadManifest(manifestPath)).toThrow(
+      "must declare a logical defaultLakehouse",
+    );
+  });
+
   it("rejects duplicate logical IDs", () => {
     const root = mkdtempSync(path.join(tmpdir(), "fabric-deploy-"));
     const manifestPath = createFixture(

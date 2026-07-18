@@ -12,7 +12,27 @@ describe("Fabric endpoint configuration", () => {
     ).toEqual({
       fabricApiEndpoint: "https://api.fabric.microsoft.com",
       oneLakeEndpoint: "https://onelake.dfs.fabric.microsoft.com",
+      oneLakeBlobEndpoint: "https://onelake.blob.fabric.microsoft.com",
     });
+  });
+
+  it("accepts an explicit OneLake Blob endpoint", () => {
+    expect(
+      parseFabricEndpoints(
+        "https://api.fabric.microsoft.com",
+        "https://private.dfs.example.test",
+        "https://private.blob.example.test/",
+      ).oneLakeBlobEndpoint,
+    ).toBe("https://private.blob.example.test");
+  });
+
+  it("derives a matching Blob endpoint for a custom DFS host", () => {
+    expect(
+      parseFabricEndpoints(
+        "https://api.fabric.microsoft.com",
+        "https://private.dfs.example.test",
+      ).oneLakeBlobEndpoint,
+    ).toBe("https://private.blob.example.test");
   });
 
   it("rejects endpoint credentials and insecure remote endpoints", () => {

@@ -48,9 +48,12 @@ inputs:
     required: false
     default: https://api.fabric.microsoft.com
   onelake-endpoint:
-    description: OneLake DFS endpoint reserved for future artifact staging.
+    description: OneLake DFS endpoint used for artifact directory operations.
     required: false
     default: https://onelake.dfs.fabric.microsoft.com
+  onelake-blob-endpoint:
+    description: OneLake Blob endpoint used for immutable artifact uploads. Derived from onelake-endpoint when omitted.
+    required: false
   plan-file:
     description: Path where the current machine-readable deployment plan is written.
     required: false
@@ -76,6 +79,10 @@ inputs:
     default: "false"
   allow-lakehouse-table-create:
     description: Permit approved managed Delta table creation in LakehouseTables bundles.
+    required: false
+    default: "false"
+  allow-onelake-artifact-create:
+    description: Permit approved immutable Spark Job artifact creation in OneLake.
     required: false
     default: "false"
   allow-workspace-create:

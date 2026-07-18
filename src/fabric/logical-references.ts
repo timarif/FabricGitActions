@@ -67,6 +67,13 @@ export interface SparkJobLogicalReferenceMaterialization {
   resolvedBindingsHash: string;
 }
 
+export interface SparkJobArtifactMaterialization {
+  kind: "executable" | "library";
+  fileName: string;
+  contentHash: string;
+  abfssUri: string;
+}
+
 /**
  * Validates and canonicalizes symbolic declarations without requiring live IDs.
  *
@@ -203,6 +210,7 @@ export function materializeSparkJobDefinitionSnapshot(
   snapshot: SparkJobDefinitionSnapshot,
   bindings: CanonicalResolvedBindingMap,
   physicalIds: Readonly<Record<string, string>>,
+  artifacts: readonly SparkJobArtifactMaterialization[] = [],
 ): SparkJobDefinitionSnapshot {
   if (
     snapshot.format !== undefined &&
@@ -253,7 +261,7 @@ export function materializeSparkJobDefinitionSnapshot(
   const clonedParts = snapshot.parts
     .map((part) =>
       part.path === CONFIG_PATH
-        ? materializeConfigurationPart(part, updates)
+        ? materializeConfigurationPart(part, updates, artifacts)
         : { ...part },
     )
     .sort((left, right) =>
@@ -280,11 +288,13 @@ export function materializeSparkJobDefinitionWithProof(
   snapshot: SparkJobDefinitionSnapshot,
   bindings: CanonicalResolvedBindingMap,
   physicalIds: Readonly<Record<string, string>>,
+  artifacts: readonly SparkJobArtifactMaterialization[] = [],
 ): SparkJobLogicalReferenceMaterialization {
   const definition = materializeSparkJobDefinitionSnapshot(
     snapshot,
     bindings,
     physicalIds,
+    artifacts,
   );
   const resolvedBindings = Object.entries(bindings)
     .sort(([left], [right]) =>
@@ -321,7 +331,28 @@ export function materializeSparkJobDefinitionWithProof(
     definition,
     materializedDefinitionHash:
       hashMaterializedSparkJobDefinition(definition),
-    resolvedBindingsHash: sha256(stableJson(resolvedBindings)),
+    resolvedBindingsHash: sha256(
+      stableJson(
+        artifacts.length === 0
+          ? resolvedBindings
+          : {
+              bindings: resolvedBindings,
+              artifacts: [...artifacts]
+                .sort((left, right) =>
+                  compareCanonicalStrings(
+                    left.fileName,
+                    right.fileName,
+                  ),
+                )
+                .map((artifact) => ({
+                  kind: artifact.kind,
+                  fileName: artifact.fileName,
+                  contentHash: artifact.contentHash,
+                  abfssUri: artifact.abfssUri,
+                })),
+            },
+      ),
+    ),
   };
 }
 
@@ -416,6 +447,7 @@ function isCanonicalResolvedBinding(
 function materializeConfigurationPart(
   part: FabricDefinitionPart,
   updates: ReadonlyMap<SparkJobArtifactIdField, string>,
+  artifacts: readonly SparkJobArtifactMaterialization[],
 ): FabricDefinitionPart {
   if (part.payloadType !== "InlineBase64") {
     throw new Error(
@@ -425,6 +457,66 @@ function materializeConfigurationPart(
   const config = parseStrictConfiguration(part.payload);
   for (const [field, physicalId] of updates) {
     config[field] = physicalId;
+  }
+  if (artifacts.length > 0) {
+    const executableArtifacts = artifacts.filter(
+      (artifact) => artifact.kind === "executable",
+    );
+    if (executableArtifacts.length > 1) {
+      throw new Error(
+        "Spark Job Definition cannot materialize more than one staged executable.",
+      );
+    }
+    const executableArtifact = executableArtifacts[0];
+    if (executableArtifact) {
+      if (config.executableFile !== executableArtifact.fileName) {
+        throw new Error(
+          `Spark Job Definition staged executable '${executableArtifact.fileName}' is missing from executableFile.`,
+        );
+      }
+      config.executableFile = executableArtifact.abfssUri;
+    }
+
+    const libraryArtifacts = artifacts.filter(
+      (artifact) => artifact.kind === "library",
+    );
+    const libraryUris = config.additionalLibraryUris;
+    if (
+      !Array.isArray(libraryUris) ||
+      !libraryUris.every((value) => typeof value === "string")
+    ) {
+      throw new Error(
+        "Spark Job Definition additionalLibraryUris must be an array before artifact materialization.",
+      );
+    }
+    const replacements = new Map(
+      libraryArtifacts.map((artifact) => [
+        artifact.fileName,
+        artifact.abfssUri,
+      ]),
+    );
+    const replaced = new Set<string>();
+    config.additionalLibraryUris = libraryUris.map((value) => {
+      const replacement = replacements.get(value);
+      if (!replacement) {
+        return value;
+      }
+      if (replaced.has(value)) {
+        throw new Error(
+          `Spark Job Definition staged artifact '${value}' is referenced more than once.`,
+        );
+      }
+      replaced.add(value);
+      return replacement;
+    });
+    const missing = [...replacements.keys()].filter(
+      (fileName) => !replaced.has(fileName),
+    );
+    if (missing.length > 0) {
+      throw new Error(
+        `Spark Job Definition staged artifacts are missing from additionalLibraryUris: ${missing.join(", ")}.`,
+      );
+    }
   }
   return {
     ...part,

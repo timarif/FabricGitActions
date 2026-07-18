@@ -315,6 +315,63 @@ describe("Spark Job logical reference materialization", () => {
     ).toThrow("Physical ID is missing for logicalId 'bronze'");
   });
 
+  it("materializes a staged JAR executable URI", () => {
+    const materialized = materializeSparkJobDefinitionSnapshot(
+      snapshot({
+        executableFile: "app.jar",
+        additionalLibraryUris: [],
+        language: "Scala/Java",
+        mainClass: "com.example.Main",
+      }),
+      validate({
+        references: { defaultLakehouse: "bronze" },
+      }),
+      { bronze: "lakehouse-id" },
+      [
+        {
+          kind: "executable",
+          fileName: "app.jar",
+          contentHash: "a".repeat(64),
+          abfssUri:
+            "abfss://workspace@onelake.dfs.fabric.microsoft.com/lakehouse/Files/.fabric-deploy/app.jar",
+        },
+      ],
+    );
+
+    expect(readConfig(materialized)).toMatchObject({
+      defaultLakehouseArtifactId: "lakehouse-id",
+      executableFile:
+        "abfss://workspace@onelake.dfs.fabric.microsoft.com/lakehouse/Files/.fabric-deploy/app.jar",
+      additionalLibraryUris: [],
+    });
+  });
+
+  it("rejects staged artifacts missing from the Spark configuration", () => {
+    expect(() =>
+      materializeSparkJobDefinitionSnapshot(
+        snapshot({
+          executableFile: "other.jar",
+          additionalLibraryUris: [],
+          language: "Scala/Java",
+          mainClass: "com.example.Main",
+        }),
+        validate({
+          references: { defaultLakehouse: "bronze" },
+        }),
+        { bronze: "lakehouse-id" },
+        [
+          {
+            kind: "executable",
+            fileName: "app.jar",
+            contentHash: "a".repeat(64),
+            abfssUri:
+              "abfss://workspace@onelake.dfs.fabric.microsoft.com/lakehouse/Files/app.jar",
+          },
+        ],
+      ),
+    ).toThrow("missing from executableFile");
+  });
+
   it.each([
     ["not base64!", "canonical base64"],
     [

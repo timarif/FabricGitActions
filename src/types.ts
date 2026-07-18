@@ -1,5 +1,6 @@
 import type { FabricDefinition } from "./fabric/definition";
 import type { LoadedLakehouseTablesDefinition } from "./fabric/lakehouse-tables-definition";
+import type { SparkJobArtifactSource } from "./fabric/spark-job-definition";
 import type { SparkCustomPoolDefinition } from "./fabric/spark-custom-pool-definition";
 
 export const FABRIC_ITEM_TYPES = [
@@ -68,6 +69,7 @@ export interface LoadedManifest {
   environmentDefinitions: Record<string, FabricDefinition>;
   notebookDefinitions: Record<string, FabricDefinition>;
   sparkJobDefinitions: Record<string, FabricDefinition>;
+  sparkJobArtifactSources?: Record<string, SparkJobArtifactSource[]>;
   pipelineDefinitions: Record<string, FabricDefinition>;
   sparkCustomPoolDefinitions: Record<
     string,
@@ -101,6 +103,36 @@ export interface PlannedLakehouseTables {
   operations: PlannedLakehouseTableOperation[];
 }
 
+export type PlannedOneLakeArtifactAction =
+  | "create"
+  | "no-op"
+  | "blocked";
+
+export interface PlannedOneLakeArtifact {
+  action: PlannedOneLakeArtifactAction;
+  kind: "executable" | "library";
+  operationId: string;
+  operationHash: string;
+  fileName: string;
+  relativeSourcePath: string;
+  contentHash: string;
+  sizeBytes: number;
+  oneLakePath: string;
+  abfssUri?: string;
+  observedHash: string;
+  reason: string;
+}
+
+export interface PlannedSparkJobArtifacts {
+  targetLakehouseLogicalId: string;
+  targetLakehousePhysicalId?: string;
+  targetBinding: "physical" | "symbolic";
+  oneLakeDfsEndpoint: string;
+  oneLakeBlobEndpoint: string;
+  stagingHash: string;
+  artifacts: PlannedOneLakeArtifact[];
+}
+
 export interface PlannedItem {
   logicalId: string;
   type: FabricItemType;
@@ -114,6 +146,7 @@ export interface PlannedItem {
   materializedDefinitionHash?: string;
   resolvedBindingsHash?: string;
   lakehouseTables?: PlannedLakehouseTables;
+  sparkJobArtifacts?: PlannedSparkJobArtifacts;
   action: PlannedAction;
   reason: string;
 }
@@ -255,6 +288,30 @@ export interface ApplyCheckpoint {
   pendingCreates: Record<string, ApplyCheckpointCreateIntent>;
   pendingUpdates: Record<string, ApplyCheckpointUpdateIntent>;
   lakehouseTables?: Record<string, ApplyCheckpointLakehouseTables>;
+  oneLakeArtifacts?: Record<string, ApplyCheckpointOneLakeArtifacts>;
+}
+
+export interface ApplyCheckpointOneLakeArtifact {
+  operationId: string;
+  operationHash: string;
+  fileName: string;
+  oneLakePath: string;
+  contentHash: string;
+  sizeBytes: number;
+  phase: "upload-submitting" | "verified";
+  submittedAt?: string;
+  verifiedAt?: string;
+  updatedAt: string;
+}
+
+export interface ApplyCheckpointOneLakeArtifacts {
+  logicalId: string;
+  targetLakehouseLogicalId: string;
+  targetLakehouseId: string;
+  stagingHash: string;
+  artifacts: Record<string, ApplyCheckpointOneLakeArtifact>;
+  completedAt?: string;
+  updatedAt: string;
 }
 
 export interface ApplyCheckpointLakehouseTables {

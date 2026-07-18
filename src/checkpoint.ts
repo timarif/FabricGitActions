@@ -39,6 +39,7 @@ export function loadCheckpoint(
     pendingCreates: parsed.pendingCreates ?? {},
     pendingUpdates: parsed.pendingUpdates ?? {},
     lakehouseTables: parsed.lakehouseTables ?? {},
+    oneLakeArtifacts: parsed.oneLakeArtifacts ?? {},
   };
   assertCheckpointMatchesPlan(checkpoint, approvedPlan);
   return checkpoint;
@@ -57,6 +58,7 @@ export function createCheckpoint(plan: DeploymentPlan): ApplyCheckpoint {
     pendingCreates: {},
     pendingUpdates: {},
     lakehouseTables: {},
+    oneLakeArtifacts: {},
   };
 }
 
@@ -288,6 +290,76 @@ function assertCheckpointMatchesPlan(
       );
     }
   }
+  for (const [logicalId, state] of Object.entries(
+    checkpoint.oneLakeArtifacts ?? {},
+  )) {
+    const planned = plannedItems.get(logicalId);
+    const staging = planned?.sparkJobArtifacts;
+    if (
+      !planned ||
+      planned.type !== "SparkJobDefinition" ||
+      !staging ||
+      state.logicalId !== logicalId ||
+      state.targetLakehouseLogicalId !==
+        staging.targetLakehouseLogicalId ||
+      state.stagingHash !== staging.stagingHash
+    ) {
+      throw new Error(
+        `Checkpoint OneLake artifact state '${logicalId}' does not match the approved deployment plan.`,
+      );
+    }
+    const expectedTargetId =
+      staging.targetBinding === "physical"
+        ? staging.targetLakehousePhysicalId
+        : checkpoint.completedItems[
+            staging.targetLakehouseLogicalId
+          ]?.physicalId;
+    if (!expectedTargetId || state.targetLakehouseId !== expectedTargetId) {
+      throw new Error(
+        `Checkpoint OneLake artifact target '${logicalId}' does not match the approved Lakehouse binding.`,
+      );
+    }
+    const approvedArtifacts = new Map(
+      staging.artifacts.map((artifact) => [
+        artifact.operationId,
+        artifact,
+      ]),
+    );
+    if (
+      Object.keys(state.artifacts).length > approvedArtifacts.size ||
+      !Object.entries(state.artifacts).every(
+        ([operationId, artifact]) => {
+          const approved = approvedArtifacts.get(operationId);
+          return (
+            approved !== undefined &&
+            artifact.operationId === operationId &&
+            artifact.operationHash === approved.operationHash &&
+            artifact.fileName === approved.fileName &&
+            artifact.oneLakePath === approved.oneLakePath &&
+            artifact.contentHash === approved.contentHash &&
+            artifact.sizeBytes === approved.sizeBytes &&
+            (artifact.phase !== "upload-submitting" ||
+              approved.action === "create")
+          );
+        },
+      )
+    ) {
+      throw new Error(
+        `Checkpoint OneLake artifact operations '${logicalId}' do not match the approved deployment plan.`,
+      );
+    }
+    if (
+      state.completedAt &&
+      (Object.keys(state.artifacts).length !== approvedArtifacts.size ||
+        Object.values(state.artifacts).some(
+          (artifact) => artifact.phase !== "verified",
+        ))
+    ) {
+      throw new Error(
+        `Checkpoint OneLake artifact completion '${logicalId}' is incomplete.`,
+      );
+    }
+  }
 }
 
 function checkpointProofMatchesPlan(
@@ -340,6 +412,10 @@ function isCheckpoint(value: unknown): value is ApplyCheckpoint {
       (checkpoint.lakehouseTables !== null &&
         typeof checkpoint.lakehouseTables === "object" &&
         !Array.isArray(checkpoint.lakehouseTables))) &&
+    (checkpoint.oneLakeArtifacts === undefined ||
+      (checkpoint.oneLakeArtifacts !== null &&
+        typeof checkpoint.oneLakeArtifacts === "object" &&
+        !Array.isArray(checkpoint.oneLakeArtifacts))) &&
     (checkpoint.workspace === undefined ||
       isCheckpointWorkspace(checkpoint.workspace)) &&
     (checkpoint.sourceCommit === undefined ||
@@ -362,7 +438,81 @@ function isCheckpoint(value: unknown): value is ApplyCheckpoint {
       Object.entries(checkpoint.lakehouseTables ?? {}).every(
         ([logicalId, state]) =>
           isCheckpointLakehouseTables(logicalId, state),
+      ) &&
+      Object.entries(checkpoint.oneLakeArtifacts ?? {}).every(
+        ([logicalId, state]) =>
+          isCheckpointOneLakeArtifacts(logicalId, state),
       )
+    );
+  }
+
+  function isCheckpointOneLakeArtifacts(
+    logicalId: string,
+    value: unknown,
+  ): boolean {
+    if (value === null || typeof value !== "object" || Array.isArray(value)) {
+      return false;
+    }
+    const state = value as Record<string, unknown>;
+    return (
+      state.logicalId === logicalId &&
+      typeof state.targetLakehouseLogicalId === "string" &&
+      typeof state.targetLakehouseId === "string" &&
+      /^[a-f0-9]{64}$/.test(String(state.stagingHash)) &&
+      state.artifacts !== null &&
+      typeof state.artifacts === "object" &&
+      !Array.isArray(state.artifacts) &&
+      Object.entries(
+        state.artifacts as Record<string, unknown>,
+      ).every(([operationId, artifact]) =>
+        isCheckpointOneLakeArtifact(operationId, artifact),
+      ) &&
+      (state.completedAt === undefined ||
+        (typeof state.completedAt === "string" &&
+          !Number.isNaN(Date.parse(state.completedAt)))) &&
+      (state.completedAt === undefined ||
+        Object.values(
+          state.artifacts as Record<
+            string,
+            { phase?: unknown }
+          >,
+        ).every((artifact) => artifact.phase === "verified")) &&
+      typeof state.updatedAt === "string" &&
+      !Number.isNaN(Date.parse(state.updatedAt))
+    );
+  }
+
+  function isCheckpointOneLakeArtifact(
+    operationId: string,
+    value: unknown,
+  ): boolean {
+    if (value === null || typeof value !== "object" || Array.isArray(value)) {
+      return false;
+    }
+    const artifact = value as Record<string, unknown>;
+    return (
+      artifact.operationId === operationId &&
+      /^[a-f0-9]{64}$/.test(String(artifact.operationHash)) &&
+      typeof artifact.fileName === "string" &&
+      typeof artifact.oneLakePath === "string" &&
+      /^[a-f0-9]{64}$/.test(String(artifact.contentHash)) &&
+      typeof artifact.sizeBytes === "number" &&
+      Number.isSafeInteger(artifact.sizeBytes) &&
+      artifact.sizeBytes >= 0 &&
+      (artifact.phase === "upload-submitting" ||
+        artifact.phase === "verified") &&
+      (artifact.submittedAt === undefined ||
+        (typeof artifact.submittedAt === "string" &&
+          !Number.isNaN(Date.parse(artifact.submittedAt)))) &&
+      (artifact.verifiedAt === undefined ||
+        (typeof artifact.verifiedAt === "string" &&
+          !Number.isNaN(Date.parse(artifact.verifiedAt)))) &&
+      (artifact.phase !== "upload-submitting" ||
+        typeof artifact.submittedAt === "string") &&
+      (artifact.phase !== "verified" ||
+        typeof artifact.verifiedAt === "string") &&
+      typeof artifact.updatedAt === "string" &&
+      !Number.isNaN(Date.parse(artifact.updatedAt))
     );
   }
 

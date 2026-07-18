@@ -120,4 +120,74 @@ describe("approved plan loading", () => {
       "Approved plan hash is invalid",
     );
   });
+
+  it("validates Spark Job OneLake artifact staging payloads", () => {
+    const root = mkdtempSync(path.join(tmpdir(), "fabric-plan-"));
+    const planPath = path.join(root, "plan.json");
+    const plan = createPlan();
+    plan.items[0] = {
+      ...plan.items[0]!,
+      logicalId: "sparkJob",
+      type: "SparkJobDefinition",
+      action: "create",
+      reason: "create",
+      observedStateHash: "absent",
+      sparkJobArtifacts: {
+        targetLakehouseLogicalId: "bronze",
+        targetLakehousePhysicalId:
+          "22222222-2222-2222-2222-222222222222",
+        targetBinding: "physical",
+        oneLakeDfsEndpoint:
+          "https://onelake.dfs.fabric.microsoft.com",
+        oneLakeBlobEndpoint:
+          "https://onelake.blob.fabric.microsoft.com",
+        stagingHash: "a".repeat(64),
+        artifacts: [
+          {
+            action: "create",
+            kind: "executable",
+            operationId: "main.jar:proof",
+            operationHash: "b".repeat(64),
+            fileName: "main.jar",
+            relativeSourcePath: "definition/main.jar",
+            contentHash: "c".repeat(64),
+            sizeBytes: 42,
+            oneLakePath: `Files/.fabric-deploy/sample/dev/sparkJob/${"c".repeat(64)}/main.jar`,
+            abfssUri:
+              "abfss://11111111-1111-1111-1111-111111111111@onelake.dfs.fabric.microsoft.com/22222222-2222-2222-2222-222222222222/Files/main.jar",
+            observedHash: "absent",
+            reason: "absent",
+          },
+        ],
+      },
+    };
+    plan.stages = [["sparkJob"]];
+    const approved = rehashPlan(plan);
+    writeFileSync(planPath, JSON.stringify(approved), "utf8");
+    expect(
+      loadApprovedPlan(planPath).items[0]?.sparkJobArtifacts,
+    ).toBeDefined();
+
+    approved.items[0]!.sparkJobArtifacts!.artifacts[0]!.relativeSourcePath =
+      "definition/libs/main.jar";
+    const invalidExecutablePath = rehashPlan(approved);
+    writeFileSync(
+      planPath,
+      JSON.stringify(invalidExecutablePath),
+      "utf8",
+    );
+    expect(() => loadApprovedPlan(planPath)).toThrow(
+      "invalid structure",
+    );
+
+    approved.items[0]!.sparkJobArtifacts!.artifacts[0]!.relativeSourcePath =
+      "definition/main.jar";
+    approved.items[0]!.sparkJobArtifacts!.targetBinding =
+      "symbolic";
+    const invalid = rehashPlan(approved);
+    writeFileSync(planPath, JSON.stringify(invalid), "utf8");
+    expect(() => loadApprovedPlan(planPath)).toThrow(
+      "invalid structure",
+    );
+  });
 });

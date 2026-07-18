@@ -20,8 +20,10 @@ import { LakehouseTablesAdapter } from "./fabric/lakehouse-tables";
 import { buildLakehouseLivyApiEndpoints } from "./fabric/livy";
 import { enrichPlanWithFabric } from "./fabric/live-planner";
 import { NotebookAdapter } from "./fabric/notebook";
+import { OneLakeArtifactStager } from "./fabric/onelake-artifacts";
 import { PipelineAdapter } from "./fabric/pipeline";
 import { SparkCustomPoolAdapter } from "./fabric/spark-custom-pool";
+import { assertSparkJobArtifactEndpoints } from "./fabric/spark-job-artifacts";
 import { SparkJobAdapter } from "./fabric/spark-job";
 import { WorkspaceAdapter } from "./fabric/workspace";
 import { loadManifest } from "./manifest";
@@ -55,6 +57,7 @@ export async function run(): Promise<void> {
         "https://api.fabric.microsoft.com",
       core.getInput("onelake-endpoint") ||
         "https://onelake.dfs.fabric.microsoft.com",
+      core.getInput("onelake-blob-endpoint") || undefined,
     );
     const planFile = core.getInput("plan-file") || "fabric-plan.json";
     const sourceCommit = process.env.GITHUB_SHA || undefined;
@@ -99,6 +102,15 @@ export async function run(): Promise<void> {
         { label: "Result file", filePath: resultFile },
       ]);
       approvedPlan = loadApprovedPlan(approvedPlanFile);
+      for (const item of approvedPlan.items) {
+        if (item.sparkJobArtifacts) {
+          assertSparkJobArtifactEndpoints(
+            item.sparkJobArtifacts,
+            endpoints.oneLakeEndpoint,
+            endpoints.oneLakeBlobEndpoint,
+          );
+        }
+      }
       const itemDirectories = Object.values(loadedManifest.itemDirectories);
       assertOutputPathOutsideItems(
         checkpointFile,
@@ -141,6 +153,7 @@ export async function run(): Promise<void> {
     let sparkCustomPoolAdapter: SparkCustomPoolAdapter | undefined;
     let workspaceAdapter: WorkspaceAdapter | undefined;
     let lakehouseTablesAdapter: LakehouseTablesAdapter | undefined;
+    let oneLakeArtifactStager: OneLakeArtifactStager | undefined;
     if ((mode === "plan" || mode === "apply") && authMode !== "none") {
       const clientSecret = core.getInput("client-secret") || undefined;
       if (clientSecret) {
@@ -173,6 +186,11 @@ export async function run(): Promise<void> {
       pipelineAdapter = new PipelineAdapter(client);
       sparkCustomPoolAdapter = new SparkCustomPoolAdapter(client);
       workspaceAdapter = new WorkspaceAdapter(client);
+      oneLakeArtifactStager = new OneLakeArtifactStager({
+        dfsEndpoint: endpoints.oneLakeEndpoint,
+        blobEndpoint: endpoints.oneLakeBlobEndpoint,
+        tokenProvider,
+      });
       plan = await enrichPlanWithFabric(plan, loadedManifest, {
         workspace: workspaceAdapter,
         lakehouse: lakehouseAdapter,
@@ -182,6 +200,11 @@ export async function run(): Promise<void> {
         pipeline: pipelineAdapter,
         sparkCustomPool: sparkCustomPoolAdapter,
         lakehouseTables: lakehouseTablesAdapter,
+        oneLakeArtifacts: {
+          dfsEndpoint: endpoints.oneLakeEndpoint,
+          blobEndpoint: endpoints.oneLakeBlobEndpoint,
+          stager: oneLakeArtifactStager,
+        },
       });
     } else if (mode === "apply") {
       throw new Error("apply mode requires Fabric authentication.");
@@ -235,7 +258,8 @@ export async function run(): Promise<void> {
         !pipelineAdapter ||
         !sparkCustomPoolAdapter ||
         !workspaceAdapter
-        || !lakehouseTablesAdapter
+        || !lakehouseTablesAdapter ||
+        !oneLakeArtifactStager
       ) {
         throw new Error("Fabric adapters were not initialized for apply mode.");
       }
@@ -251,6 +275,9 @@ export async function run(): Promise<void> {
         sparkCustomPoolAdapter,
         workspaceAdapter,
         lakehouseTablesAdapter,
+        oneLakeArtifactStager,
+        oneLakeDfsEndpoint: endpoints.oneLakeEndpoint,
+        oneLakeBlobEndpoint: endpoints.oneLakeBlobEndpoint,
         allowCreate: readBooleanInput("allow-create"),
         allowUpdate: readBooleanInput("allow-update"),
         allowWorkspaceCreate: readBooleanInput(
@@ -264,6 +291,9 @@ export async function run(): Promise<void> {
         ),
         allowLakehouseTableCreate: readBooleanInput(
           "allow-lakehouse-table-create",
+        ),
+        allowOneLakeArtifactCreate: readBooleanInput(
+          "allow-onelake-artifact-create",
         ),
         checkpointFile,
         resultFile,

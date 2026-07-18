@@ -226,6 +226,27 @@ export async function writeJobSummary(plan: DeploymentPlan): Promise<void> {
       ...tableOperations,
     ]);
   }
+  const artifactOperations = plan.items.flatMap((item) =>
+    (item.sparkJobArtifacts?.artifacts ?? []).map((artifact) => [
+      item.logicalId,
+      artifact.fileName,
+      artifact.action,
+      artifact.oneLakePath,
+      artifact.reason,
+    ]),
+  );
+  if (artifactOperations.length > 0) {
+    core.summary.addHeading("OneLake artifact operations", 2).addTable([
+      [
+        { data: "Spark Job", header: true },
+        { data: "Artifact", header: true },
+        { data: "Action", header: true },
+        { data: "OneLake path", header: true },
+        { data: "Reason", header: true },
+      ],
+      ...artifactOperations,
+    ]);
+  }
 
   await core.summary.write();
 }

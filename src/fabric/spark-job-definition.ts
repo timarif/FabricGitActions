@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import {
   existsSync,
   readFileSync,
@@ -11,6 +12,7 @@ import type {
   FabricDefinition,
   FabricDefinitionPart,
 } from "./definition";
+import { MAX_ONELAKE_SINGLE_UPLOAD_BYTES } from "./onelake-artifacts";
 
 const CONFIG_PATH = "SparkJobDefinitionV1.json";
 const CONFIG_PROPERTIES = new Set([
@@ -25,11 +27,31 @@ const CONFIG_PROPERTIES = new Set([
   "environmentArtifactId",
 ]);
 
+export interface SparkJobArtifactSource {
+  kind: "executable" | "library";
+  fileName: string;
+  relativePath: string;
+  sourcePath: string;
+  contentHash: string;
+  sizeBytes: number;
+}
+
+export interface LoadedSparkJobDefinition {
+  definition: FabricDefinition;
+  artifacts: SparkJobArtifactSource[];
+}
+
 export function loadSparkJobDefinition(
   itemDirectory: string,
 ): FabricDefinition {
+  return loadSparkJobDefinitionBundle(itemDirectory).definition;
+}
+
+export function loadSparkJobDefinitionBundle(
+  itemDirectory: string,
+): LoadedSparkJobDefinition {
   const definitionDirectory = path.join(itemDirectory, "definition");
-  const mainFiles = ["main.py", "main.scala"]
+  const mainFiles = ["main.py", "main.jar"]
     .map((name) => path.join(definitionDirectory, name))
     .filter(
       (filePath) =>
@@ -37,12 +59,13 @@ export function loadSparkJobDefinition(
     );
   if (mainFiles.length !== 1) {
     throw new Error(
-      "Spark Job Definition must include exactly one definition/main.py or definition/main.scala file.",
+      "Spark Job Definition must include exactly one definition/main.py or definition/main.jar file.",
     );
   }
   const mainFile = mainFiles[0]!;
   const mainName = path.basename(mainFile);
-  const language = mainName.endsWith(".scala") ? "Scala" : "Python";
+  const language =
+    mainName.endsWith(".jar") ? "Scala/Java" : "Python";
   const libraryDirectory = path.join(definitionDirectory, "libs");
   const libraryFiles = (
     existsSync(libraryDirectory)
@@ -57,6 +80,22 @@ export function loadSparkJobDefinition(
   const libraryNames = libraryFiles
     .map((filePath) => path.basename(filePath))
     .sort(compareCanonicalStrings);
+  const stagedLibraryFiles = libraryFiles.filter(
+    (filePath) => path.extname(filePath).toLowerCase() === ".jar",
+  );
+  const inlineLibraryFiles = libraryFiles.filter(
+    (filePath) => path.extname(filePath).toLowerCase() !== ".jar",
+  );
+  if (language === "Python" && stagedLibraryFiles.length > 0) {
+    throw new Error(
+      "Spark Job Definition JAR artifacts require definition/main.jar and language 'Scala/Java'; Fabric rejects JAR libraries for Python jobs.",
+    );
+  }
+  if (language === "Scala/Java" && inlineLibraryFiles.length > 0) {
+    throw new Error(
+      "Spark Job Definition Scala/Java libraries must be JAR files.",
+    );
+  }
   const invalidLibraryNames = libraryNames.filter(
     (name) => !/^[A-Za-z0-9._~-]+$/.test(name),
   );
@@ -71,14 +110,6 @@ export function loadSparkJobDefinition(
       `Spark Job Definition has duplicate library file names: ${duplicateLibraryNames.join(", ")}.`,
     );
   }
-  for (const libraryFile of libraryFiles) {
-    if (path.extname(libraryFile).toLowerCase() === ".jar") {
-      throw new Error(
-        "SparkJobDefinitionV2 does not support inline .jar libraries; use an external abfss:// URI.",
-      );
-    }
-  }
-
   const configPath = path.join(definitionDirectory, CONFIG_PATH);
   const sourceConfig = existsSync(configPath)
     ? parseJsonObject(readFileSync(configPath, "utf8"), CONFIG_PATH)
@@ -99,16 +130,20 @@ export function loadSparkJobDefinition(
       ).toString("base64"),
       payloadType: "InlineBase64",
     },
-    {
-      path: `Main/${mainName}`,
-      payload: readFileSync(mainFile).toString("base64"),
-      payloadType: "InlineBase64",
-    },
-    ...libraryFiles.map((filePath) => ({
-      path: `Libs/${path.basename(filePath)}`,
-      payload: readFileSync(filePath).toString("base64"),
-      payloadType: "InlineBase64" as const,
-    })),
+    ...(language === "Python"
+      ? [
+          {
+            path: `Main/${mainName}`,
+            payload: readFileSync(mainFile).toString("base64"),
+            payloadType: "InlineBase64" as const,
+          },
+          ...inlineLibraryFiles.map((filePath) => ({
+            path: `Libs/${path.basename(filePath)}`,
+            payload: readFileSync(filePath).toString("base64"),
+            payloadType: "InlineBase64" as const,
+          })),
+        ]
+      : []),
   ];
   const platformPath = path.join(definitionDirectory, ".platform");
   if (existsSync(platformPath) && statSync(platformPath).isFile()) {
@@ -127,13 +162,69 @@ export function loadSparkJobDefinition(
       ...(existsSync(platformPath) ? [platformPath] : []),
     ]),
   );
-  validateSparkJobDefinition({ format: "SparkJobDefinitionV2", parts });
-  return {
+  const stagedFiles = [
+    ...(language === "Scala/Java"
+      ? [{ filePath: mainFile, kind: "executable" as const }]
+      : []),
+    ...stagedLibraryFiles.map((filePath) => ({
+      filePath,
+      kind: "library" as const,
+    })),
+  ];
+  const duplicateArtifactNames = findDuplicates(
+    stagedFiles.map(({ filePath }) => path.basename(filePath)),
+  );
+  if (duplicateArtifactNames.length > 0) {
+    throw new Error(
+      `Spark Job Definition has duplicate staged artifact file names: ${duplicateArtifactNames.join(", ")}.`,
+    );
+  }
+  const artifacts = stagedFiles
+    .map(({ filePath, kind }) => {
+      const sizeBytes = statSync(filePath).size;
+      if (sizeBytes > MAX_ONELAKE_SINGLE_UPLOAD_BYTES) {
+        throw new Error(
+          `Spark Job Definition staged JAR '${path.basename(
+            filePath,
+          )}' exceeds the 512 MiB OneLake single-upload limit.`,
+        );
+      }
+      const bytes = readFileSync(filePath);
+      return {
+        kind,
+        fileName: path.basename(filePath),
+        relativePath: path
+          .relative(itemDirectory, filePath)
+          .replaceAll("\\", "/"),
+        sourcePath: filePath,
+        contentHash: createHash("sha256").update(bytes).digest("hex"),
+        sizeBytes,
+      };
+    })
+    .sort((left, right) =>
+      compareCanonicalStrings(left.fileName, right.fileName),
+    );
+  const definition = {
     format: "SparkJobDefinitionV2",
     parts: parts.sort((left, right) =>
       compareCanonicalStrings(left.path, right.path),
     ),
   };
+  validateSparkJobDefinition(
+    definition,
+    false,
+    new Set(
+      artifacts
+        .filter((artifact) => artifact.kind === "library")
+        .map((artifact) => artifact.fileName),
+    ),
+    new Set(
+      artifacts
+        .filter((artifact) => artifact.kind === "executable")
+        .map((artifact) => artifact.fileName),
+    ),
+  );
+  return { definition, artifacts };
 }
 
 export function hashSparkJobDefinition(
@@ -166,14 +257,19 @@ export function sparkJobIncludesPlatformPart(
 export function sparkJobDefinitionFormat(
   definition: FabricDefinition,
 ): "SparkJobDefinitionV2" {
-  validateSparkJobDefinition(definition);
+  const format = definition.format ?? "SparkJobDefinitionV2";
+  if (format !== "SparkJobDefinitionV2") {
+    throw new Error(
+      `Unsupported Spark Job Definition format '${format}'.`,
+    );
+  }
   return "SparkJobDefinitionV2";
 }
 
 function buildConfig(
   source: Record<string, unknown>,
   mainName: string,
-  language: "Python" | "Scala",
+  language: "Python" | "Scala/Java",
   libraryNames: string[],
 ): Record<string, unknown> {
   const executableFile = source.executableFile ?? mainName;
@@ -224,6 +320,33 @@ function buildConfig(
         `Spark Job Definition library '${value}' has no matching definition/libs file.`,
       );
     }
+    const extension = path.extname(
+      value.startsWith("abfss://")
+        ? new URL(value).pathname
+        : value,
+    ).toLowerCase();
+    if (language === "Python" && extension === ".jar") {
+      throw new Error(
+        "Spark Job Definition Python jobs cannot reference JAR libraries; use definition/main.jar with language 'Scala/Java'.",
+      );
+    }
+    if (language === "Scala/Java" && extension !== ".jar") {
+      throw new Error(
+        "Spark Job Definition Scala/Java libraries must use .jar URIs.",
+      );
+    }
+  }
+
+  const mainClass = readOptionalString(source.mainClass) ?? "";
+  if (language === "Scala/Java" && mainClass.trim() === "") {
+    throw new Error(
+      "Spark Job Definition definition/main.jar requires a nonempty mainClass.",
+    );
+  }
+  if (language === "Python" && mainClass !== "") {
+    throw new Error(
+      "Spark Job Definition Python jobs must not define mainClass.",
+    );
   }
 
   const additionalLakehouseIds =
@@ -242,7 +365,7 @@ function buildConfig(
     executableFile: mainName,
     defaultLakehouseArtifactId:
       readOptionalString(source.defaultLakehouseArtifactId) ?? "",
-    mainClass: readOptionalString(source.mainClass) ?? "",
+    mainClass,
     additionalLakehouseIds,
     retryPolicy: source.retryPolicy ?? null,
     commandLineArguments:
@@ -257,6 +380,8 @@ function buildConfig(
 function validateSparkJobDefinition(
   definition: FabricDefinition,
   allowExternalExecutable = false,
+  allowedStagedArtifactNames: ReadonlySet<string> = new Set(),
+  allowedStagedExecutableNames: ReadonlySet<string> = new Set(),
 ): void {
   const format = definition.format ?? "SparkJobDefinitionV2";
   if (format !== "SparkJobDefinitionV2") {
@@ -270,26 +395,68 @@ function validateSparkJobDefinition(
   const mainParts = definition.parts.filter((part) =>
     part.path.startsWith("Main/"),
   );
+  if (configParts.length !== 1) {
+    throw new Error(
+      "SparkJobDefinitionV2 requires one SparkJobDefinitionV1.json part.",
+    );
+  }
+  const config = parseJsonPart(configParts[0]!, CONFIG_PATH);
+  const executableFile = config.executableFile;
+  const hasExternalExecutable =
+    typeof executableFile === "string" &&
+    executableFile.startsWith("abfss://");
+  const hasStagedExecutable =
+    typeof executableFile === "string" &&
+    allowedStagedExecutableNames.has(executableFile);
   if (
-    configParts.length !== 1 ||
     mainParts.length > 1 ||
-    (!allowExternalExecutable && mainParts.length !== 1)
+    (!allowExternalExecutable &&
+      mainParts.length !== 1 &&
+      !hasExternalExecutable &&
+      !hasStagedExecutable)
   ) {
     throw new Error(
       allowExternalExecutable
         ? "SparkJobDefinitionV2 requires one SparkJobDefinitionV1.json part and at most one Main/ part."
-        : "SparkJobDefinitionV2 requires one SparkJobDefinitionV1.json part and one Main/ part.",
+        : "SparkJobDefinitionV2 requires one Main/ part or an approved external executable.",
     );
   }
-  const config = parseJsonPart(configParts[0]!, CONFIG_PATH);
+  const inlineLibraryNames = new Set(
+    definition.parts
+      .filter((part) => part.path.startsWith("Libs/"))
+      .map((part) => part.path.slice("Libs/".length)),
+  );
+  const libraryUris = config.additionalLibraryUris;
+  if (
+    libraryUris !== undefined &&
+    (!Array.isArray(libraryUris) ||
+      !libraryUris.every(
+        (value) => typeof value === "string" && value.length > 0,
+      ))
+  ) {
+    throw new Error(
+      "Spark Job Definition additionalLibraryUris must be an array of nonempty strings.",
+    );
+  }
+  for (const libraryUri of libraryUris ?? []) {
+    if (
+      !libraryUri.startsWith("abfss://") &&
+      !inlineLibraryNames.has(libraryUri) &&
+      !allowedStagedArtifactNames.has(libraryUri)
+    ) {
+      throw new Error(
+        `Spark Job Definition library '${libraryUri}' is neither inline nor an external abfss:// URI.`,
+      );
+    }
+  }
   if (mainParts.length === 0) {
-    const executableFile = config.executableFile;
     if (
       executableFile !== null &&
       executableFile !== undefined &&
       !(
         typeof executableFile === "string" &&
-        executableFile.startsWith("abfss://")
+        (executableFile.startsWith("abfss://") ||
+          allowedStagedExecutableNames.has(executableFile))
       )
     ) {
       throw new Error(

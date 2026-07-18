@@ -18,7 +18,8 @@ import { loadNotebookDefinition } from "./fabric/notebook-definition";
 import { loadPipelineDefinition } from "./fabric/pipeline-definition";
 import { loadLakehouseTablesDefinition } from "./fabric/lakehouse-tables-definition";
 import { loadSparkCustomPoolDefinition } from "./fabric/spark-custom-pool-definition";
-import { loadSparkJobDefinition } from "./fabric/spark-job-definition";
+import { requireSparkJobArtifactTarget } from "./fabric/spark-job-artifacts";
+import { loadSparkJobDefinitionBundle } from "./fabric/spark-job-definition";
 import { validateLogicalReferenceDeclarations } from "./fabric/logical-references";
 import { loadAndValidateItemDefinition } from "./item-definition";
 import { deploymentSchema } from "./schema";
@@ -119,15 +120,27 @@ export function loadManifest(
         ),
       ]),
   );
-  const sparkJobDefinitions = Object.fromEntries(
+  const sparkJobBundles = Object.fromEntries(
     manifest.items
       .filter((item) => item.type === "SparkJobDefinition")
       .map((item) => [
         item.logicalId,
-        loadSparkJobDefinition(
+        loadSparkJobDefinitionBundle(
           itemContent.directories[item.logicalId] ?? "",
         ),
       ]),
+  );
+  const sparkJobDefinitions = Object.fromEntries(
+    Object.entries(sparkJobBundles).map(([logicalId, bundle]) => [
+      logicalId,
+      bundle.definition,
+    ]),
+  );
+  const sparkJobArtifactSources = Object.fromEntries(
+    Object.entries(sparkJobBundles).map(([logicalId, bundle]) => [
+      logicalId,
+      bundle.artifacts,
+    ]),
   );
   const pipelineDefinitions = Object.fromEntries(
     manifest.items
@@ -149,6 +162,11 @@ export function loadManifest(
           options.variables ?? {},
         ),
       ]),
+  );
+  validateSparkJobArtifactTargets(
+    manifest,
+    itemDefinitions,
+    sparkJobArtifactSources,
   );
   validateEnvironmentPlatformMetadata(
     manifest,
@@ -196,6 +214,10 @@ export function loadManifest(
             notebookDefinitions[item.logicalId] ?? null,
           capturedSparkJobDefinition:
             sparkJobDefinitions[item.logicalId] ?? null,
+          capturedSparkJobArtifacts:
+            sparkJobArtifactSources[item.logicalId]?.map(
+              ({ sourcePath: _sourcePath, ...artifact }) => artifact,
+            ) ?? null,
           capturedPipelineDefinition:
             pipelineDefinitions[item.logicalId] ?? null,
           capturedSparkCustomPoolDefinition:
@@ -219,10 +241,41 @@ export function loadManifest(
     environmentDefinitions,
     notebookDefinitions,
     sparkJobDefinitions,
+    sparkJobArtifactSources,
     pipelineDefinitions,
     sparkCustomPoolDefinitions,
     lakehouseTablesDefinitions,
   };
+}
+
+function validateSparkJobArtifactTargets(
+  manifest: DeploymentManifest,
+  definitions: LoadedManifest["itemDefinitions"],
+  artifactSources: NonNullable<
+    LoadedManifest["sparkJobArtifactSources"]
+  >,
+): void {
+  for (const item of manifest.items) {
+    if (item.type !== "SparkJobDefinition") {
+      continue;
+    }
+    const sources = artifactSources[item.logicalId] ?? [];
+    if (sources.length === 0) {
+      continue;
+    }
+    const definition = definitions[item.logicalId];
+    if (!definition) {
+      throw new Error(
+        `Spark Job Definition declarations are missing for '${item.logicalId}'.`,
+      );
+    }
+    const bindings = validateLogicalReferenceDeclarations({
+      item,
+      definition,
+      itemGraph: manifest.items,
+    });
+    requireSparkJobArtifactTarget(item.logicalId, bindings, sources);
+  }
 }
 
 function validateWorkspaceDefinition(

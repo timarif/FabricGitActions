@@ -19,6 +19,11 @@ import type { NotebookAdapter } from "./notebook";
 import type { PipelineAdapter } from "./pipeline";
 import type { SparkCustomPoolAdapter } from "./spark-custom-pool";
 import type { SparkJobAdapter } from "./spark-job";
+import {
+  materializeSparkJobArtifactUris,
+  planSparkJobArtifacts,
+  requireSparkJobArtifactTarget,
+} from "./spark-job-artifacts";
 import type { WorkspaceAdapter } from "./workspace";
 import {
   materializeSparkJobDefinitionWithProof,
@@ -35,6 +40,11 @@ export interface FabricPlanAdapters {
   pipeline: Pick<PipelineAdapter, "plan">;
   sparkCustomPool: Pick<SparkCustomPoolAdapter, "plan">;
   lakehouseTables?: Pick<LakehouseTablesAdapter, "plan">;
+  oneLakeArtifacts?: {
+    dfsEndpoint: string;
+    blobEndpoint: string;
+    stager: Parameters<typeof planSparkJobArtifacts>[0]["stager"];
+  };
 }
 
 export async function enrichPlanWithFabric(
@@ -344,11 +354,13 @@ export async function enrichPlanWithFabric(
             : item.type === "SparkJobDefinition"
               ? await planSparkJob(
                   workspaceId,
+                  plan,
                   item,
                   desired,
                   loadedManifest,
                   plannedItems,
                   adapters.sparkJob,
+                  adapters.oneLakeArtifacts,
                 )
               : await adapters.pipeline.plan(
                   workspaceId,
@@ -363,9 +375,10 @@ export async function enrichPlanWithFabric(
       action: result.action,
       reason: result.reason,
       observedStateHash: result.observedStateHash,
-      ...(result.physicalId === undefined
-        ? {}
-        : { physicalId: result.physicalId }),
+      ...("physicalId" in result &&
+      typeof result.physicalId === "string"
+        ? { physicalId: result.physicalId }
+        : {}),
       ...("materializedDefinitionHash" in result &&
       typeof result.materializedDefinitionHash === "string"
         ? {
@@ -378,6 +391,10 @@ export async function enrichPlanWithFabric(
         ? {
             resolvedBindingsHash: result.resolvedBindingsHash,
           }
+        : {}),
+      ...("sparkJobArtifacts" in result &&
+      result.sparkJobArtifacts !== undefined
+        ? { sparkJobArtifacts: result.sparkJobArtifacts }
         : {}),
     });
   }
@@ -497,6 +514,7 @@ function validateManifestLogicalReferences(
 
 async function planSparkJob(
   workspaceId: string,
+  plan: DeploymentPlan,
   item: PlannedItem,
   desired: NonNullable<
     LoadedManifest["itemDefinitions"][string]
@@ -504,6 +522,7 @@ async function planSparkJob(
   loadedManifest: LoadedManifest,
   plannedItems: ReadonlyMap<string, PlannedItem>,
   adapter: FabricPlanAdapters["sparkJob"],
+  oneLakeArtifacts: FabricPlanAdapters["oneLakeArtifacts"],
 ) {
   const sourceDefinition =
     loadedManifest.sparkJobDefinitions[item.logicalId];
@@ -525,7 +544,17 @@ async function planSparkJob(
     definition: desired,
     itemGraph: loadedManifest.manifest.items,
   });
-  if (Object.keys(bindings).length === 0) {
+  const artifactSources =
+    loadedManifest.sparkJobArtifactSources?.[item.logicalId] ?? [];
+  const artifactTargetLogicalId = requireSparkJobArtifactTarget(
+    item.logicalId,
+    bindings,
+    artifactSources,
+  );
+  if (
+    Object.keys(bindings).length === 0 &&
+    artifactSources.length === 0
+  ) {
     return adapter.plan(workspaceId, desired, sourceDefinition);
   }
 
@@ -555,6 +584,73 @@ async function planSparkJob(
     };
   }
 
+  let sparkJobArtifacts;
+  if (artifactTargetLogicalId) {
+    const target = plannedItems.get(artifactTargetLogicalId);
+    if (!target || target.type !== "Lakehouse") {
+      return {
+        action: "blocked" as const,
+        reason: `Spark Job Definition '${desired.displayName}' cannot resolve its OneLake staging target '${artifactTargetLogicalId}'.`,
+        observedStateHash: sha256(stableJson(null)),
+      };
+    }
+    if (
+      target.action !== "create" &&
+      target.action !== "update" &&
+      target.action !== "no-op"
+    ) {
+      return {
+        action: "blocked" as const,
+        reason: `Spark Job Definition '${desired.displayName}' cannot stage artifacts while Lakehouse '${artifactTargetLogicalId}' is '${target.action}'.`,
+        observedStateHash: sha256(stableJson(null)),
+      };
+    }
+    if (target.action !== "create" && !target.physicalId) {
+      return {
+        action: "blocked" as const,
+        reason: `Spark Job Definition '${desired.displayName}' cannot stage artifacts because Lakehouse '${artifactTargetLogicalId}' has no physical ID.`,
+        observedStateHash: sha256(stableJson(null)),
+      };
+    }
+    sparkJobArtifacts = await planSparkJobArtifacts({
+      deploymentId: plan.deploymentId,
+      environment: plan.environment,
+      workspaceId,
+      logicalId: item.logicalId,
+      targetLakehouseLogicalId: artifactTargetLogicalId,
+      ...(target.action === "create"
+        ? {}
+        : { targetLakehousePhysicalId: target.physicalId }),
+      sources: artifactSources,
+      oneLakeDfsEndpoint:
+        oneLakeArtifacts?.dfsEndpoint ??
+        "https://onelake.dfs.fabric.microsoft.com",
+      oneLakeBlobEndpoint:
+        oneLakeArtifacts?.blobEndpoint ??
+        "https://onelake.blob.fabric.microsoft.com",
+      stager: oneLakeArtifacts?.stager,
+    });
+    const blockedArtifact = sparkJobArtifacts?.artifacts.find(
+      (artifact) => artifact.action === "blocked",
+    );
+    if (blockedArtifact) {
+      return {
+        action: "blocked" as const,
+        reason: blockedArtifact.reason,
+        observedStateHash: sha256(
+          stableJson(
+            sparkJobArtifacts?.artifacts.map((artifact) => ({
+              operationHash: artifact.operationHash,
+              action: artifact.action,
+              observedHash: artifact.observedHash,
+            })),
+          ),
+        ),
+        sparkJobArtifacts,
+      };
+    }
+  }
+
   if (unresolved.length > 0) {
     const unresolvedLogicalIds = [
       ...new Set(unresolved),
@@ -580,13 +676,31 @@ async function planSparkJob(
         `Spark Job Definition '${desired.displayName}' returned unsafe action '${unresolvedResult.action}' before logical dependency IDs were available.`,
       );
     }
-    return unresolvedResult;
+    return {
+      ...unresolvedResult,
+      ...(sparkJobArtifacts ? { sparkJobArtifacts } : {}),
+    };
   }
 
+  const artifactMaterializations =
+    sparkJobArtifacts && artifactTargetLogicalId
+      ? materializeSparkJobArtifactUris(
+          sparkJobArtifacts,
+          artifactSources,
+          oneLakeArtifacts?.dfsEndpoint ??
+            "https://onelake.dfs.fabric.microsoft.com",
+          workspaceId,
+          physicalIds[artifactTargetLogicalId]!,
+          plan.deploymentId,
+          plan.environment,
+          item.logicalId,
+        )
+      : [];
   const materialized = materializeSparkJobDefinitionWithProof(
     sourceDefinition,
     bindings,
     physicalIds,
+    artifactMaterializations,
   );
   return {
     ...(await adapter.plan(
@@ -597,5 +711,6 @@ async function planSparkJob(
     materializedDefinitionHash:
       materialized.materializedDefinitionHash,
     resolvedBindingsHash: materialized.resolvedBindingsHash,
+    ...(sparkJobArtifacts ? { sparkJobArtifacts } : {}),
   };
 }

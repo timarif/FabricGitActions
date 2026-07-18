@@ -380,7 +380,167 @@ describe("online Fabric planning", () => {
     });
   });
 
+  it("plans and materializes content-addressed Spark Job JAR staging", async () => {
+    const workspaceId = "11111111-1111-1111-1111-111111111111";
+    const lakehouseId = "22222222-2222-2222-2222-222222222222";
+    const contentHash = "a".repeat(64);
+    const sparkLoaded: LoadedManifest = {
+      manifestPath: "deployment.yaml",
+      manifestDirectory: ".",
+      sourceHash: "source",
+      resolvedHash: "resolved",
+      itemContentHashes: {
+        bronze: "lakehouse-content",
+        sparkJob: "content",
+      },
+      itemDirectories: {
+        bronze: "items/bronze",
+        sparkJob: "items/spark-job",
+      },
+      itemDefinitions: {
+        bronze: { displayName: "Bronze" },
+        sparkJob: {
+          displayName: "Spark",
+          references: { defaultLakehouse: "bronze" },
+        },
+      },
+      environmentDefinitions: {},
+      notebookDefinitions: {},
+      sparkJobDefinitions: {
+        sparkJob: {
+          format: "SparkJobDefinitionV2",
+          parts: [
+            {
+              path: "SparkJobDefinitionV1.json",
+              payload: Buffer.from(
+                JSON.stringify({
+                  executableFile: "main.jar",
+                  additionalLibraryUris: [],
+                  language: "Scala/Java",
+                  mainClass: "com.example.Main",
+                }),
+              ).toString("base64"),
+              payloadType: "InlineBase64",
+            },
+          ],
+        },
+      },
+      sparkJobArtifactSources: {
+        sparkJob: [
+          {
+            kind: "executable",
+            fileName: "main.jar",
+            relativePath: "definition/main.jar",
+            sourcePath: "C:\\repo\\definition\\main.jar",
+            contentHash,
+            sizeBytes: 42,
+          },
+        ],
+      },
+      pipelineDefinitions: {},
+      sparkCustomPoolDefinitions: {},
+      manifest: {
+        apiVersion: "fabric.deploy/v1alpha1",
+        kind: "FabricDeployment",
+        metadata: { deploymentId: "sample" },
+        workspace: { id: workspaceId },
+        items: [
+          {
+            logicalId: "bronze",
+            type: "Lakehouse",
+            path: "items/bronze",
+          },
+          {
+            logicalId: "sparkJob",
+            type: "SparkJobDefinition",
+            path: "items/spark-job",
+            dependsOn: ["bronze"],
+          },
+        ],
+      },
+    };
+    const offline = buildPlan(sparkLoaded, {
+      mode: "plan",
+      environment: "prod",
+    });
+    const fail = async () => {
+      throw new Error("Adapter should not be called.");
+    };
+    let plannedDefinition:
+      | LoadedManifest["sparkJobDefinitions"][string]
+      | undefined;
+
+    const online = await enrichPlanWithFabric(offline, sparkLoaded, {
+      lakehouse: {
+        plan: async () => ({
+          action: "no-op" as const,
+          reason: "exists",
+          physicalId: lakehouseId,
+          observedStateHash: "lakehouse-state",
+        }),
+      },
+      environment: { plan: fail },
+      notebook: { plan: fail },
+      sparkJob: {
+        plan: async (_workspace, _desired, definition) => {
+          plannedDefinition = definition;
+          return {
+            action: "create" as const,
+            reason: "absent",
+            observedStateHash: "absent",
+          };
+        },
+      },
+      pipeline: { plan: fail },
+      sparkCustomPool: { plan: fail },
+      oneLakeArtifacts: {
+        dfsEndpoint: "https://onelake.dfs.fabric.microsoft.com",
+        blobEndpoint:
+          "https://onelake.blob.fabric.microsoft.com",
+        stager: {
+          inspect: vi.fn(async () => ({
+            exists: false,
+            matches: false,
+            observedHash: "",
+          })),
+        },
+      },
+    });
+
+    expect(online.items[1]?.sparkJobArtifacts).toMatchObject({
+      targetLakehouseLogicalId: "bronze",
+      targetLakehousePhysicalId: lakehouseId,
+      targetBinding: "physical",
+      oneLakeDfsEndpoint:
+        "https://onelake.dfs.fabric.microsoft.com",
+      oneLakeBlobEndpoint:
+        "https://onelake.blob.fabric.microsoft.com",
+      artifacts: [
+        {
+          action: "create",
+          kind: "executable",
+          fileName: "main.jar",
+          contentHash,
+        },
+      ],
+    });
+    const configPart = plannedDefinition?.parts.find(
+      (part) => part.path === "SparkJobDefinitionV1.json",
+    );
+    expect(
+      JSON.parse(
+        Buffer.from(
+          configPart?.payload ?? "",
+          "base64",
+        ).toString("utf8"),
+      ).executableFile,
+    ).toBe(
+      `abfss://${workspaceId}@onelake.dfs.fabric.microsoft.com/${lakehouseId}/Files/.fabric-deploy/sample/prod/sparkJob/${contentHash}/main.jar`,
+    );
+  });
+
   it("approves only creation when referenced dependencies are also new", async () => {
+    const workspaceId = "11111111-1111-1111-1111-111111111111";
     const base: LoadedManifest = {
       manifestPath: "deployment.yaml",
       manifestDirectory: ".",
@@ -409,18 +569,30 @@ describe("online Fabric planning", () => {
           parts: [
             {
               path: "SparkJobDefinitionV1.json",
-              payload: Buffer.from("{}").toString("base64"),
-              payloadType: "InlineBase64",
-            },
-            {
-              path: "Main/main.py",
-              payload: Buffer.from("print('hello')\n").toString(
-                "base64",
-              ),
+              payload: Buffer.from(
+                JSON.stringify({
+                  executableFile: "main.jar",
+                  additionalLibraryUris: [],
+                  language: "Scala/Java",
+                  mainClass: "com.example.Main",
+                }),
+              ).toString("base64"),
               payloadType: "InlineBase64",
             },
           ],
         },
+      },
+      sparkJobArtifactSources: {
+        sparkJob: [
+          {
+            kind: "executable",
+            fileName: "main.jar",
+            relativePath: "definition/main.jar",
+            sourcePath: "C:\\repo\\definition\\main.jar",
+            contentHash: "a".repeat(64),
+            sizeBytes: 42,
+          },
+        ],
       },
       pipelineDefinitions: {},
       sparkCustomPoolDefinitions: {},
@@ -428,7 +600,7 @@ describe("online Fabric planning", () => {
         apiVersion: "fabric.deploy/v1alpha1",
         kind: "FabricDeployment",
         metadata: { deploymentId: "sample" },
-        workspace: { id: "workspace" },
+        workspace: { id: workspaceId },
         items: [
           {
             logicalId: "bronze",
@@ -479,12 +651,23 @@ describe("online Fabric planning", () => {
     );
 
     expect(unresolvedPlan).toHaveBeenCalledWith(
-      "workspace",
+      workspaceId,
       base.itemDefinitions.sparkJob,
       ["bronze"],
     );
     expect(online.items[1]).toMatchObject({
       action: "create",
+      sparkJobArtifacts: {
+        targetLakehouseLogicalId: "bronze",
+        targetBinding: "symbolic",
+        artifacts: [
+          {
+            action: "create",
+            kind: "executable",
+            fileName: "main.jar",
+          },
+        ],
+      },
     });
     expect(online.items[1]?.materializedDefinitionHash).toBeUndefined();
   });

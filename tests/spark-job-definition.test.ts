@@ -1,13 +1,21 @@
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  truncateSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
 import { describe, expect, it } from "vitest";
 
 import type { FabricDefinition } from "../src/fabric/definition";
+import { MAX_ONELAKE_SINGLE_UPLOAD_BYTES } from "../src/fabric/onelake-artifacts";
 import {
   hashSparkJobDefinition,
   loadSparkJobDefinition,
+  loadSparkJobDefinitionBundle,
+  sparkJobDefinitionFormat,
 } from "../src/fabric/spark-job-definition";
 
 function sparkJobDirectory(): string {
@@ -75,8 +83,8 @@ describe("Spark Job definitions", () => {
       recursive: true,
     });
     writeFileSync(
-      path.join(definitionDirectory, "main.scala"),
-      "println(\"hello\")\n",
+      path.join(definitionDirectory, "main.py"),
+      "print('hello')\n",
       "utf8",
     );
     writeFileSync(
@@ -101,7 +109,7 @@ describe("Spark Job definitions", () => {
     expect(definition.parts.map((part) => part.path)).toEqual([
       ".platform",
       "Libs/helper.py",
-      "Main/main.scala",
+      "Main/main.py",
       "SparkJobDefinitionV1.json",
     ]);
   });
@@ -159,7 +167,7 @@ describe("Spark Job definitions", () => {
         defaultLakehouseArtifactId: "lakehouse-id",
         commandLineArguments: "--date 2026-07-17",
         additionalLibraryUris: [
-          "abfss://workspace@onelake.dfs.fabric.microsoft.com/lakehouse/Files/app.jar",
+          "abfss://workspace@onelake.dfs.fabric.microsoft.com/lakehouse/Files/helper.py",
         ],
         language: "Python",
         environmentArtifactId: "environment-id",
@@ -264,7 +272,7 @@ describe("Spark Job definitions", () => {
     );
   });
 
-  it("allows external executable definitions only for observed state", () => {
+  it("allows an external executable definition", () => {
     const external: FabricDefinition = {
       format: "SparkJobDefinitionV2",
       parts: [
@@ -284,7 +292,7 @@ describe("Spark Job definitions", () => {
 
     expect(() =>
       hashSparkJobDefinition(external, false),
-    ).toThrow("one Main/ part");
+    ).not.toThrow();
     expect(() =>
       hashSparkJobDefinition(external, false, {
         allowExternalExecutable: true,
@@ -292,7 +300,7 @@ describe("Spark Job definitions", () => {
     ).not.toThrow();
   });
 
-  it("rejects inline jars and unsafe executable replacement", () => {
+  it("captures a JVM executable and JAR libraries for external staging", () => {
     const itemDirectory = sparkJobDirectory();
     const definitionDirectory = path.join(
       itemDirectory,
@@ -303,25 +311,112 @@ describe("Spark Job definitions", () => {
     });
 
     writeFileSync(
-      path.join(definitionDirectory, "main.py"),
-      "print('hello')\n",
+      path.join(definitionDirectory, "main.jar"),
+      "main-jar",
       "utf8",
     );
     writeFileSync(
-      path.join(definitionDirectory, "libs", "app.jar"),
-      "jar",
+      path.join(definitionDirectory, "libs", "helper.jar"),
+      "helper-jar",
+      "utf8",
+    );
+    writeFileSync(
+      path.join(
+        definitionDirectory,
+        "SparkJobDefinitionV1.json",
+      ),
+      JSON.stringify({
+        executableFile: "main.jar",
+        language: "Scala/Java",
+        mainClass: "com.example.Main",
+      }),
       "utf8",
     );
 
-    expect(() => loadSparkJobDefinition(itemDirectory)).toThrow(
-      "does not support inline .jar",
+    const bundle = loadSparkJobDefinitionBundle(itemDirectory);
+    const configPart = bundle.definition.parts.find(
+      (part) => part.path === "SparkJobDefinitionV1.json",
     );
+    expect(bundle.artifacts).toEqual([
+      expect.objectContaining({
+        kind: "library",
+        fileName: "helper.jar",
+        relativePath: "definition/libs/helper.jar",
+        sizeBytes: 10,
+      }),
+      expect.objectContaining({
+        kind: "executable",
+        fileName: "main.jar",
+        relativePath: "definition/main.jar",
+        sizeBytes: 8,
+      }),
+    ]);
+    expect(sparkJobDefinitionFormat(bundle.definition)).toBe(
+      "SparkJobDefinitionV2",
+    );
+    expect(bundle.definition.parts.map((part) => part.path)).toEqual([
+      "SparkJobDefinitionV1.json",
+    ]);
+    expect(
+      JSON.parse(
+        Buffer.from(configPart?.payload ?? "", "base64").toString(
+          "utf8",
+        ),
+      ),
+    ).toMatchObject({
+      executableFile: "main.jar",
+      additionalLibraryUris: ["helper.jar"],
+      language: "Scala/Java",
+      mainClass: "com.example.Main",
+    });
+  });
 
+  it("rejects staged JARs above the single-upload limit", () => {
+    const itemDirectory = sparkJobDirectory();
+    const definitionDirectory = path.join(
+      itemDirectory,
+      "definition",
+    );
+    mkdirSync(path.join(definitionDirectory, "libs"), {
+      recursive: true,
+    });
+    writeFileSync(
+      path.join(definitionDirectory, "main.jar"),
+      "main-jar",
+      "utf8",
+    );
+    writeFileSync(
+      path.join(
+        definitionDirectory,
+        "SparkJobDefinitionV1.json",
+      ),
+      JSON.stringify({
+        executableFile: "main.jar",
+        language: "Scala/Java",
+        mainClass: "com.example.Main",
+      }),
+      "utf8",
+    );
+    const jarPath = path.join(
+      definitionDirectory,
+      "libs",
+      "large.jar",
+    );
+    writeFileSync(jarPath, "");
+    truncateSync(jarPath, MAX_ONELAKE_SINGLE_UPLOAD_BYTES + 1);
+
+    expect(() =>
+      loadSparkJobDefinitionBundle(itemDirectory),
+    ).toThrow("exceeds the 512 MiB");
+  });
+
+  it("rejects unsafe executable replacement", () => {
     const secondItemDirectory = sparkJobDirectory();
     const secondDefinitionDirectory = path.join(
       secondItemDirectory,
       "definition",
     );
+
     writeFileSync(
       path.join(secondDefinitionDirectory, "main.py"),
       "print('hello')\n",
@@ -341,6 +436,17 @@ describe("Spark Job definitions", () => {
     expect(() =>
       loadSparkJobDefinition(secondItemDirectory),
     ).toThrow("executableFile must be 'main.py'");
+  });
+
+  it("rejects JAR libraries on Python Spark Jobs", () => {
+    expect(() =>
+      loadSparkJobDefinitionBundle(
+        createSparkJob({
+          "main.py": "print('hello')\n",
+          "libs/helper.jar": "jar",
+        }),
+      ),
+    ).toThrow("Fabric rejects JAR libraries for Python jobs");
   });
 
   it("rejects inline library names unsupported by Fabric", () => {

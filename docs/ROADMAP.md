@@ -26,7 +26,7 @@
 - [x] Full-plan preflight and explicit create/update safeguards
 - [x] Guarded `apply` mode wiring for Lakehouse mutations
 - [x] Checkpoint and result artifacts
-- [ ] Live sandbox validation with OIDC
+- [x] Live sandbox validation with OIDC
 
 ## Phase 3: core data engineering adapters
 
@@ -42,7 +42,7 @@
 ## Phase 4: production hardening
 
 - [ ] Explicit deletion and Lakehouse data-loss guard
-- [ ] OneLake staging for supported libraries
+- [x] OneLake staging for Spark Job JVM executables and JAR libraries
 - [ ] Live sandbox E2E suite
 - [ ] Reusable dev/test/prod workflow
 - [ ] Marketplace release automation, provenance, and support documentation

@@ -3,12 +3,11 @@
 A GitHub Marketplace action for declarative Microsoft Fabric deployments, with
 an initial focus on Data Engineering workloads.
 
-> **Current status:** Phases 1 and 2 are complete. Phase 3 now includes
-> managed workspace provisioning plus Environment, Notebook, Spark Job
-> Definition, Data Pipeline, and workspace custom Spark pool deployment in
-> addition to Lakehouse deployment. These adapters support authenticated
-> planning and guarded create/update/no-op apply with approved-plan binding,
-> drift detection, checkpoints, and result artifacts. See
+> **Current status:** Phases 1 through 3 are complete. Phase 4 production
+> hardening has started with deterministic OneLake staging for Spark Job JVM
+> executables and JAR libraries. Deployments support authenticated planning and guarded
+> create/update/no-op apply with approved-plan binding, drift detection,
+> checkpoints, and result artifacts. See
 > [the roadmap](docs/ROADMAP.md).
 
 ## Initial workload scope
@@ -244,7 +243,7 @@ Definition-bearing workloads are structurally validated:
 | LakehouseTables | `definition/tables.yaml` plus every declared `definition/tables/*.sql` file |
 | Environment | `definition/environment.yml`; optional `Sparkcompute.yml`, `.platform`, and custom libraries |
 | Notebook | Exactly one `.py`, `.scala`, `.r`, `.sql`, or `.ipynb` file under `definition/`; optional `.platform` |
-| Spark Job Definition | Exactly one `definition/main.py` or `definition/main.scala`; optional `SparkJobDefinitionV1.json`, `.platform`, and files under `definition/libs/` |
+| Spark Job Definition | Exactly one `definition/main.py` or `definition/main.jar`; optional `SparkJobDefinitionV1.json`, `.platform`, and files under `definition/libs/` |
 | Data Pipeline | Valid JSON object at `definition/pipeline-content.json` |
 | Workspace custom Spark pool | `definition/pool.yaml` with node family, node size, autoscale, and dynamic executor allocation settings |
 
@@ -331,11 +330,28 @@ explicitly define the description so metadata updates remain deterministic.
 Sensitivity labels are intentionally rejected in `.platform` until the
 dedicated Fabric sensitivity-label contract is implemented.
 
-Spark Job Definitions use `SparkJobDefinitionV2`, including inline `Main/`
-and `Libs/` parts. Inline JARs are rejected because Fabric requires an external
-`abfss://` library URI for that case. Definition updates use full-replacement
-semantics, so the generated `SparkJobDefinitionV1.json` always includes the
-main file and complete library list. Spark Jobs support the
+Spark Job Definitions use `SparkJobDefinitionV2`. Python jobs use inline
+`definition/main.py` and optional non-JAR `definition/libs/` files; Fabric
+rejects JAR libraries for Python jobs. JVM jobs use `definition/main.jar`,
+language `Scala/Java`, a nonempty `mainClass`, and optional JAR files under
+`definition/libs/`. The main JAR and its JAR libraries are captured as
+immutable staging sources rather than sent inline. A staged job must declare a
+logical `defaultLakehouse` reference or equivalent binding. Planning assigns
+each staged artifact the deterministic path
+`Files/.fabric-deploy/{deploymentId}/{environment}/{logicalId}/{sha256}/{filename}`
+and classifies it as create, no-op, or blocked after a full SHA-256 readback.
+Apply requires the independent `allow-onelake-artifact-create` flag, creates
+the directory hierarchy through the OneLake DFS API, uploads at most 512 MiB
+with an atomic conditional Block Blob request, and never overwrites mismatched
+content. The approved staging proof binds both configured OneLake endpoints;
+changing either endpoint requires a new plan. Upload intent and verification
+are checkpointed before the Spark Job write, and pending Spark recovery first
+proves that every artifact was verified under the exact materialized binding.
+For JVM jobs, the generated definition receives the main JAR's
+content-addressed `abfss://` URI in `executableFile` and library URIs in
+`additionalLibraryUris`. Definition updates use full-replacement semantics, so
+the generated `SparkJobDefinitionV1.json` always includes the executable and
+complete library list. Spark Jobs support the
 `defaultLakehouse` and `environment` logical-reference sugars plus explicit
 bindings to `/properties/defaultLakehouseArtifactId` and
 `/properties/environmentArtifactId`. Binding sources use
@@ -400,9 +416,12 @@ The endpoints are configurable for private-network and OAP environments:
 with:
   fabric-api-endpoint: https://api.fabric.microsoft.com
   onelake-endpoint: https://onelake.dfs.fabric.microsoft.com
+  onelake-blob-endpoint: https://onelake.blob.fabric.microsoft.com
 ```
 
-Changing the endpoint does not change the OAuth audience.
+When `onelake-blob-endpoint` is omitted, it is derived from a `.dfs.` OneLake
+host by replacing `.dfs.` with `.blob.`. Changing the endpoint does not change
+the OAuth audience.
 
 ## Current implementation boundary
 
@@ -417,6 +436,7 @@ The action currently implements:
 - Environment definition mapping, create/update, publish, and read-back verification
 - Notebook source/ipynb mapping, create/update, and read-back verification
 - Spark Job Definition V2 mapping, create/update, and read-back verification
+- Immutable OneLake staging for Spark Job JVM executables and JAR libraries
 - Data Pipeline definition mapping, create/update, and read-back verification
 - Workspace custom Spark pool mapping, create/update, and read-back verification
 - Published Environment definition proof and target-version advancement checks
@@ -426,9 +446,6 @@ The action currently implements:
 - Pre-mutation drift and authorization checks
 - Lakehouse, Environment, Notebook, Spark Job Definition, Data Pipeline, and workspace custom Spark pool create/update/no-op apply
 - Checkpoint and result artifacts
-
-Lakehouse table DDL apply remains blocked until its Phase 3 adapter is
-implemented.
 
 ## Live test workflow
 

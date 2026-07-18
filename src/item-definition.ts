@@ -234,13 +234,13 @@ function requireSparkJobDefinition(
   itemDirectory: string,
 ): void {
   const directory = definitionDirectory(item, itemDirectory);
-  const candidates = ["main.py", "main.scala"].filter((name) =>
+  const candidates = ["main.py", "main.jar"].filter((name) =>
     existsSync(path.join(directory, name)) &&
     statSync(path.join(directory, name)).isFile(),
   );
   if (candidates.length !== 1) {
     throw new Error(
-      `Item '${item.logicalId}' requires exactly one definition/main.py or definition/main.scala file.`,
+      `Item '${item.logicalId}' requires exactly one definition/main.py or definition/main.jar file.`,
     );
   }
 }

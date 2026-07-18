@@ -148,8 +148,127 @@ function isPlannedItem(value: unknown): value is PlannedItem {
       ? item.lakehouseTables === undefined
         ? item.action === "blocked" || item.action === "unknown"
         : isPlannedLakehouseTables(item.lakehouseTables)
-      : item.lakehouseTables === undefined)
+      : item.lakehouseTables === undefined) &&
+    (item.type === "SparkJobDefinition"
+      ? item.sparkJobArtifacts === undefined ||
+        isPlannedSparkJobArtifacts(item.sparkJobArtifacts)
+      : item.sparkJobArtifacts === undefined)
   );
+}
+
+function isPlannedSparkJobArtifacts(value: unknown): boolean {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    return false;
+  }
+  const staging = value as Record<string, unknown>;
+  if (
+    typeof staging.targetLakehouseLogicalId !== "string" ||
+    (staging.targetLakehousePhysicalId !== undefined &&
+      typeof staging.targetLakehousePhysicalId !== "string") ||
+    (staging.targetBinding !== "physical" &&
+      staging.targetBinding !== "symbolic") ||
+    !isOneLakeRootEndpoint(staging.oneLakeDfsEndpoint) ||
+    !isOneLakeRootEndpoint(staging.oneLakeBlobEndpoint) ||
+    !isHash(staging.stagingHash) ||
+    !Array.isArray(staging.artifacts) ||
+    staging.artifacts.length === 0 ||
+    (staging.targetBinding === "physical") !==
+      (typeof staging.targetLakehousePhysicalId === "string")
+  ) {
+    return false;
+  }
+  const names = new Set<string>();
+  const paths = new Set<string>();
+  let executableCount = 0;
+  const artifactsValid = staging.artifacts.every((value) => {
+    if (
+      value === null ||
+      typeof value !== "object" ||
+      Array.isArray(value)
+    ) {
+      return false;
+    }
+    const artifact = value as Record<string, unknown>;
+    if (
+      !["create", "no-op", "blocked"].includes(
+        String(artifact.action),
+      ) ||
+      (artifact.kind !== "executable" &&
+        artifact.kind !== "library") ||
+      typeof artifact.operationId !== "string" ||
+      !isHash(artifact.operationHash) ||
+      typeof artifact.fileName !== "string" ||
+      typeof artifact.relativeSourcePath !== "string" ||
+      (artifact.kind === "executable"
+        ? artifact.fileName !== "main.jar" ||
+          artifact.relativeSourcePath !== "definition/main.jar"
+        : !artifact.relativeSourcePath.startsWith(
+            "definition/libs/",
+          )) ||
+      !isHash(artifact.contentHash) ||
+      typeof artifact.sizeBytes !== "number" ||
+      !Number.isSafeInteger(artifact.sizeBytes) ||
+      artifact.sizeBytes < 0 ||
+      typeof artifact.oneLakePath !== "string" ||
+      !artifact.oneLakePath.startsWith("Files/.fabric-deploy/") ||
+      (artifact.abfssUri !== undefined &&
+        (typeof artifact.abfssUri !== "string" ||
+          !isOneLakeAbfssUri(
+            artifact.abfssUri,
+            staging.oneLakeDfsEndpoint as string,
+          ))) ||
+      typeof artifact.observedHash !== "string" ||
+      typeof artifact.reason !== "string" ||
+      names.has(artifact.fileName) ||
+      paths.has(artifact.oneLakePath) ||
+      (staging.targetBinding === "physical") !==
+        (typeof artifact.abfssUri === "string")
+    ) {
+      return false;
+    }
+    if (artifact.kind === "executable") {
+      executableCount += 1;
+    }
+    names.add(artifact.fileName);
+    paths.add(artifact.oneLakePath);
+    return true;
+  });
+  return artifactsValid && executableCount === 1;
+}
+
+function isOneLakeRootEndpoint(value: unknown): value is string {
+  if (typeof value !== "string") {
+    return false;
+  }
+  try {
+    const url = new URL(value);
+    return (
+      url.protocol === "https:" &&
+      !url.username &&
+      !url.password &&
+      url.origin === value
+    );
+  } catch {
+    return false;
+  }
+}
+
+function isOneLakeAbfssUri(
+  value: string,
+  dfsEndpoint: string,
+): boolean {
+  try {
+    const uri = new URL(value);
+    const dfs = new URL(dfsEndpoint);
+    return (
+      uri.protocol === "abfss:" &&
+      uri.username.length > 0 &&
+      !uri.password &&
+      uri.hostname === dfs.hostname
+    );
+  } catch {
+    return false;
+  }
 }
 
 function isPlannedLakehouseTables(value: unknown): boolean {
