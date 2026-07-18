@@ -90,6 +90,16 @@ export function loadAndValidateItemDefinition(
   }
 
   const definition = resolved as ItemDefinition;
+  if (
+    item.type === "LakehouseTables" &&
+    (resolved === null ||
+      typeof resolved !== "object" ||
+      !Object.hasOwn(resolved, "desiredState"))
+  ) {
+    throw new Error(
+      `Item '${item.logicalId}' (LakehouseTables) must explicitly set desiredState: present.`,
+    );
+  }
   validateReferences(item.logicalId, definition, logicalIds, dependencies);
   validateBindings(item.logicalId, definition, logicalIds, dependencies);
   validateTypeSpecificDefinition(item, itemDirectory, definition);
@@ -181,6 +191,9 @@ function validateTypeSpecificDefinition(
           `Item '${item.logicalId}' Lakehouse displayName must begin with a letter, contain only letters, numbers, and underscores, and be at most 123 characters.`,
         );
       }
+      return;
+    case "LakehouseTables":
+      definitionDirectory(item, itemDirectory);
       return;
     case "Environment":
       definitionDirectory(item, itemDirectory);

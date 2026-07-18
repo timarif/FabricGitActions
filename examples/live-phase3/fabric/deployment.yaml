@@ -19,6 +19,16 @@ items:
     type: Lakehouse
     path: items/lakehouses/gitactiontest
 
+  - logicalId: gitActionDdlLakehouse
+    type: Lakehouse
+    path: items/lakehouses/gitactiontest-ddl
+
+  - logicalId: gitActionLakehouseTables
+    type: LakehouseTables
+    path: items/lakehouse-tables/gitactiontest-ddl
+    dependsOn:
+      - gitActionDdlLakehouse
+
   - logicalId: gitActionSparkJob
     type: SparkJobDefinition
     path: items/spark-jobs/logical-references

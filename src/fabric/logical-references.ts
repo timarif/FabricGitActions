@@ -77,11 +77,55 @@ export interface SparkJobLogicalReferenceMaterialization {
 export function validateLogicalReferenceDeclarations(
   input: LogicalReferenceValidationInput,
 ): CanonicalResolvedBindingMap {
+  if (input.item.type === "LakehouseTables") {
+    validateLakehouseTablesReference(input);
+    return {};
+  }
   const declarations =
     Object.keys(input.definition.references ?? {}).length > 0 ||
     (input.definition.bindings?.length ?? 0) > 0;
   if (!declarations) {
     return {};
+  }
+
+  function validateLakehouseTablesReference(
+    input: LogicalReferenceValidationInput,
+  ): void {
+    const entries = Object.entries(input.definition.references ?? {});
+    if (
+      entries.length !== 1 ||
+      entries[0]?.[0] !== "lakehouse" ||
+      typeof entries[0]?.[1] !== "string" ||
+      entries[0][1].length === 0
+    ) {
+      throw new Error(
+        `Item '${input.item.logicalId}' (LakehouseTables) must declare exactly one references.lakehouse logical ID.`,
+      );
+    }
+    if ((input.definition.bindings?.length ?? 0) !== 0) {
+      throw new Error(
+        `Item '${input.item.logicalId}' (LakehouseTables) does not support bindings.`,
+      );
+    }
+    const targetLogicalId = entries[0][1];
+    const target = input.itemGraph.find(
+      (candidate) => candidate.logicalId === targetLogicalId,
+    );
+    if (!target) {
+      throw new Error(
+        `Item '${input.item.logicalId}' reference 'lakehouse' targets unknown logicalId '${targetLogicalId}'.`,
+      );
+    }
+    if (target.type !== "Lakehouse") {
+      throw new Error(
+        `Item '${input.item.logicalId}' reference 'lakehouse' targets '${targetLogicalId}' (${target.type}), but requires type 'Lakehouse'.`,
+      );
+    }
+    if (!(input.item.dependsOn ?? []).includes(targetLogicalId)) {
+      throw new Error(
+        `Item '${input.item.logicalId}' reference 'lakehouse' targets '${targetLogicalId}', but dependsOn does not include it.`,
+      );
+    }
   }
   if (input.item.type !== "SparkJobDefinition") {
     throw new Error(

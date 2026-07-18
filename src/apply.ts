@@ -1,4 +1,4 @@
-import { stableJson } from "./hash";
+import { sha256, stableJson } from "./hash";
 import {
   assertDistinctFilePaths,
   assertOutputPathOutsideItems,
@@ -7,6 +7,12 @@ import type {
   LakehouseAdapter,
   LakehouseOperationReference,
 } from "./fabric/lakehouse";
+import {
+  buildLakehouseTableCreateOperations,
+  createLakehouseTablesSessionName,
+  type LakehouseTableExecutionHooks,
+  type LakehouseTablesAdapter,
+} from "./fabric/lakehouse-tables";
 import type {
   EnvironmentAdapter,
   EnvironmentOperationReference,
@@ -104,11 +110,22 @@ export interface ApplyPlanOptions {
     WorkspaceAdapter,
     "create" | "resumeCreate" | "update" | "resumeUpdate" | "verify"
   >;
+  lakehouseTablesAdapter?: Pick<
+    LakehouseTablesAdapter,
+    | "apply"
+    | "verify"
+    | "plan"
+    | "discoverSessionAttempt"
+    | "discoverStatementByMarker"
+    | "resumeAcceptedStatement"
+    | "deleteSessionById"
+  >;
   allowCreate: boolean;
   allowUpdate: boolean;
   allowWorkspaceCreate?: boolean;
   allowWorkspaceUpdate?: boolean;
   allowCapacityAssignment?: boolean;
+  allowLakehouseTableCreate?: boolean;
   checkpointFile: string;
   resultFile: string;
   itemDirectories?: string[];
@@ -280,13 +297,19 @@ export async function applyApprovedPlan(
           continue;
         }
 
-        await assertFreshItemHasNotDrifted(
-          runtimeOptions,
-          approvedItem,
-        );
+        await assertFreshItemHasNotDrifted(runtimeOptions, approvedItem);
         let result: ApplyItemResult;
         try {
-          result = await applyItem(
+          result =
+            approvedItem.type === "LakehouseTables"
+              ? await applyLakehouseTablesItem(
+                  runtimeOptions,
+                  checkpoint,
+                  approvedItem,
+                  itemStartedAt,
+                  now,
+                )
+              : await applyItem(
             runtimeOptions,
             approvedItem,
             itemStartedAt,
@@ -307,7 +330,7 @@ export async function applyApprovedPlan(
               const proof = logicalReferenceCheckpointProof(
                 runtimeOptions,
                 approvedItem,
-              );
+                    );
               delete checkpoint.pendingCreates[logicalId];
               checkpoint.pendingOperations[logicalId] = {
                 logicalId,
@@ -524,6 +547,33 @@ async function assertFreshItemHasNotDrifted(
   options: ApplyPlanOptions,
   approvedItem: PlannedItem,
 ): Promise<void> {
+  if (approvedItem.type === "LakehouseTables") {
+    const current = options.currentPlan.items.find(
+      (candidate) =>
+        candidate.logicalId === approvedItem.logicalId,
+    );
+    if (!current) {
+      throw new Error(
+        `Current LakehouseTables plan is missing for '${approvedItem.logicalId}'.`,
+      );
+    }
+    if (!options.checkpoint) {
+      throw new Error(
+        `LakehouseTables apply checkpoint is missing for '${approvedItem.logicalId}'.`,
+      );
+    }
+    assertLakehouseTablesPreflightState(
+      options,
+      options.checkpoint,
+      approvedItem,
+      current,
+      getCompletedItem(options.checkpoint, approvedItem.logicalId),
+      options.checkpoint.lakehouseTables?.[
+        approvedItem.logicalId
+      ] !== undefined,
+    );
+    return;
+  }
   const desired =
     options.loadedManifest.itemDefinitions[approvedItem.logicalId];
   if (!desired) {
@@ -628,7 +678,20 @@ function preflightBeforeRecovery(
       const pending =
         getPendingOperation(checkpoint, logicalId) ??
         getPendingCreate(checkpoint, logicalId) ??
-        getPendingUpdate(checkpoint, logicalId);
+        getPendingUpdate(checkpoint, logicalId) ??
+        checkpoint.lakehouseTables?.[logicalId];
+      if (approvedItem.type === "LakehouseTables") {
+        assertLakehouseTablesPreflightState(
+          options,
+          checkpoint,
+          approvedItem,
+          currentItem,
+          completed,
+          pending !== undefined,
+          true,
+        );
+        continue;
+      }
       if (completed) {
         assertCheckpointedItemSourceUnchanged(approvedItem, currentItem);
         if (
@@ -669,6 +732,20 @@ function preflightPlan(
         throw new Error(`Desired definition is missing for '${logicalId}'.`);
       }
       const completed = getCompletedItem(checkpoint, logicalId);
+      const pendingLakehouseTables =
+        checkpoint.lakehouseTables?.[logicalId];
+      if (approvedItem.type === "LakehouseTables") {
+        assertLakehouseTablesPreflightState(
+          options,
+          checkpoint,
+          approvedItem,
+          currentItem,
+          completed,
+          pendingLakehouseTables !== undefined,
+        );
+        assertApplyActionAuthorized(options, approvedItem);
+        continue;
+      }
       if (completed) {
         assertCheckpointedItemSourceUnchanged(approvedItem, currentItem);
         if (resumedOperations.has(logicalId)) {
@@ -703,6 +780,7 @@ function assertSupportedApplyItem(
     item.type !== "Notebook" &&
     item.type !== "SparkJobDefinition" &&
     item.type !== "DataPipeline"
+    && item.type !== "LakehouseTables"
   ) {
     throw new Error(
       `Apply is not implemented for item '${item.logicalId}' of type ${item.type}.`,
@@ -739,12 +817,44 @@ function assertSupportedApplyItem(
       `Spark custom pool adapter was not initialized for item '${item.logicalId}'.`,
     );
   }
+  if (item.type === "LakehouseTables" && !options.lakehouseTablesAdapter) {
+    throw new Error(
+      `LakehouseTables adapter was not initialized for item '${item.logicalId}'.`,
+    );
+  }
 }
 
 function assertApplyActionAuthorized(
   options: ApplyPlanOptions,
   item: PlannedItem,
 ): void {
+  if (item.type === "LakehouseTables") {
+    if (
+      item.action === "create" &&
+      !(options.allowLakehouseTableCreate ?? false)
+    ) {
+      throw new Error(
+        `Plan requires creating Lakehouse tables for '${item.logicalId}', but allow-lakehouse-table-create is false.`,
+      );
+    }
+    if (item.action !== "create" && item.action !== "no-op") {
+      throw new Error(
+        `LakehouseTables item '${item.logicalId}' cannot be applied while action is '${item.action}'.`,
+      );
+    }
+    if (
+      item.lakehouseTables?.operations.some(
+        (operation) =>
+          operation.action === "adopt" ||
+          operation.action === "blocked",
+      )
+    ) {
+      throw new Error(
+        `LakehouseTables item '${item.logicalId}' contains an adoption or blocked operation. Phase 3 does not execute ALTER TABLE.`,
+      );
+    }
+    return;
+  }
   if (item.action === "create" && !options.allowCreate) {
     throw new Error(
       `Plan requires creating '${item.logicalId}', but allow-create is false.`,
@@ -1167,7 +1277,190 @@ function comparableItemSource(item: PlannedItem): unknown {
     contentHash: item.contentHash,
     desiredState: item.desiredState,
     dependsOn: item.dependsOn,
+    lakehouseTables: item.lakehouseTables
+      ? {
+          targetLakehouseLogicalId:
+            item.lakehouseTables.targetLakehouseLogicalId,
+          desiredHash: item.lakehouseTables.desiredHash,
+          sourceHash: item.lakehouseTables.sourceHash,
+          operations: item.lakehouseTables.operations.map(
+            (operation) => ({
+              operationId: operation.operationId,
+              operationHash: operation.operationHash,
+              order: operation.order,
+              logicalId: operation.logicalId,
+              identifier: operation.identifier,
+              desiredHash: operation.desiredHash,
+            }),
+          ),
+        }
+      : undefined,
   };
+}
+
+function assertLakehouseTablesPreflightState(
+  options: ApplyPlanOptions,
+  checkpoint: ApplyCheckpoint,
+  approvedItem: PlannedItem,
+  currentItem: PlannedItem,
+  completed:
+    | ApplyCheckpoint["completedItems"][string]
+    | undefined,
+  hasBundleCheckpoint: boolean,
+  deferPendingTargetRecovery = false,
+): void {
+  const approved = approvedItem.lakehouseTables;
+  const current = currentItem.lakehouseTables;
+  if (!approved || !current) {
+    throw new Error(
+      `LakehouseTables plan payload is missing for '${approvedItem.logicalId}'.`,
+    );
+  }
+  assertCheckpointedItemSourceUnchanged(approvedItem, currentItem);
+  if (
+    current.targetLakehouseLogicalId !==
+    approved.targetLakehouseLogicalId
+  ) {
+    throw new Error(
+      `LakehouseTables target logical ID changed after approval for '${approvedItem.logicalId}'.`,
+    );
+  }
+
+  const approvedTarget = options.approvedPlan.items.find(
+    (candidate) =>
+      candidate.logicalId === approved.targetLakehouseLogicalId,
+  );
+  const currentTarget = options.currentPlan.items.find(
+    (candidate) =>
+      candidate.logicalId === approved.targetLakehouseLogicalId,
+  );
+  if (
+    !approvedTarget ||
+    approvedTarget.type !== "Lakehouse" ||
+    !currentTarget ||
+    currentTarget.type !== "Lakehouse"
+  ) {
+    throw new Error(
+      `LakehouseTables target '${approved.targetLakehouseLogicalId}' is missing or is not a Lakehouse.`,
+    );
+  }
+
+  if (approved.targetBinding === "physical") {
+    const expectedId = approved.targetLakehousePhysicalId;
+    if (
+      !expectedId ||
+      approvedTarget.physicalId !== expectedId ||
+      current.targetBinding !== "physical" ||
+      current.targetLakehousePhysicalId !== expectedId ||
+      currentTarget.physicalId !== expectedId
+    ) {
+      throw new Error(
+        `LakehouseTables physical target changed after approval for '${approvedItem.logicalId}'.`,
+      );
+    }
+    if (completed && completed.physicalId !== expectedId) {
+      throw new Error(
+        `Checkpointed LakehouseTables item '${approvedItem.logicalId}' is bound to unexpected physical ID '${completed.physicalId}'.`,
+      );
+    }
+    if (!completed && !hasBundleCheckpoint) {
+      assertItemHasNotDrifted(approvedItem, currentItem);
+    }
+    return;
+  }
+
+  if (approvedTarget.action !== "create") {
+    throw new Error(
+      `LakehouseTables symbolic target '${approvedTarget.logicalId}' was not approved for creation.`,
+    );
+  }
+  const completedTarget = getCompletedItem(
+    checkpoint,
+    approvedTarget.logicalId,
+  );
+  if (!completedTarget) {
+    if (
+      deferPendingTargetRecovery &&
+      hasApprovedPendingCreateRecovery(
+        options,
+        checkpoint,
+        approvedTarget,
+      )
+    ) {
+      assertCheckpointedItemSourceUnchanged(
+        approvedTarget,
+        currentTarget,
+      );
+      return;
+    }
+    if (
+      currentTarget.action !== "create" ||
+      current.targetBinding !== "symbolic"
+    ) {
+      throw new Error(
+        `LakehouseTables symbolic target changed before creation for '${approvedItem.logicalId}'.`,
+      );
+    }
+    return;
+  }
+  const currentPlanStillSymbolic =
+    currentTarget.action === "create" &&
+    current.targetBinding === "symbolic";
+  const currentPlanMaterialized =
+    currentTarget.action === "no-op" &&
+    currentTarget.physicalId === completedTarget.physicalId &&
+    current.targetBinding === "physical" &&
+    current.targetLakehousePhysicalId === completedTarget.physicalId;
+  if (
+    completedTarget.action !== "create" ||
+    (!currentPlanStillSymbolic && !currentPlanMaterialized)
+  ) {
+    throw new Error(
+      `LakehouseTables symbolic target did not materialize to the exact checkpointed Lakehouse ID for '${approvedItem.logicalId}'.`,
+    );
+  }
+  if (completed && completed.physicalId !== completedTarget.physicalId) {
+    throw new Error(
+      `Checkpointed LakehouseTables item '${approvedItem.logicalId}' is not bound to its exact completed target Lakehouse ID.`,
+    );
+  }
+}
+
+function hasApprovedPendingCreateRecovery(
+  options: ApplyPlanOptions,
+  checkpoint: ApplyCheckpoint,
+  approvedTarget: PlannedItem,
+): boolean {
+  if (
+    approvedTarget.type !== "Lakehouse" ||
+    approvedTarget.action !== "create" ||
+    checkpoint.planHash !== options.approvedPlan.planHash
+  ) {
+    return false;
+  }
+  const pendingCreate = getPendingCreate(
+    checkpoint,
+    approvedTarget.logicalId,
+  );
+  const pendingOperation = getPendingOperation(
+    checkpoint,
+    approvedTarget.logicalId,
+  );
+  if (
+    (pendingCreate === undefined) ===
+    (pendingOperation === undefined)
+  ) {
+    return false;
+  }
+  const pending = pendingCreate ?? pendingOperation;
+  return (
+    pending?.logicalId === approvedTarget.logicalId &&
+    pending.action === "create" &&
+    pending.materializedDefinitionHash ===
+      approvedTarget.materializedDefinitionHash &&
+    pending.resolvedBindingsHash ===
+      approvedTarget.resolvedBindingsHash
+  );
 }
 
 async function verifyCheckpointedItems(
@@ -1260,7 +1553,547 @@ function comparableItemState(item: PlannedItem): unknown {
     materializedDefinitionHash:
       item.materializedDefinitionHash,
     resolvedBindingsHash: item.resolvedBindingsHash,
+    lakehouseTables: item.lakehouseTables,
   };
+}
+
+async function applyLakehouseTablesItem(
+  options: ApplyPlanOptions,
+  checkpoint: ApplyCheckpoint,
+  item: PlannedItem,
+  startedAt: number,
+  now: () => number,
+): Promise<ApplyItemResult> {
+  const adapter = options.lakehouseTablesAdapter;
+  const definition =
+    options.loadedManifest.lakehouseTablesDefinitions?.[item.logicalId];
+  const plan = item.lakehouseTables;
+  if (!adapter || !definition || !plan) {
+    throw new Error(
+      `LakehouseTables runtime is missing for '${item.logicalId}'.`,
+    );
+  }
+  if (
+    item.action === "create" &&
+    !(options.allowLakehouseTableCreate ?? false)
+  ) {
+    throw new Error(
+      `Plan requires creating Lakehouse tables for '${item.logicalId}', but allow-lakehouse-table-create is false.`,
+    );
+  }
+  if (
+    plan.operations.some(
+      (operation) =>
+        operation.action === "blocked" ||
+        operation.action === "adopt",
+    )
+  ) {
+    throw new Error(
+      `LakehouseTables item '${item.logicalId}' contains blocked or adoption operations. Phase 3 does not execute ALTER TABLE.`,
+    );
+  }
+  if (item.action !== "create" && item.action !== "no-op") {
+    throw new Error(
+      `LakehouseTables item '${item.logicalId}' cannot be applied while action is '${item.action}'.`,
+    );
+  }
+  const targetLakehouseId = resolveLakehouseTablesTargetId(
+    options,
+    item,
+  );
+  const execution = {
+    sourceHash: definition.sourceHash,
+    attemptId: `ddl-${sha256(
+      stableJson({
+        planHash: options.approvedPlan.planHash,
+        logicalId: item.logicalId,
+      }),
+    ).slice(0, 40)}`,
+    deploymentId: options.approvedPlan.deploymentId,
+    bundleLogicalId: item.logicalId,
+    targetLakehouseLogicalId:
+      plan.targetLakehouseLogicalId,
+  };
+  const operations = buildLakehouseTableCreateOperations(
+    definition,
+    execution,
+  );
+  assertLakehouseTablesOperationProof(item, definition, operations);
+  await recoverLakehouseTablesCheckpoint(
+    options,
+    checkpoint,
+    item,
+    targetLakehouseId,
+    operations,
+    now,
+  );
+  const sessionName = createLakehouseTablesSessionName(
+    options.approvedPlan.workspaceId,
+    targetLakehouseId,
+    definition.desiredHash,
+    execution,
+  );
+  const hooks: LakehouseTableExecutionHooks = {
+    onSessionSubmitting: (context) => {
+      checkpoint.lakehouseTables ??= {};
+      checkpoint.lakehouseTables[item.logicalId] = {
+        logicalId: item.logicalId,
+        targetLakehouseLogicalId:
+          plan.targetLakehouseLogicalId,
+        targetLakehouseId,
+        desiredHash: definition.desiredHash,
+        sourceHash: definition.sourceHash,
+        attemptId: execution.attemptId,
+        sessionName,
+        sessionRequestHash: context.requestHash,
+        sessionPhase: "submitting",
+        sessionSubmittedAt: context.submittedAt,
+        completedOperationHashes:
+          checkpoint.lakehouseTables[item.logicalId]
+            ?.completedOperationHashes ?? [],
+        operationReceipts:
+          checkpoint.lakehouseTables[item.logicalId]
+            ?.operationReceipts ?? [],
+        updatedAt: new Date(now()).toISOString(),
+      };
+      writeCheckpoint(options.checkpointFile, checkpoint);
+    },
+    onSessionAccepted: (context) => {
+      const state = requireLakehouseTablesCheckpoint(
+        checkpoint,
+        item.logicalId,
+      );
+      state.sessionId = context.sessionId;
+      state.sessionPhase = "accepted";
+      state.sessionAcceptedAt = new Date(now()).toISOString();
+      state.updatedAt = state.sessionAcceptedAt;
+      writeCheckpoint(options.checkpointFile, checkpoint);
+    },
+    onSessionCreated: () => {
+      const state = requireLakehouseTablesCheckpoint(
+        checkpoint,
+        item.logicalId,
+      );
+      state.sessionPhase = "active";
+      state.updatedAt = new Date(now()).toISOString();
+      writeCheckpoint(options.checkpointFile, checkpoint);
+    },
+    onStatementSubmitting: (context) => {
+      const state = requireLakehouseTablesCheckpoint(
+        checkpoint,
+        item.logicalId,
+      );
+      state.statement = {
+        statementAttemptName: context.statementAttemptName,
+        purpose: context.purpose,
+        tableLogicalId: context.logicalId,
+        ...(context.operation
+          ? { operationHash: context.operation.operationHash }
+          : {}),
+        codeHash: context.codeHash,
+        phase: "submitting",
+        submittedAt: new Date(now()).toISOString(),
+      };
+      state.updatedAt = state.statement.submittedAt;
+      writeCheckpoint(options.checkpointFile, checkpoint);
+    },
+    onStatementAccepted: (context) => {
+      const state = requireLakehouseTablesCheckpoint(
+        checkpoint,
+        item.logicalId,
+      );
+      if (!state.statement) {
+        throw new Error(
+          `LakehouseTables statement checkpoint is missing for '${item.logicalId}'.`,
+        );
+      }
+      state.statement.statementId = context.statementId;
+      state.statement.phase = "accepted";
+      state.statement.acceptedAt = new Date(now()).toISOString();
+      state.updatedAt = state.statement.acceptedAt;
+      writeCheckpoint(options.checkpointFile, checkpoint);
+    },
+    onOperationVerified: (context) => {
+      const state = requireLakehouseTablesCheckpoint(
+        checkpoint,
+        item.logicalId,
+      );
+      if (!state.statement) {
+        throw new Error(
+          `LakehouseTables operation checkpoint is missing for '${item.logicalId}'.`,
+        );
+      }
+      state.statement.phase = "verified";
+      state.statement.verifiedAt = new Date(now()).toISOString();
+      if (
+        !state.completedOperationHashes.includes(
+          context.operation.operationHash,
+        )
+      ) {
+        state.completedOperationHashes.push(
+          context.operation.operationHash,
+        );
+      }
+      const statement = state.statement;
+      if (
+        statement.statementId === undefined ||
+        !statement.acceptedAt ||
+        !statement.verifiedAt
+      ) {
+        throw new Error(
+          `LakehouseTables verified operation receipt is incomplete for '${item.logicalId}'.`,
+        );
+      }
+      state.operationReceipts = state.operationReceipts.filter(
+        (receipt) =>
+          receipt.operationHash !==
+          context.operation.operationHash,
+      );
+      state.operationReceipts.push({
+        operationHash: context.operation.operationHash,
+        tableLogicalId: context.operation.logicalId,
+        statementAttemptName: statement.statementAttemptName,
+        codeHash: statement.codeHash,
+        statementId: statement.statementId,
+        submittedAt: statement.submittedAt,
+        acceptedAt: statement.acceptedAt,
+        verifiedAt: statement.verifiedAt,
+      });
+      state.updatedAt = state.statement.verifiedAt;
+      writeCheckpoint(options.checkpointFile, checkpoint);
+    },
+    onSessionCleanupSubmitting: () => {
+      const state = requireLakehouseTablesCheckpoint(
+        checkpoint,
+        item.logicalId,
+      );
+      state.sessionPhase = "cleanup-submitting";
+      state.updatedAt = new Date(now()).toISOString();
+      writeCheckpoint(options.checkpointFile, checkpoint);
+    },
+    onSessionCleanupComplete: () => {
+      const state = requireLakehouseTablesCheckpoint(
+        checkpoint,
+        item.logicalId,
+      );
+      state.sessionPhase = "cleanup-complete";
+      state.cleanupCompletedAt = new Date(now()).toISOString();
+      state.updatedAt = state.cleanupCompletedAt;
+      writeCheckpoint(options.checkpointFile, checkpoint);
+    },
+  };
+  const applied =
+    item.action === "create"
+      ? await adapter.apply(
+          options.approvedPlan.workspaceId,
+          targetLakehouseId,
+          definition,
+          execution,
+          hooks,
+        )
+      : await adapter.verify(
+          options.approvedPlan.workspaceId,
+          targetLakehouseId,
+          definition,
+          execution,
+          hooks,
+        );
+  if (
+    item.action === "no-op" &&
+    "matches" in applied &&
+    !applied.matches
+  ) {
+    throw new Error(
+      `LakehouseTables verification failed for '${item.logicalId}'.`,
+    );
+  }
+  const finalCheckpoint = requireLakehouseTablesCheckpoint(
+    checkpoint,
+    item.logicalId,
+  );
+  if (finalCheckpoint.sessionPhase !== "cleanup-complete") {
+    throw new Error(
+      `LakehouseTables session cleanup is incomplete for '${item.logicalId}'.`,
+    );
+  }
+  return {
+    logicalId: item.logicalId,
+    type: item.type,
+    action: item.action,
+    status: item.action === "create" ? "created" : "verified",
+    physicalId: targetLakehouseId,
+    durationMs: now() - startedAt,
+    lakehouseTables: {
+      desiredHash: definition.desiredHash,
+      observedStateHash: applied.observedStateHash,
+      operationCount:
+        "operations" in applied ? applied.operations.length : 0,
+    },
+  };
+}
+
+function resolveLakehouseTablesTargetId(
+  options: ApplyPlanOptions,
+  item: PlannedItem,
+): string {
+  const plan = item.lakehouseTables;
+  if (!plan) {
+    throw new Error(
+      `LakehouseTables plan payload is missing for '${item.logicalId}'.`,
+    );
+  }
+  const approvedTarget = options.approvedPlan.items.find(
+    (candidate) =>
+      candidate.logicalId === plan.targetLakehouseLogicalId,
+  );
+  if (!approvedTarget || approvedTarget.type !== "Lakehouse") {
+    throw new Error(
+      `LakehouseTables target '${plan.targetLakehouseLogicalId}' is not an approved Lakehouse item.`,
+    );
+  }
+  if (plan.targetBinding === "physical") {
+    if (
+      !plan.targetLakehousePhysicalId ||
+      approvedTarget.physicalId !== plan.targetLakehousePhysicalId ||
+      item.physicalId !== plan.targetLakehousePhysicalId
+    ) {
+      throw new Error(
+        `LakehouseTables physical target proof changed for '${item.logicalId}'.`,
+      );
+    }
+    return plan.targetLakehousePhysicalId;
+  }
+  if (approvedTarget.action !== "create") {
+    throw new Error(
+      `LakehouseTables symbolic target '${approvedTarget.logicalId}' was not approved for creation.`,
+    );
+  }
+  const completed = options.checkpoint
+    ? getCompletedItem(options.checkpoint, approvedTarget.logicalId)
+    : undefined;
+  if (!completed?.physicalId) {
+    throw new Error(
+      `LakehouseTables target '${approvedTarget.logicalId}' has no completed runtime physical ID.`,
+    );
+  }
+  return completed.physicalId;
+}
+
+function assertLakehouseTablesOperationProof(
+  item: PlannedItem,
+  definition: NonNullable<
+    LoadedManifest["lakehouseTablesDefinitions"]
+  >[string],
+  operations: ReturnType<typeof buildLakehouseTableCreateOperations>,
+): void {
+  const plan = item.lakehouseTables;
+  if (
+    !plan ||
+    plan.desiredHash !== definition.desiredHash ||
+    plan.sourceHash !== definition.sourceHash ||
+    plan.operations.length !== operations.length
+  ) {
+    throw new Error(
+      `LakehouseTables source or operation proof changed for '${item.logicalId}'.`,
+    );
+  }
+  for (const [index, operation] of operations.entries()) {
+    const approved = plan.operations[index];
+    if (
+      !approved ||
+      approved.operationId !== operation.operationId ||
+      approved.operationHash !== operation.operationHash ||
+      approved.order !== operation.order ||
+      approved.logicalId !== operation.logicalId ||
+      approved.identifier !== operation.identifier ||
+      approved.desiredHash !== operation.desiredHash
+    ) {
+      throw new Error(
+        `LakehouseTables operation proof changed for '${item.logicalId}' at order ${index}.`,
+      );
+    }
+  }
+}
+
+async function recoverLakehouseTablesCheckpoint(
+    options: ApplyPlanOptions,
+    checkpoint: ApplyCheckpoint,
+    item: PlannedItem,
+    targetLakehouseId: string,
+    operations: ReturnType<typeof buildLakehouseTableCreateOperations>,
+    now: () => number,
+  ): Promise<void> {
+    const state = checkpoint.lakehouseTables?.[item.logicalId];
+    if (!state || state.sessionPhase === "cleanup-complete") {
+      return;
+    }
+    const adapter = options.lakehouseTablesAdapter;
+    if (!adapter) {
+      throw new Error(
+        `LakehouseTables adapter is missing during recovery for '${item.logicalId}'.`,
+      );
+    }
+    if (state.targetLakehouseId !== targetLakehouseId) {
+      throw new Error(
+        `LakehouseTables runtime target changed during recovery for '${item.logicalId}'.`,
+      );
+    }
+    if (state.sessionPhase === "cleanup-submitting") {
+      if (!state.sessionId) {
+        throw new Error(
+          `LakehouseTables cleanup checkpoint for '${item.logicalId}' is missing its session ID.`,
+        );
+      }
+      await adapter.deleteSessionById(
+        options.approvedPlan.workspaceId,
+        targetLakehouseId,
+        state.sessionId,
+      );
+      state.sessionPhase = "cleanup-complete";
+      state.cleanupCompletedAt = new Date(now()).toISOString();
+      state.updatedAt = state.cleanupCompletedAt;
+      writeCheckpoint(options.checkpointFile, checkpoint);
+      return;
+    }
+    if (!state.sessionId) {
+      const submitted = Date.parse(state.sessionSubmittedAt);
+      const discovery = await adapter.discoverSessionAttempt(
+        options.approvedPlan.workspaceId,
+        targetLakehouseId,
+        {
+          sessionName: state.sessionName,
+          attemptId: state.attemptId,
+          requestHash: state.sessionRequestHash,
+          submittedAfter: new Date(submitted - 5 * 60_000).toISOString(),
+          submittedBefore: new Date(submitted + 5 * 60_000).toISOString(),
+        },
+      );
+      if (discovery.outcome !== "single") {
+        throw new Error(
+          `Unresolved LakehouseTables session POST for '${item.logicalId}' cannot be recovered safely (${discovery.outcome}). Zero or multiple matches fail closed. Do not resubmit automatically.`,
+        );
+      }
+      if (
+        !["starting", "idle", "busy", "running"].includes(
+          discovery.session.state ?? "",
+        )
+      ) {
+        throw new Error(
+          `Recovered LakehouseTables session for '${item.logicalId}' is unavailable or terminal. Recovery fails closed.`,
+        );
+      }
+      state.sessionId = discovery.session.id;
+      state.sessionPhase = "accepted";
+      state.sessionAcceptedAt = new Date(now()).toISOString();
+      state.updatedAt = state.sessionAcceptedAt;
+      writeCheckpoint(options.checkpointFile, checkpoint);
+    }
+    if (
+      state.statement?.phase === "submitting" &&
+      state.statement.statementId === undefined
+    ) {
+      const statement = await adapter.discoverStatementByMarker(
+        options.approvedPlan.workspaceId,
+        targetLakehouseId,
+        state.sessionId,
+        state.statement.statementAttemptName,
+        state.statement.codeHash,
+      );
+      if (statement.outcome !== "single") {
+        throw new Error(
+          `Ambiguous LakehouseTables statement POST for '${item.logicalId}' cannot be recovered safely. Zero or multiple candidates fail closed.`,
+        );
+      }
+      if (
+        !["waiting", "running", "available"].includes(
+          statement.state,
+        )
+      ) {
+        throw new Error(
+          `Recovered LakehouseTables statement for '${item.logicalId}' is failed, cancelled, or unavailable in state '${statement.state}'.`,
+        );
+      }
+      state.statement.statementId = statement.statementId;
+      state.statement.phase = "accepted";
+      state.statement.acceptedAt = new Date(now()).toISOString();
+      state.updatedAt = state.statement.acceptedAt;
+      writeCheckpoint(options.checkpointFile, checkpoint);
+    }
+    if (
+      state.statement?.phase === "accepted" &&
+      state.statement.statementId !== undefined
+    ) {
+      const operation = state.statement.operationHash
+        ? operations.find(
+            (candidate) =>
+              candidate.operationHash ===
+              state.statement?.operationHash,
+          )
+        : undefined;
+      await adapter.resumeAcceptedStatement(
+        options.approvedPlan.workspaceId,
+        targetLakehouseId,
+        state.sessionId,
+        state.statement.statementId,
+        operation,
+      );
+      state.statement.phase = "verified";
+      state.statement.verifiedAt = new Date(now()).toISOString();
+      if (
+        operation &&
+        !state.completedOperationHashes.includes(operation.operationHash)
+      ) {
+        state.completedOperationHashes.push(operation.operationHash);
+      }
+      if (
+        operation &&
+        state.statement.acceptedAt &&
+        state.statement.verifiedAt
+      ) {
+        state.operationReceipts = state.operationReceipts.filter(
+          (receipt) =>
+            receipt.operationHash !== operation.operationHash,
+        );
+        state.operationReceipts.push({
+          operationHash: operation.operationHash,
+          tableLogicalId: operation.logicalId,
+          statementAttemptName:
+            state.statement.statementAttemptName,
+          codeHash: state.statement.codeHash,
+          statementId: state.statement.statementId,
+          submittedAt: state.statement.submittedAt,
+          acceptedAt: state.statement.acceptedAt,
+          verifiedAt: state.statement.verifiedAt,
+        });
+      }
+      state.updatedAt = state.statement.verifiedAt;
+      writeCheckpoint(options.checkpointFile, checkpoint);
+    }
+    state.sessionPhase = "cleanup-submitting";
+    state.updatedAt = new Date(now()).toISOString();
+    writeCheckpoint(options.checkpointFile, checkpoint);
+    await adapter.deleteSessionById(
+      options.approvedPlan.workspaceId,
+      targetLakehouseId,
+      state.sessionId,
+    );
+    state.sessionPhase = "cleanup-complete";
+    state.cleanupCompletedAt = new Date(now()).toISOString();
+    state.updatedAt = state.cleanupCompletedAt;
+    writeCheckpoint(options.checkpointFile, checkpoint);
+  }
+
+function requireLakehouseTablesCheckpoint(
+    checkpoint: ApplyCheckpoint,
+    logicalId: string,
+  ): NonNullable<ApplyCheckpoint["lakehouseTables"]>[string] {
+    const state = checkpoint.lakehouseTables?.[logicalId];
+    if (!state) {
+      throw new Error(
+        `LakehouseTables checkpoint state is missing for '${logicalId}'.`,
+      );
+    }
+    return state;
 }
 
 async function applyItem(
@@ -1384,6 +2217,44 @@ async function resumeCompletedItem(
   item: PlannedItem,
   physicalId: string,
 ): Promise<void> {
+  if (item.type === "LakehouseTables") {
+    const adapter = options.lakehouseTablesAdapter;
+    const definition =
+      options.loadedManifest.lakehouseTablesDefinitions?.[
+        item.logicalId
+      ];
+    const tablePlan = item.lakehouseTables;
+    if (!adapter || !definition || !tablePlan) {
+      throw new Error(
+        `LakehouseTables checkpoint resume runtime is missing for '${item.logicalId}'.`,
+      );
+    }
+    const execution = {
+      sourceHash: definition.sourceHash,
+      attemptId: `ddl-verify-${sha256(
+        stableJson({
+          planHash: options.approvedPlan.planHash,
+          logicalId: item.logicalId,
+        }),
+      ).slice(0, 32)}`,
+      deploymentId: options.approvedPlan.deploymentId,
+      bundleLogicalId: item.logicalId,
+      targetLakehouseLogicalId:
+        tablePlan.targetLakehouseLogicalId,
+    };
+    const verification = await adapter.verify(
+      options.approvedPlan.workspaceId,
+      physicalId,
+      definition,
+      execution,
+    );
+    if (!verification.matches) {
+      throw new Error(
+        `Checkpointed LakehouseTables item '${item.logicalId}' no longer matches the approved definition.`,
+      );
+    }
+    return;
+  }
   if (
     item.type !== "Lakehouse" &&
     item.type !== "Environment" &&

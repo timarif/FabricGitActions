@@ -38,6 +38,7 @@ export function loadCheckpoint(
     pendingOperations: parsed.pendingOperations ?? {},
     pendingCreates: parsed.pendingCreates ?? {},
     pendingUpdates: parsed.pendingUpdates ?? {},
+    lakehouseTables: parsed.lakehouseTables ?? {},
   };
   assertCheckpointMatchesPlan(checkpoint, approvedPlan);
   return checkpoint;
@@ -55,6 +56,7 @@ export function createCheckpoint(plan: DeploymentPlan): ApplyCheckpoint {
     pendingOperations: {},
     pendingCreates: {},
     pendingUpdates: {},
+    lakehouseTables: {},
   };
 }
 
@@ -171,6 +173,49 @@ function assertCheckpointMatchesPlan(
         `Checkpoint item '${logicalId}' does not match the approved deployment plan.`,
       );
     }
+    if (planned.type === "LakehouseTables") {
+      const tablePlan = planned.lakehouseTables;
+      if (!tablePlan) {
+        throw new Error(
+          `Checkpointed LakehouseTables item '${logicalId}' has no approved table plan.`,
+        );
+      }
+      const target = plannedItems.get(
+        tablePlan.targetLakehouseLogicalId,
+      );
+      if (!target || target.type !== "Lakehouse") {
+        throw new Error(
+          `Checkpointed LakehouseTables item '${logicalId}' has an invalid approved target.`,
+        );
+      }
+      if (tablePlan.targetBinding === "physical") {
+        if (
+          !tablePlan.targetLakehousePhysicalId ||
+          target.physicalId !== tablePlan.targetLakehousePhysicalId ||
+          completed.physicalId !== tablePlan.targetLakehousePhysicalId
+        ) {
+          throw new Error(
+            `Checkpointed LakehouseTables item '${logicalId}' physical ID does not match its approved target.`,
+          );
+        }
+      } else {
+        const completedTarget =
+          checkpoint.completedItems[
+            tablePlan.targetLakehouseLogicalId
+          ];
+        if (
+          target.action !== "create" ||
+          !completedTarget ||
+          completedTarget.logicalId !== target.logicalId ||
+          completedTarget.action !== "create" ||
+          completed.physicalId !== completedTarget.physicalId
+        ) {
+          throw new Error(
+            `Checkpointed LakehouseTables item '${logicalId}' physical ID does not match its exact completed target dependency.`,
+          );
+        }
+      }
+    }
   }
   for (const [logicalId, pending] of Object.entries(
     checkpoint.pendingOperations,
@@ -186,6 +231,24 @@ function assertCheckpointMatchesPlan(
     ) {
       throw new Error(
         `Checkpoint operation '${logicalId}' does not match the approved deployment plan.`,
+      );
+    }
+  }
+  for (const [logicalId, pending] of Object.entries(
+    checkpoint.lakehouseTables ?? {},
+  )) {
+    const planned = plannedItems.get(logicalId);
+    if (
+      !planned ||
+      planned.type !== "LakehouseTables" ||
+      pending.logicalId !== logicalId ||
+      planned.lakehouseTables?.targetLakehouseLogicalId !==
+        pending.targetLakehouseLogicalId ||
+      planned.lakehouseTables.desiredHash !== pending.desiredHash ||
+      planned.lakehouseTables.sourceHash !== pending.sourceHash
+    ) {
+      throw new Error(
+        `Checkpoint LakehouseTables state '${logicalId}' does not match the approved deployment plan.`,
       );
     }
   }
@@ -273,6 +336,10 @@ function isCheckpoint(value: unknown): value is ApplyCheckpoint {
       (checkpoint.pendingUpdates !== null &&
         typeof checkpoint.pendingUpdates === "object" &&
         !Array.isArray(checkpoint.pendingUpdates))) &&
+    (checkpoint.lakehouseTables === undefined ||
+      (checkpoint.lakehouseTables !== null &&
+        typeof checkpoint.lakehouseTables === "object" &&
+        !Array.isArray(checkpoint.lakehouseTables))) &&
     (checkpoint.workspace === undefined ||
       isCheckpointWorkspace(checkpoint.workspace)) &&
     (checkpoint.sourceCommit === undefined ||
@@ -291,7 +358,104 @@ function isCheckpoint(value: unknown): value is ApplyCheckpoint {
       ) &&
       Object.entries(checkpoint.pendingUpdates ?? {}).every(
         ([logicalId, intent]) => isCheckpointUpdateIntent(logicalId, intent),
+      ) &&
+      Object.entries(checkpoint.lakehouseTables ?? {}).every(
+        ([logicalId, state]) =>
+          isCheckpointLakehouseTables(logicalId, state),
       )
+    );
+  }
+
+  function isCheckpointLakehouseTables(
+    logicalId: string,
+    value: unknown,
+  ): boolean {
+    if (value === null || typeof value !== "object" || Array.isArray(value)) {
+      return false;
+    }
+    const state = value as Record<string, unknown>;
+    const statement = state.statement;
+    return (
+      state.logicalId === logicalId &&
+      typeof state.targetLakehouseLogicalId === "string" &&
+      typeof state.targetLakehouseId === "string" &&
+      /^[a-f0-9]{64}$/.test(String(state.desiredHash)) &&
+      /^[a-f0-9]{64}$/.test(String(state.sourceHash)) &&
+      typeof state.attemptId === "string" &&
+      typeof state.sessionName === "string" &&
+      /^[a-f0-9]{64}$/.test(String(state.sessionRequestHash)) &&
+      (state.sessionId === undefined ||
+        (typeof state.sessionId === "string" &&
+          state.sessionId.length > 0)) &&
+      [
+        "submitting",
+        "accepted",
+        "active",
+        "cleanup-submitting",
+        "cleanup-complete",
+      ].includes(String(state.sessionPhase)) &&
+      typeof state.sessionSubmittedAt === "string" &&
+      !Number.isNaN(Date.parse(state.sessionSubmittedAt)) &&
+      (statement === undefined ||
+        isCheckpointLakehouseTableStatement(statement)) &&
+      Array.isArray(state.completedOperationHashes) &&
+      state.completedOperationHashes.every(
+        (hash) => typeof hash === "string" && /^[a-f0-9]{64}$/.test(hash),
+      ) &&
+      Array.isArray(state.operationReceipts) &&
+      state.operationReceipts.every((receipt) =>
+        isCheckpointLakehouseTableOperationReceipt(receipt),
+      ) &&
+      typeof state.updatedAt === "string" &&
+      !Number.isNaN(Date.parse(state.updatedAt))
+    );
+  }
+
+  function isCheckpointLakehouseTableOperationReceipt(
+    value: unknown,
+  ): boolean {
+    if (value === null || typeof value !== "object" || Array.isArray(value)) {
+      return false;
+    }
+    const receipt = value as Record<string, unknown>;
+    return (
+      /^[a-f0-9]{64}$/.test(String(receipt.operationHash)) &&
+      typeof receipt.tableLogicalId === "string" &&
+      typeof receipt.statementAttemptName === "string" &&
+      /^[a-f0-9]{64}$/.test(String(receipt.codeHash)) &&
+      typeof receipt.statementId === "number" &&
+      Number.isSafeInteger(receipt.statementId) &&
+      receipt.statementId >= 0 &&
+      ["submittedAt", "acceptedAt", "verifiedAt"].every(
+        (key) =>
+          typeof receipt[key] === "string" &&
+          !Number.isNaN(Date.parse(receipt[key] as string)),
+      )
+    );
+  }
+
+  function isCheckpointLakehouseTableStatement(value: unknown): boolean {
+    if (value === null || typeof value !== "object" || Array.isArray(value)) {
+      return false;
+    }
+    const statement = value as Record<string, unknown>;
+    return (
+      typeof statement.statementAttemptName === "string" &&
+      (statement.purpose === "inspect" ||
+        statement.purpose === "create") &&
+      typeof statement.tableLogicalId === "string" &&
+      (statement.operationHash === undefined ||
+        /^[a-f0-9]{64}$/.test(String(statement.operationHash))) &&
+      /^[a-f0-9]{64}$/.test(String(statement.codeHash)) &&
+      ["submitting", "accepted", "verified"].includes(
+        String(statement.phase),
+      ) &&
+      (statement.statementId === undefined ||
+        (typeof statement.statementId === "number" &&
+          Number.isSafeInteger(statement.statementId) &&
+          statement.statementId >= 0)) &&
+      typeof statement.submittedAt === "string" &&
+      !Number.isNaN(Date.parse(statement.submittedAt))
     );
   }
 

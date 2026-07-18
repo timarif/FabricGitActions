@@ -205,6 +205,27 @@ export async function writeJobSummary(plan: DeploymentPlan): Promise<void> {
       item.reason,
     ]),
   ]);
+  const tableOperations = plan.items.flatMap((item) =>
+    (item.lakehouseTables?.operations ?? []).map((operation) => [
+      item.logicalId,
+      operation.identifier,
+      operation.action,
+      operation.operationId,
+      operation.reason,
+    ]),
+  );
+  if (tableOperations.length > 0) {
+    core.summary.addHeading("Lakehouse table operations", 2).addTable([
+      [
+        { data: "Bundle", header: true },
+        { data: "Table", header: true },
+        { data: "Action", header: true },
+        { data: "Operation ID", header: true },
+        { data: "Reason", header: true },
+      ],
+      ...tableOperations,
+    ]);
+  }
 
   await core.summary.write();
 }

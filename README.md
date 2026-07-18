@@ -97,7 +97,7 @@ deletion and capacity unassignment are intentionally unsupported.
 
 Without authentication, `plan` is offline and reports item actions as
 `unknown`. With Fabric authentication configured, Lakehouses, Environments, Notebooks,
-Spark Job Definitions, Data Pipelines, and workspace custom Spark pools are
+LakehouseTables bundles, Spark Job Definitions, Data Pipelines, and workspace custom Spark pools are
 classified as `create`, `update`, `no-op`, or `blocked`; later workload
 adapters remain `unknown`.
 
@@ -155,6 +155,7 @@ that exact file to a separate apply job:
     approved-plan-file: approved/fabric-plan.json
     allow-create: "true"
     allow-update: "false"
+    allow-lakehouse-table-create: "true"
     return-livy-api-endpoint: "true"
     plan-file: apply-output/current-plan.json
     checkpoint-file: apply-output/checkpoint.json
@@ -240,11 +241,78 @@ Definition-bearing workloads are structurally validated:
 | Type | Required definition |
 | --- | --- |
 | Lakehouse | `item.yaml` |
+| LakehouseTables | `definition/tables.yaml` plus every declared `definition/tables/*.sql` file |
 | Environment | `definition/environment.yml`; optional `Sparkcompute.yml`, `.platform`, and custom libraries |
 | Notebook | Exactly one `.py`, `.scala`, `.r`, `.sql`, or `.ipynb` file under `definition/`; optional `.platform` |
 | Spark Job Definition | Exactly one `definition/main.py` or `definition/main.scala`; optional `SparkJobDefinitionV1.json`, `.platform`, and files under `definition/libs/` |
 | Data Pipeline | Valid JSON object at `definition/pipeline-content.json` |
 | Workspace custom Spark pool | `definition/pool.yaml` with node family, node size, autoscale, and dynamic executor allocation settings |
+
+### Lakehouse table DDL
+
+`LakehouseTables` is a declarative bundle, not a Fabric item. Its `item.yaml`
+must set `desiredState: present`, declare exactly one
+`references.lakehouse`, include that logical ID in `dependsOn`, and contain no
+other references or bindings.
+
+```yaml
+displayName: Bronze managed tables
+desiredState: present
+references:
+  lakehouse: bronzeLakehouse
+```
+
+`definition/tables.yaml` declares deterministic dependency order:
+
+```yaml
+apiVersion: fabric.deploy/tables/v1alpha1
+kind: LakehouseTables
+defaultSchema: dbo
+adoptExisting: false
+tables:
+  - logicalId: helloWorld
+    file: tables/001-hello-world.sql
+```
+
+Phase 3 accepts one restricted managed Delta
+`CREATE TABLE IF NOT EXISTS ... USING DELTA` statement per file. It rejects
+ALTER/DROP, CTAS, LOCATION, OPTIONS, external tables, non-Delta providers,
+protocol-changing properties, and multiple statements. Schemas are never
+created implicitly; the target Lakehouse must be schema-enabled and the
+referenced schema must already exist.
+
+Authenticated planning observes Spark catalog and Delta metadata through the
+Lakehouse-scoped Fabric Livy session API. Apply requires the independent
+`allow-lakehouse-table-create` flag. Existing structurally matching tables are
+accepted only when their reserved deployment ownership properties match.
+Ownership scheme `v1` hashes the deployment ID, bundle logical ID, target
+Lakehouse logical ID, and table logical ID, and separately stores the canonical
+per-table desired hash. Source filenames, formatting, comments, bundle source
+hashes, and operation hashes are not persisted as ownership. Legacy
+source/operation-hash ownership properties conflict and require an explicitly
+reviewed migration; they are never silently adopted.
+`adoptExisting: true` produces an explicit adoption plan, but Phase 3 blocks
+execution because ownership stamping would require ALTER TABLE.
+
+Session and statement dispatch boundaries are checkpointed using deterministic
+attempt names, request/code hashes, IDs, phases, timestamps, and cleanup state.
+Raw Livy stdout is never persisted. Ambiguous POST recovery enumerates and
+confirms exact tagged session or code-marker candidates; zero or multiple
+matches fail closed and are never automatically resubmitted. OneLake tokens are
+not required for managed table DDL because no staging receipt is written in
+this session-based implementation.
+
+The Phase 3 live workflow treats a GitHub run rerun as checkpoint recovery, not
+as a new deployment. Attempt 1 creates and uploads the approved plan normally.
+On later attempts, the plan job queries the GitHub Actions artifacts API,
+restores the earliest approved plan for that run, and restores
+`checkpoint.json` only from the immediately preceding run attempt. It requires
+exactly one unexpired artifact for each selected attempt and fails closed if
+either artifact is missing, duplicated, or expired. The original plan is uploaded again
+under the current attempt for normal job handoff, and the recovered checkpoint
+is copied to `apply-output/checkpoint.json` before apply. The workflow never
+relies on `download-artifact` implicitly choosing an artifact from an older
+attempt.
 
 Environment custom libraries require `definition/Sparkcompute.yml`. When Spark
 settings are managed, the action reserves

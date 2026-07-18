@@ -33,10 +33,10 @@
 - [x] Managed workspace provisioning and capacity assignment
 - [x] Environment definition and publish
 - [x] Notebook definition deployment
-- [ ] Lakehouse table DDL deployment
+- [x] Lakehouse table DDL deployment
 - [x] Workspace custom Spark pool deployment
 - [x] Spark Job Definition deployment
-- [ ] Logical reference resolution
+- [x] Logical reference resolution
 - [x] Data Pipeline definition deployment
 
 ## Phase 4: production hardening

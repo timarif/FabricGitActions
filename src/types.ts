@@ -1,8 +1,10 @@
 import type { FabricDefinition } from "./fabric/definition";
+import type { LoadedLakehouseTablesDefinition } from "./fabric/lakehouse-tables-definition";
 import type { SparkCustomPoolDefinition } from "./fabric/spark-custom-pool-definition";
 
 export const FABRIC_ITEM_TYPES = [
   "Lakehouse",
+  "LakehouseTables",
   "Environment",
   "SparkCustomPool",
   "Notebook",
@@ -71,6 +73,32 @@ export interface LoadedManifest {
     string,
     SparkCustomPoolDefinition
   >;
+  lakehouseTablesDefinitions?: Record<
+    string,
+    LoadedLakehouseTablesDefinition
+  >;
+}
+
+export interface PlannedLakehouseTableOperation {
+  action: "create" | "adopt" | "no-op" | "blocked";
+  operationId: string;
+  operationHash: string;
+  order: number;
+  logicalId: string;
+  identifier: string;
+  desiredHash: string;
+  observedHash: string;
+  reason: string;
+}
+
+export interface PlannedLakehouseTables {
+  targetLakehouseLogicalId: string;
+  targetLakehousePhysicalId?: string;
+  targetBinding: "physical" | "symbolic";
+  desiredHash: string;
+  sourceHash: string;
+  observedStateHash: string;
+  operations: PlannedLakehouseTableOperation[];
 }
 
 export interface PlannedItem {
@@ -85,6 +113,7 @@ export interface PlannedItem {
   observedStateHash?: string;
   materializedDefinitionHash?: string;
   resolvedBindingsHash?: string;
+  lakehouseTables?: PlannedLakehouseTables;
   action: PlannedAction;
   reason: string;
 }
@@ -131,6 +160,11 @@ export interface ApplyItemResult {
   physicalId?: string;
   durationMs: number;
   error?: string;
+  lakehouseTables?: {
+    desiredHash: string;
+    observedStateHash: string;
+    operationCount: number;
+  };
 }
 
 export interface ApplyResult {
@@ -220,6 +254,52 @@ export interface ApplyCheckpoint {
   pendingOperations: Record<string, ApplyCheckpointOperation>;
   pendingCreates: Record<string, ApplyCheckpointCreateIntent>;
   pendingUpdates: Record<string, ApplyCheckpointUpdateIntent>;
+  lakehouseTables?: Record<string, ApplyCheckpointLakehouseTables>;
+}
+
+export interface ApplyCheckpointLakehouseTables {
+  logicalId: string;
+  targetLakehouseLogicalId: string;
+  targetLakehouseId: string;
+  desiredHash: string;
+  sourceHash: string;
+  attemptId: string;
+  sessionName: string;
+  sessionRequestHash: string;
+  sessionId?: string;
+  sessionPhase:
+    | "submitting"
+    | "accepted"
+    | "active"
+    | "cleanup-submitting"
+    | "cleanup-complete";
+  sessionSubmittedAt: string;
+  sessionAcceptedAt?: string;
+  cleanupCompletedAt?: string;
+  statement?: {
+    statementAttemptName: string;
+    purpose: "inspect" | "create";
+    tableLogicalId: string;
+    operationHash?: string;
+    codeHash: string;
+    phase: "submitting" | "accepted" | "verified";
+    statementId?: number;
+    submittedAt: string;
+    acceptedAt?: string;
+    verifiedAt?: string;
+  };
+  completedOperationHashes: string[];
+  operationReceipts: Array<{
+    operationHash: string;
+    tableLogicalId: string;
+    statementAttemptName: string;
+    codeHash: string;
+    statementId: number;
+    submittedAt: string;
+    acceptedAt: string;
+    verifiedAt: string;
+  }>;
+  updatedAt: string;
 }
 
 export interface ApplyCheckpointWorkspace {

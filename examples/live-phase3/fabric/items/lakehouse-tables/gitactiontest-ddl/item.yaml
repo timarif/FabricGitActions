@@ -1,0 +1,4 @@
+displayName: GitAction Phase 3 DDL tables
+desiredState: present
+references:
+  lakehouse: gitActionDdlLakehouse

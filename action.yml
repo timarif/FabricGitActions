@@ -74,6 +74,10 @@ inputs:
     description: Allow apply mode to update Fabric items.
     required: false
     default: "false"
+  allow-lakehouse-table-create:
+    description: Permit approved managed Delta table creation in LakehouseTables bundles.
+    required: false
+    default: "false"
   allow-workspace-create:
     description: Allow apply mode to create the managed Fabric workspace.
     required: false

@@ -16,6 +16,7 @@ import { FabricClient } from "./fabric/client";
 import { parseFabricEndpoints } from "./fabric/config";
 import { EnvironmentAdapter } from "./fabric/environment";
 import { LakehouseAdapter } from "./fabric/lakehouse";
+import { LakehouseTablesAdapter } from "./fabric/lakehouse-tables";
 import { buildLakehouseLivyApiEndpoints } from "./fabric/livy";
 import { enrichPlanWithFabric } from "./fabric/live-planner";
 import { NotebookAdapter } from "./fabric/notebook";
@@ -139,6 +140,7 @@ export async function run(): Promise<void> {
     let pipelineAdapter: PipelineAdapter | undefined;
     let sparkCustomPoolAdapter: SparkCustomPoolAdapter | undefined;
     let workspaceAdapter: WorkspaceAdapter | undefined;
+    let lakehouseTablesAdapter: LakehouseTablesAdapter | undefined;
     if ((mode === "plan" || mode === "apply") && authMode !== "none") {
       const clientSecret = core.getInput("client-secret") || undefined;
       if (clientSecret) {
@@ -164,6 +166,7 @@ export async function run(): Promise<void> {
         tokenProvider,
       });
       lakehouseAdapter = new LakehouseAdapter(client);
+      lakehouseTablesAdapter = new LakehouseTablesAdapter(client);
       environmentAdapter = new EnvironmentAdapter(client);
       notebookAdapter = new NotebookAdapter(client);
       sparkJobAdapter = new SparkJobAdapter(client);
@@ -178,6 +181,7 @@ export async function run(): Promise<void> {
         sparkJob: sparkJobAdapter,
         pipeline: pipelineAdapter,
         sparkCustomPool: sparkCustomPoolAdapter,
+        lakehouseTables: lakehouseTablesAdapter,
       });
     } else if (mode === "apply") {
       throw new Error("apply mode requires Fabric authentication.");
@@ -231,6 +235,7 @@ export async function run(): Promise<void> {
         !pipelineAdapter ||
         !sparkCustomPoolAdapter ||
         !workspaceAdapter
+        || !lakehouseTablesAdapter
       ) {
         throw new Error("Fabric adapters were not initialized for apply mode.");
       }
@@ -245,6 +250,7 @@ export async function run(): Promise<void> {
         pipelineAdapter,
         sparkCustomPoolAdapter,
         workspaceAdapter,
+        lakehouseTablesAdapter,
         allowCreate: readBooleanInput("allow-create"),
         allowUpdate: readBooleanInput("allow-update"),
         allowWorkspaceCreate: readBooleanInput(
@@ -255,6 +261,9 @@ export async function run(): Promise<void> {
         ),
         allowCapacityAssignment: readBooleanInput(
           "allow-capacity-assignment",
+        ),
+        allowLakehouseTableCreate: readBooleanInput(
+          "allow-lakehouse-table-create",
         ),
         checkpointFile,
         resultFile,

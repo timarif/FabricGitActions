@@ -1,0 +1,5 @@
+CREATE TABLE IF NOT EXISTS dbo.hello_world (
+  id BIGINT NOT NULL,
+  message STRING
+)
+USING DELTA;

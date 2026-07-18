@@ -143,6 +143,64 @@ function isPlannedItem(value: unknown): value is PlannedItem {
     (item.resolvedBindingsHash === undefined ||
       /^[a-f0-9]{64}$/.test(item.resolvedBindingsHash)) &&
     (item.materializedDefinitionHash === undefined) ===
-      (item.resolvedBindingsHash === undefined)
+      (item.resolvedBindingsHash === undefined) &&
+    (item.type === "LakehouseTables"
+      ? item.lakehouseTables === undefined
+        ? item.action === "blocked" || item.action === "unknown"
+        : isPlannedLakehouseTables(item.lakehouseTables)
+      : item.lakehouseTables === undefined)
   );
+}
+
+function isPlannedLakehouseTables(value: unknown): boolean {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    return false;
+  }
+  const plan = value as Record<string, unknown>;
+  if (
+    typeof plan.targetLakehouseLogicalId !== "string" ||
+    (plan.targetLakehousePhysicalId !== undefined &&
+      typeof plan.targetLakehousePhysicalId !== "string") ||
+    (plan.targetBinding !== "physical" &&
+      plan.targetBinding !== "symbolic") ||
+    !isHash(plan.desiredHash) ||
+    !isHash(plan.sourceHash) ||
+    typeof plan.observedStateHash !== "string" ||
+    !Array.isArray(plan.operations)
+  ) {
+    return false;
+  }
+  if (
+    (plan.targetBinding === "physical") !==
+    (typeof plan.targetLakehousePhysicalId === "string")
+  ) {
+    return false;
+  }
+  return plan.operations.every((operation, index) => {
+    if (
+      operation === null ||
+      typeof operation !== "object" ||
+      Array.isArray(operation)
+    ) {
+      return false;
+    }
+    const entry = operation as Record<string, unknown>;
+    return (
+      ["create", "adopt", "no-op", "blocked"].includes(
+        String(entry.action),
+      ) &&
+      typeof entry.operationId === "string" &&
+      isHash(entry.operationHash) &&
+      entry.order === index &&
+      typeof entry.logicalId === "string" &&
+      typeof entry.identifier === "string" &&
+      isHash(entry.desiredHash) &&
+      typeof entry.observedHash === "string" &&
+      typeof entry.reason === "string"
+    );
+  });
+}
+
+function isHash(value: unknown): value is string {
+  return typeof value === "string" && /^[a-f0-9]{64}$/.test(value);
 }

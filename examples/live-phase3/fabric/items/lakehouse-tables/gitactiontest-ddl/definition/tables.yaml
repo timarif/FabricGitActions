@@ -1,0 +1,7 @@
+apiVersion: fabric.deploy/tables/v1alpha1
+kind: LakehouseTables
+defaultSchema: dbo
+adoptExisting: false
+tables:
+  - logicalId: helloWorld
+    file: tables/001-hello-world.sql

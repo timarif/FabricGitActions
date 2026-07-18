@@ -16,6 +16,7 @@ import { compareCanonicalStrings, sha256, stableJson } from "./hash";
 import { loadEnvironmentDefinition } from "./fabric/definition";
 import { loadNotebookDefinition } from "./fabric/notebook-definition";
 import { loadPipelineDefinition } from "./fabric/pipeline-definition";
+import { loadLakehouseTablesDefinition } from "./fabric/lakehouse-tables-definition";
 import { loadSparkCustomPoolDefinition } from "./fabric/spark-custom-pool-definition";
 import { loadSparkJobDefinition } from "./fabric/spark-job-definition";
 import { validateLogicalReferenceDeclarations } from "./fabric/logical-references";
@@ -138,6 +139,17 @@ export function loadManifest(
         ),
       ]),
   );
+  const lakehouseTablesDefinitions = Object.fromEntries(
+    manifest.items
+      .filter((item) => item.type === "LakehouseTables")
+      .map((item) => [
+        item.logicalId,
+        loadLakehouseTablesDefinition(
+          itemContent.directories[item.logicalId] ?? "",
+          options.variables ?? {},
+        ),
+      ]),
+  );
   validateEnvironmentPlatformMetadata(
     manifest,
     itemDefinitions,
@@ -165,6 +177,11 @@ export function loadManifest(
     itemContent.hashes,
   );
   validateUniqueDesiredIdentities(manifest, itemDefinitions);
+  validateUniqueLakehouseTableIdentities(
+    manifest,
+    itemDefinitions,
+    lakehouseTablesDefinitions,
+  );
   // Bind the plan to the exact definition bytes retained for apply.
   const effectiveItemHashes = Object.fromEntries(
     manifest.items.map((item) => [
@@ -183,6 +200,8 @@ export function loadManifest(
             pipelineDefinitions[item.logicalId] ?? null,
           capturedSparkCustomPoolDefinition:
             sparkCustomPoolDefinitions[item.logicalId] ?? null,
+          capturedLakehouseTablesDefinition:
+            lakehouseTablesDefinitions[item.logicalId] ?? null,
         }),
       ),
     ]),
@@ -202,6 +221,7 @@ export function loadManifest(
     sparkJobDefinitions,
     pipelineDefinitions,
     sparkCustomPoolDefinitions,
+    lakehouseTablesDefinitions,
   };
 }
 
@@ -445,6 +465,7 @@ function validateUniqueDesiredIdentities(
     ) {
       continue;
     }
+
     const definition = definitions[item.logicalId];
     if (!definition) {
       continue;
@@ -462,6 +483,47 @@ function validateUniqueDesiredIdentities(
       );
     }
     itemIdentities.set(identity, item.logicalId);
+  }
+}
+
+function validateUniqueLakehouseTableIdentities(
+  manifest: DeploymentManifest,
+  itemDefinitions: LoadedManifest["itemDefinitions"],
+  tableDefinitions: NonNullable<
+    LoadedManifest["lakehouseTablesDefinitions"]
+  >,
+): void {
+  const identities = new Map<
+    string,
+    { bundleLogicalId: string; tableLogicalId: string }
+  >();
+  for (const item of manifest.items) {
+    if (item.type !== "LakehouseTables") {
+      continue;
+    }
+    const targetLakehouseLogicalId =
+      itemDefinitions[item.logicalId]?.references?.lakehouse;
+    const definition = tableDefinitions[item.logicalId];
+    if (!targetLakehouseLogicalId || !definition) {
+      continue;
+    }
+    for (const table of definition.tables) {
+      const identity = [
+        targetLakehouseLogicalId,
+        table.table.schema.toLowerCase(),
+        table.table.name.toLowerCase(),
+      ].join("\0");
+      const existing = identities.get(identity);
+      if (existing) {
+        throw new Error(
+          `LakehouseTables bundles '${existing.bundleLogicalId}' table '${existing.tableLogicalId}' and '${item.logicalId}' table '${table.logicalId}' target the same table '${table.table.schema}.${table.table.name}' in Lakehouse '${targetLakehouseLogicalId}'.`,
+        );
+      }
+      identities.set(identity, {
+        bundleLogicalId: item.logicalId,
+        tableLogicalId: table.logicalId,
+      });
+    }
   }
 }
 
