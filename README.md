@@ -279,7 +279,10 @@ Phase 3 accepts one restricted managed Delta
 ALTER/DROP, CTAS, LOCATION, OPTIONS, external tables, non-Delta providers,
 protocol-changing properties, and multiple statements. Schemas are never
 created implicitly; the target Lakehouse must be schema-enabled and the
-referenced schema must already exist.
+referenced schema must already exist. Verification pins the Delta protocol to
+reader version 1 and writer version 2, permits only Fabric's legacy
+`appendOnly` and `invariants` capability metadata, and blocks newer table
+features.
 
 Authenticated planning observes Spark catalog and Delta metadata through the
 Lakehouse-scoped Fabric Livy session API. Apply requires the independent

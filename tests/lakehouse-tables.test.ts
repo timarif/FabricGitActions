@@ -19,6 +19,7 @@ import {
   generateCreateTableSql,
   LakehouseTableAdoptionRequiredError,
   LakehouseTablesAdapter,
+  PHASE3_DELTA_PROTOCOL_POLICY,
   quoteSparkIdentifier,
   quoteSparkStringLiteral,
   type LakehouseTableObservation,
@@ -121,7 +122,7 @@ function observation(
     },
     minReaderVersion: 1,
     minWriterVersion: 2,
-    tableFeatures: [],
+    tableFeatures: [...PHASE3_DELTA_PROTOCOL_POLICY.allowedTableFeatures],
     ...(options.overrides ?? {}),
   };
 }
@@ -877,6 +878,30 @@ describe("LakehouseTables Livy adapter", () => {
         expect.stringContaining("deletionVectors"),
       ]),
     );
+  });
+
+  it("accepts Fabric's legacy writer-v2 table feature metadata", async () => {
+    const desired = definition([
+      {
+        logicalId: "orders",
+        sql: "CREATE TABLE IF NOT EXISTS sales.orders (id BIGINT) USING DELTA",
+      },
+    ]);
+    const operation = buildLakehouseTableCreateOperations(
+      desired,
+      EXECUTION,
+    )[0]!;
+    const compatible = observation(operation.table, {
+      ownership: operation.ownership,
+    });
+    const plan = await singleObservationAdapter(
+      desired,
+      compatible,
+    ).plan("workspace", "lakehouse", desired, EXECUTION);
+
+    expect(plan.action).toBe("no-op");
+    expect(plan.tables[0]?.protocolCompatible).toBe(true);
+    expect(plan.tables[0]?.differences).toEqual([]);
   });
 
   it("fails on sanitized Spark errors and preserves cleanup behavior", async () => {

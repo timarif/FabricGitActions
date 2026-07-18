@@ -33,7 +33,8 @@ export const FABRIC_TABLE_OWNER_SCHEME_V1 = "v1";
 export const PHASE3_DELTA_PROTOCOL_POLICY = {
   minReaderVersion: 1,
   minWriterVersion: 2,
-  allowedTableFeatures: [] as readonly string[],
+  // Fabric reports these legacy writer-v2 capabilities for a new Delta table.
+  allowedTableFeatures: ["appendOnly", "invariants"] as readonly string[],
 } as const;
 
 const RESERVED_OWNERSHIP_PROPERTIES = [
