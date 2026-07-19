@@ -101,4 +101,4 @@ jobs:
           mode: validate
           manifest: examples/network-protection/fabric/deployment.yaml
           variables: >-
-            {"FABRIC_WORKSPACE_ID":"00000000-0000-0000-0000-000000000001","FABRIC_GATEWAY_ID":"00000000-0000-0000-0000-000000000003"}
+            {"FABRIC_WORKSPACE_ID":"00000000-0000-0000-0000-000000000001","FABRIC_GATEWAY_ID":"00000000-0000-0000-0000-000000000003","PRIVATE_LINK_RESOURCE_ID":"/subscriptions/00000000-0000-0000-0000-000000000004/resourceGroups/ci/providers/Microsoft.Storage/storageAccounts/example"}
