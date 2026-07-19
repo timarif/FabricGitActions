@@ -47,7 +47,8 @@ firewall surface is discoverable. The fixture keeps desired inbound public
 access at `Allow`; no GitHub-hosted workflow applies firewall rules or enables
 inbound `Deny`. The preview service can omit the ETag advertised by the REST
 reference; the probe remains actionable by binding and rechecking the complete
-observed firewall body hash.
+observed firewall body hash. Probe mode skips the unrelated Lakehouse planning
+check so an inactive capacity cannot prevent firewall API validation.
 
 Future mutation validation must use a self-hosted runner with stable,
 allow-listed egress and an explicit recovery plan. Tenant-level Private Link

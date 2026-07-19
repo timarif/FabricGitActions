@@ -374,6 +374,12 @@ describe("deployment workflow metadata", () => {
       };
     };
     const steps = workflowSteps(workflow, "plan");
+    const generalPlan = steps.find(
+      (step) => step.name === "Plan against Fabric",
+    );
+    const generalVerification = steps.find(
+      (step) => step.name === "Verify live Lakehouse classification",
+    );
     const probe = steps.find(
       (step) => step.name === "Read-only inbound firewall plan probe",
     );
@@ -385,6 +391,13 @@ describe("deployment workflow metadata", () => {
       default: false,
       type: "boolean",
     });
+    expect(generalPlan?.if).toContain(
+      "inputs.probe_inbound_firewall == false",
+    );
+    expect(generalVerification?.if).toContain(
+      "inputs.probe_inbound_firewall == false",
+    );
+    expect(probe?.if).toContain("inputs.probe_inbound_firewall");
     expect(withValues.mode).toBe("plan");
     expect(withValues.manifest).toBe(
       "examples/inbound-firewall-probe/fabric/deployment.yaml",

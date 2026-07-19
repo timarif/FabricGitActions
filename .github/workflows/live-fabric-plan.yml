@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       probe_inbound_firewall:
-        description: Run the read-only preview inbound firewall planning probe. This never applies changes.
+        description: Run only the read-only preview inbound firewall planning probe. This never applies changes.
         required: true
         default: false
         type: boolean
@@ -21,6 +21,7 @@ jobs:
       - uses: actions/checkout@v5
 
       - name: Plan against Fabric
+        if: ${{ inputs.probe_inbound_firewall == false }}
         id: fabric-plan
         uses: ./
         with:
@@ -35,6 +36,7 @@ jobs:
           plan-file: live-output/fabric-plan.json
 
       - name: Verify live Lakehouse classification
+        if: ${{ inputs.probe_inbound_firewall == false }}
         shell: bash
         run: |
           test "${{ steps.fabric-plan.outputs.item-count }}" = "1"
