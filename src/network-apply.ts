@@ -3,6 +3,7 @@ import { FabricApiError } from "./fabric/client";
 import { stableJson } from "./hash";
 import {
   hashCommunicationPolicy,
+  hashInboundAzureResourceRules,
   hashInboundFirewallRules,
   hashOutboundCloudConnectionRules,
   hashOutboundGatewayRules,
@@ -30,6 +31,7 @@ import type {
   DeploymentPlan,
   NetworkProtectionManifest,
   PlannedNetworkCommunicationPolicy,
+  PlannedInboundAzureResourceRules,
   PlannedInboundFirewallRules,
   PlannedManagedPrivateEndpoint,
   PlannedNetworkProtection,
@@ -53,7 +55,10 @@ export interface ApplyNetworkProtectionOptions {
     Partial<
       Pick<
         NetworkProtectionAdapter,
-        "getInboundFirewallRules" | "putInboundFirewallRules"
+        | "getInboundFirewallRules"
+        | "putInboundFirewallRules"
+        | "getInboundAzureResourceRules"
+        | "putInboundAzureResourceRules"
       >
     >;
   managedPrivateEndpointAdapter?: Pick<
@@ -69,6 +74,7 @@ export interface ApplyNetworkProtectionOptions {
   allowNetworkPolicyUpdate: boolean;
   allowNetworkPolicyRelaxation: boolean;
   allowInboundFirewallUpdate?: boolean;
+  allowInboundAzureResourceRuleUpdate?: boolean;
   acknowledgeFirewallLockoutRisk?: boolean;
   allowOutboundCloudConnectionRuleUpdate: boolean;
   allowOutboundGatewayRuleUpdate: boolean;
@@ -80,6 +86,7 @@ export interface ApplyNetworkProtectionOptions {
 type CheckpointSurfaceKey =
   | "communicationPolicy"
   | "inboundFirewallRules"
+  | "inboundAzureResourceRules"
   | "outboundCloudConnectionRules"
   | "outboundGatewayRules";
 
@@ -96,6 +103,7 @@ export function preflightNetworkProtection(options: {
   allowNetworkPolicyUpdate: boolean;
   allowNetworkPolicyRelaxation: boolean;
   allowInboundFirewallUpdate?: boolean;
+  allowInboundAzureResourceRuleUpdate?: boolean;
   acknowledgeFirewallLockoutRisk?: boolean;
   allowOutboundCloudConnectionRuleUpdate: boolean;
   allowOutboundGatewayRuleUpdate: boolean;
@@ -167,6 +175,19 @@ export function preflightNetworkProtection(options: {
         if (!options.allowInboundFirewallUpdate) {
           throw new Error(
             "The approved plan requires an inbound firewall update, but allow-inbound-firewall-update is false.",
+          );
+        }
+      },
+    );
+  }
+  if (planned.inboundAzureResourceRules) {
+    assertPreflightSurfaceAuthorized(
+      planned.inboundAzureResourceRules,
+      checkpointState?.inboundAzureResourceRules,
+      () => {
+        if (!options.allowInboundAzureResourceRuleUpdate) {
+          throw new Error(
+            "The approved plan requires an inbound Azure resource rule update, but allow-inbound-azure-resource-rule-update is false.",
           );
         }
       },
@@ -244,6 +265,8 @@ export async function recoverInterruptedNetworkProtection(
       options.allowNetworkPolicyRelaxation,
     allowInboundFirewallUpdate:
       options.allowInboundFirewallUpdate ?? false,
+    allowInboundAzureResourceRuleUpdate:
+      options.allowInboundAzureResourceRuleUpdate ?? false,
     acknowledgeFirewallLockoutRisk:
       options.acknowledgeFirewallLockoutRisk ?? false,
     allowOutboundCloudConnectionRuleUpdate:
@@ -334,6 +357,7 @@ export async function applyNetworkProtection(
     if (
       options.checkpoint.networkProtection?.communicationPolicy ||
       options.checkpoint.networkProtection?.inboundFirewallRules ||
+      options.checkpoint.networkProtection?.inboundAzureResourceRules ||
       options.checkpoint.networkProtection
         ?.outboundCloudConnectionRules ||
       options.checkpoint.networkProtection?.outboundGatewayRules
@@ -353,6 +377,15 @@ export async function applyNetworkProtection(
         ? {
             inboundFirewallRules: {
               action: planned.inboundFirewallRules.action,
+              status: "deferred" as const,
+              durationMs: 0,
+            },
+          }
+        : {}),
+      ...(planned.inboundAzureResourceRules
+        ? {
+            inboundAzureResourceRules: {
+              action: planned.inboundAzureResourceRules.action,
               status: "deferred" as const,
               durationMs: 0,
             },
@@ -410,11 +443,13 @@ export async function applyNetworkProtection(
 
   let communicationPolicyResult: ApplyNetworkSurfaceResult | undefined;
   let inboundFirewallRulesResult: ApplyNetworkSurfaceResult | undefined;
+  let inboundAzureResourceRulesResult: ApplyNetworkSurfaceResult | undefined;
   let outboundCloudConnectionRulesResult: ApplyNetworkSurfaceResult | undefined;
   let outboundGatewayRulesResult: ApplyNetworkSurfaceResult | undefined;
 
   // Pre-policy phase:
-  // - Inbound Allow -> Deny stages and verifies firewall exceptions first.
+  // - Inbound Allow -> Deny stages and verifies every inbound exception
+  //   surface first (firewall rules, then Azure resource instance rules).
   // - Outbound rule bodies run first unless OAP itself is being enabled,
   //   because those APIs are unavailable before outbound Deny is active.
   if (!inboundRelaxing) {
@@ -426,6 +461,15 @@ export async function applyNetworkProtection(
       canonical,
       now,
     );
+    inboundAzureResourceRulesResult =
+      await applyInboundAzureResourceRulesSurface(
+        options,
+        workspaceId,
+        planned,
+        fresh,
+        canonical,
+        now,
+      );
   }
   if (!outboundTightening) {
     outboundCloudConnectionRulesResult = await applyOutboundCloudConnectionRulesSurface(
@@ -454,8 +498,9 @@ export async function applyNetworkProtection(
   );
 
   // Post-policy phase:
-  // - Inbound Deny -> Allow opens the master policy before any rule
-  //   relaxation/removal.
+  // - Inbound Deny -> Allow opens the master policy before any inbound
+  //   exception surface relaxation/removal (firewall rules, then Azure
+  //   resource instance rules).
   // - Outbound Allow -> Deny enables OAP before its configured rule bodies.
   if (inboundRelaxing) {
     inboundFirewallRulesResult = await applyInboundFirewallRulesSurface(
@@ -466,6 +511,15 @@ export async function applyNetworkProtection(
       canonical,
       now,
     );
+    inboundAzureResourceRulesResult =
+      await applyInboundAzureResourceRulesSurface(
+        options,
+        workspaceId,
+        planned,
+        fresh,
+        canonical,
+        now,
+      );
   }
   if (outboundTightening) {
     outboundCloudConnectionRulesResult = await applyOutboundCloudConnectionRulesSurface(
@@ -490,6 +544,9 @@ export async function applyNetworkProtection(
     communicationPolicy: communicationPolicyResult!,
     ...(inboundFirewallRulesResult
       ? { inboundFirewallRules: inboundFirewallRulesResult }
+      : {}),
+    ...(inboundAzureResourceRulesResult
+      ? { inboundAzureResourceRules: inboundAzureResourceRulesResult }
       : {}),
     ...(outboundCloudConnectionRulesResult
       ? { outboundCloudConnectionRules: outboundCloudConnectionRulesResult }
@@ -615,6 +672,72 @@ async function applyInboundFirewallRulesSurface(
       const observed = await getInboundFirewallRules(workspaceId);
       return (
         hashInboundFirewallRules(observed.configuration) ===
+        surface.desiredHash
+      );
+    },
+  });
+}
+
+async function applyInboundAzureResourceRulesSurface(
+  options: ApplyNetworkProtectionOptions,
+  workspaceId: string,
+  planned: PlannedNetworkProtection,
+  fresh: PlannedNetworkProtection,
+  canonical: ReturnType<typeof normalizeNetworkProtection>,
+  now: () => number,
+): Promise<ApplyNetworkSurfaceResult | undefined> {
+  const surface = planned.inboundAzureResourceRules;
+  if (!surface) {
+    return undefined;
+  }
+  const desired = canonical.inboundAzureResourceRules;
+  if (!desired) {
+    throw new Error(
+      "Approved plan configures inboundAzureResourceRules, but the manifest no longer declares them.",
+    );
+  }
+  const adapter = options.adapter;
+  if (
+    !adapter?.getInboundAzureResourceRules ||
+    !adapter.putInboundAzureResourceRules
+  ) {
+    throw new Error(
+      "Inbound Azure resource rule apply requires inbound Azure resource rule adapter methods.",
+    );
+  }
+  const getInboundAzureResourceRules =
+    adapter.getInboundAzureResourceRules.bind(adapter);
+  const putInboundAzureResourceRules =
+    adapter.putInboundAzureResourceRules.bind(adapter);
+  const freshSurface = fresh.inboundAzureResourceRules;
+  const freshEtag = freshSurface?.etag;
+  return applySurface({
+    label: "inbound Azure resource rules",
+    planned: surface,
+    checkpointKey: "inboundAzureResourceRules",
+    options,
+    now,
+    authorize: () => {
+      if (!options.allowInboundAzureResourceRuleUpdate) {
+        throw new Error(
+          "The approved plan requires an inbound Azure resource rule update, but allow-inbound-azure-resource-rule-update is false.",
+        );
+      }
+    },
+    dispatch: async (onDispatch) => {
+      await putInboundAzureResourceRules(
+        workspaceId,
+        desired,
+        {
+          ...(freshEtag ? { ifMatchEtag: freshEtag } : {}),
+          onDispatch,
+        },
+      );
+    },
+    verify: async () => {
+      const observed = await getInboundAzureResourceRules(workspaceId);
+      return (
+        hashInboundAzureResourceRules(observed.configuration) ===
         surface.desiredHash
       );
     },
@@ -860,6 +983,7 @@ async function applySurface(params: {
 function assertPlanIsApplicable(planned: PlannedNetworkProtection): void {
   const actions = [
     planned.inboundFirewallRules?.action,
+    planned.inboundAzureResourceRules?.action,
     planned.outboundCloudConnectionRules?.action,
     planned.outboundGatewayRules?.action,
   ];
@@ -998,6 +1122,13 @@ function assertNoUnexpectedDrift(
       checkpoint?.inboundFirewallRules,
     );
   }
+  if (planned.inboundAzureResourceRules) {
+    assertInboundAzureResourceRulesNotDrifted(
+      planned.inboundAzureResourceRules,
+      fresh.inboundAzureResourceRules,
+      checkpoint?.inboundAzureResourceRules,
+    );
+  }
   if (planned.outboundCloudConnectionRules) {
     assertSurfaceNotDrifted(
       "outbound cloud connection rules",
@@ -1046,6 +1177,33 @@ function assertInboundFirewallRulesNotDrifted(
   ) {
     throw new Error(
       "Fabric inbound firewall rule metadata drifted after approval. Generate a new plan.",
+    );
+  }
+}
+
+function assertInboundAzureResourceRulesNotDrifted(
+  planned: PlannedInboundAzureResourceRules,
+  fresh: PlannedInboundAzureResourceRules | undefined,
+  checkpointState: ApplyCheckpointNetworkSurface | undefined,
+): void {
+  assertSurfaceNotDrifted(
+    "inbound Azure resource rules",
+    planned,
+    fresh,
+    checkpointState,
+    false,
+  );
+  if (!fresh) {
+    return;
+  }
+  if (
+    planned.ruleCount !== fresh.ruleCount ||
+    (checkpointState === undefined &&
+      planned.etag !== undefined &&
+      fresh.etag === undefined)
+  ) {
+    throw new Error(
+      "Fabric inbound Azure resource rule metadata drifted after approval. Generate a new plan.",
     );
   }
 }
@@ -1153,6 +1311,7 @@ function networkProtectionRequiresRecovery(
   const hasStartedSurface =
     checkpoint.communicationPolicy !== undefined ||
     checkpoint.inboundFirewallRules !== undefined ||
+    checkpoint.inboundAzureResourceRules !== undefined ||
     checkpoint.outboundCloudConnectionRules !== undefined ||
     checkpoint.outboundGatewayRules !== undefined;
   if (!planned) {
@@ -1163,6 +1322,9 @@ function networkProtectionRequiresRecovery(
     (planned.inboundFirewallRules === undefined
       ? checkpoint.inboundFirewallRules === undefined
       : checkpoint.inboundFirewallRules?.phase === "verified") &&
+    (planned.inboundAzureResourceRules === undefined
+      ? checkpoint.inboundAzureResourceRules === undefined
+      : checkpoint.inboundAzureResourceRules?.phase === "verified") &&
     (planned.outboundCloudConnectionRules === undefined
       ? checkpoint.outboundCloudConnectionRules === undefined
       : checkpoint.outboundCloudConnectionRules?.phase === "verified") &&
@@ -1188,6 +1350,10 @@ function assertDesiredConfigurationMatchesPlan(
   assertDesiredInboundFirewallRulesMatchesPlan(
     planned.inboundFirewallRules,
     canonical.inboundFirewallRules,
+  );
+  assertDesiredInboundAzureResourceRulesMatchesPlan(
+    planned.inboundAzureResourceRules,
+    canonical.inboundAzureResourceRules,
   );
   assertDesiredSurfaceMatchesPlan(
     "outbound cloud connection rules",
@@ -1228,6 +1394,27 @@ function assertDesiredInboundFirewallRulesMatchesPlan(
   ) {
     throw new Error(
       "The networkProtection inbound firewall rules manifest no longer matches the approved plan.",
+    );
+  }
+}
+
+function assertDesiredInboundAzureResourceRulesMatchesPlan(
+  planned: PlannedInboundAzureResourceRules | undefined,
+  desired: ReturnType<
+    typeof normalizeNetworkProtection
+  >["inboundAzureResourceRules"],
+): void {
+  if (!planned && desired === undefined) {
+    return;
+  }
+  if (
+    !planned ||
+    desired === undefined ||
+    planned.desiredHash !== hashInboundAzureResourceRules(desired) ||
+    planned.ruleCount !== desired.rules.length
+  ) {
+    throw new Error(
+      "The networkProtection inbound Azure resource rules manifest no longer matches the approved plan.",
     );
   }
 }
@@ -1461,6 +1648,9 @@ function markNetworkProtectionCompleted(
     (planned.inboundFirewallRules === undefined
       ? checkpoint.inboundFirewallRules === undefined
       : checkpoint.inboundFirewallRules?.phase === "verified") &&
+    (planned.inboundAzureResourceRules === undefined
+      ? checkpoint.inboundAzureResourceRules === undefined
+      : checkpoint.inboundAzureResourceRules?.phase === "verified") &&
     (planned.outboundCloudConnectionRules === undefined
       ? checkpoint.outboundCloudConnectionRules === undefined
       : checkpoint.outboundCloudConnectionRules?.phase === "verified") &&

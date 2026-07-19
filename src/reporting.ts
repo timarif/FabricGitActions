@@ -207,6 +207,14 @@ export async function writeJobSummary(plan: DeploymentPlan): Promise<void> {
         networkProtection.inboundFirewallRules.reason,
       ]);
     }
+    if (networkProtection.inboundAzureResourceRules) {
+      surfaceRows.push([
+        "Inbound Azure resource instance rules (Preview)",
+        networkProtection.inboundAzureResourceRules.action,
+        `${networkProtection.inboundAzureResourceRules.ruleCount} rule(s)`,
+        networkProtection.inboundAzureResourceRules.reason,
+      ]);
+    }
     if (networkProtection.outboundCloudConnectionRules) {
       surfaceRows.push([
         "Outbound cloud connection rules",

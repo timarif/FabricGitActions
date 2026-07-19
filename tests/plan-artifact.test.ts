@@ -10,6 +10,7 @@ import {
 } from "../src/fabric/managed-private-endpoints";
 import {
   hashCommunicationPolicy,
+  hashInboundAzureResourceRules,
   hashInboundFirewallRules,
 } from "../src/fabric/network-protection";
 import { loadApprovedPlan } from "../src/plan-artifact";
@@ -453,6 +454,139 @@ describe("approved plan loading", () => {
         string,
         unknown
       >
+    ).unexpected = true;
+    writeFileSync(
+      planPath,
+      JSON.stringify(rehashPlan(approved)),
+      "utf8",
+    );
+    expect(() => loadApprovedPlan(planPath)).toThrow(
+      "invalid structure",
+    );
+  });
+
+  it("round-trips a plan with a configured inbound Azure resource rules surface, including a headerless variant", () => {
+    const root = mkdtempSync(path.join(tmpdir(), "fabric-plan-"));
+    const planPath = path.join(root, "plan.json");
+    const plan = createPlan();
+    const resourceId =
+      "/subscriptions/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/resourcegroups/data/providers/microsoft.sql/servers/sqlserver";
+    const desiredPolicyHash = hashCommunicationPolicy({
+      inbound: { publicAccessRules: { defaultAction: "Allow" } },
+      outbound: { publicAccessRules: { defaultAction: "Allow" } },
+    });
+    plan.networkProtection = {
+      workspaceId: "11111111-1111-4111-8111-111111111111",
+      communicationPolicy: {
+        action: "no-op",
+        reason: "Matches.",
+        desiredHash: desiredPolicyHash,
+        observedStateHash: desiredPolicyHash,
+        desiredInboundDefaultAction: "Allow",
+        desiredOutboundDefaultAction: "Allow",
+        observedInboundDefaultAction: "Allow",
+        observedOutboundDefaultAction: "Allow",
+        isRelaxation: false,
+      },
+      inboundAzureResourceRules: {
+        action: "update",
+        reason: "Preview Azure resource rules differ.",
+        desiredHash: hashInboundAzureResourceRules({
+          rules: [{ displayName: "sql-server", resourceId }],
+        }),
+        observedStateHash: hashInboundAzureResourceRules({ rules: [] }),
+        etag: "azure-resource-etag",
+        ruleCount: 1,
+      },
+    };
+    const approved = rehashPlan(plan);
+    writeFileSync(planPath, JSON.stringify(approved), "utf8");
+
+    expect(
+      loadApprovedPlan(planPath).networkProtection
+        ?.inboundAzureResourceRules,
+    ).toMatchObject({
+      action: "update",
+      etag: "azure-resource-etag",
+      ruleCount: 1,
+    });
+
+    const headerless = structuredClone(approved);
+    delete headerless.networkProtection!.inboundAzureResourceRules!.etag;
+    writeFileSync(
+      planPath,
+      JSON.stringify(rehashPlan(headerless)),
+      "utf8",
+    );
+    expect(
+      loadApprovedPlan(planPath).networkProtection
+        ?.inboundAzureResourceRules,
+    ).not.toHaveProperty("etag");
+
+    const uncapped = structuredClone(approved);
+    uncapped.networkProtection!.inboundAzureResourceRules!.ruleCount =
+      257;
+    writeFileSync(
+      planPath,
+      JSON.stringify(rehashPlan(uncapped)),
+      "utf8",
+    );
+    expect(
+      loadApprovedPlan(planPath).networkProtection
+        ?.inboundAzureResourceRules?.ruleCount,
+    ).toBe(257);
+  });
+
+  it("rejects rehashed inbound Azure resource rules plan metadata tampering", () => {
+    const root = mkdtempSync(path.join(tmpdir(), "fabric-plan-"));
+    const planPath = path.join(root, "plan.json");
+    const plan = createPlan();
+    const resourceId =
+      "/subscriptions/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/resourcegroups/data/providers/microsoft.sql/servers/sqlserver";
+    const desiredPolicyHash = hashCommunicationPolicy({
+      inbound: { publicAccessRules: { defaultAction: "Allow" } },
+      outbound: { publicAccessRules: { defaultAction: "Allow" } },
+    });
+    plan.networkProtection = {
+      workspaceId: "11111111-1111-4111-8111-111111111111",
+      communicationPolicy: {
+        action: "no-op",
+        reason: "Matches.",
+        desiredHash: desiredPolicyHash,
+        observedStateHash: desiredPolicyHash,
+        desiredInboundDefaultAction: "Allow",
+        desiredOutboundDefaultAction: "Allow",
+        observedInboundDefaultAction: "Allow",
+        observedOutboundDefaultAction: "Allow",
+        isRelaxation: false,
+      },
+      inboundAzureResourceRules: {
+        action: "update",
+        reason: "differs",
+        desiredHash: hashInboundAzureResourceRules({
+          rules: [{ displayName: "sql-server", resourceId }],
+        }),
+        observedStateHash: hashInboundAzureResourceRules({ rules: [] }),
+        etag: "etag",
+        ruleCount: 1,
+      },
+    };
+    const approved = rehashPlan(plan);
+
+    approved.networkProtection!.inboundAzureResourceRules!.etag = "";
+    writeFileSync(
+      planPath,
+      JSON.stringify(rehashPlan(approved)),
+      "utf8",
+    );
+    expect(() => loadApprovedPlan(planPath)).toThrow(
+      "invalid structure",
+    );
+
+    approved.networkProtection!.inboundAzureResourceRules!.etag = "etag";
+    (
+      approved.networkProtection!
+        .inboundAzureResourceRules as unknown as Record<string, unknown>
     ).unexpected = true;
     writeFileSync(
       planPath,

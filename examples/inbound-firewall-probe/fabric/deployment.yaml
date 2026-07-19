@@ -2,11 +2,12 @@ apiVersion: fabric.deploy/v1alpha1
 kind: FabricDeployment
 
 metadata:
-  deploymentId: fabric-inbound-firewall-readonly-probe
+  deploymentId: fabric-inbound-network-readonly-probe
 
 # This fixture is intentionally plan-only for GitHub-hosted runners. It reads
-# the live communication policy and preview firewall configuration but keeps
-# inbound public access at Allow and must never be used by a live apply job.
+# the live communication policy and preview inbound firewall and Azure
+# resource instance rule configuration but keeps inbound public access at
+# Allow and must never be used by a live apply job.
 networkProtection:
   communicationPolicy:
     inboundDefaultAction: Allow
@@ -15,5 +16,9 @@ networkProtection:
     rules:
       - displayName: readonly-plan-probe
         value: 12.34.56.78
+  inboundAzureResourceRules:
+    rules:
+      - displayName: readonly-plan-probe-resource
+        resourceId: /subscriptions/00000000-0000-0000-0000-000000000004/resourceGroups/ci/providers/Microsoft.Storage/storageAccounts/example
 
 items: []

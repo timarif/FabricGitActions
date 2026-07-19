@@ -103,13 +103,13 @@ an explicit independent `networkProtection.workspaceId` remains actionable.
 
 ### Phase 5B: inbound access protection
 
-The first Phase 5B increment adds the documented preview workspace IP firewall
-API while leaving the other inbound surfaces for later:
+Phase 5B now covers both documented preview inbound allow-list APIs, leaving
+only the External Data Shares bypass policy for later:
 
 | Surface | Fabric REST API |
 | --- | --- |
 | IP firewall rules | `GET/PUT /v1/workspaces/{workspaceId}/networking/communicationPolicy/inbound/firewall` (implemented) |
-| Azure resource instance rules | `GET/PUT /v1/workspaces/{workspaceId}/networking/communicationPolicy/inbound/azureResources` (deferred) |
+| Azure resource instance rules | `GET/PUT /v1/workspaces/{workspaceId}/networking/communicationPolicy/inbound/azureResources` (implemented) |
 | External Data Shares policy | `GET/PUT /v1/workspaces/{workspaceId}/networking/communicationPolicy/inbound/externalDataShares` (deferred) |
 
 `inboundFirewallRules` mirrors the documented request body exactly:
@@ -118,8 +118,7 @@ canonicalized and hashed as a complete replacement. The validator accepts only
 documented public IPv4 single-address, range, and CIDR forms, enforces the
 256-rule and 128-character name limits, and rejects unknown fields,
 case-ambiguous names, malformed/non-public values, duplicates, and overlaps.
-IPv6, empty inbound-Deny allow lists, Azure resource rules, and External Data
-Shares fail closed.
+IPv6, empty inbound-Deny allow lists, and External Data Shares fail closed.
 
 Authenticated planning binds the target workspace, canonical desired hash,
 observed hash, rule count, and GET ETag when Fabric returns one. The preview
@@ -132,25 +131,57 @@ response table and `204` in the example), and verifies with a new GET. Only
 definitive HTTP 429 is retried. Transport failures, 408, and 5xx remain
 ambiguous and are never blindly resubmitted.
 
+`inboundAzureResourceRules` mirrors the documented Get/Set Inbound Azure
+Resource Rules request/response body exactly:
+`{ "rules": [{ "displayName": "...", "resourceId": "..." }] }`, where
+`resourceId` is a full ARM resource ID. Rules are canonicalized (ARM IDs are
+lowercased using the same canonicalization as managed private endpoint target
+identities) and hashed as a complete replacement, sorted by resource ID then
+display name. The validator rejects unknown fields, duplicate or
+case-ambiguous resource IDs, and malformed ARM resource ID shapes. Display
+names are descriptive rather than identifiers and need not be unique. Unlike
+the sibling firewall surface, the official reference documents no rule-count
+or displayName-length limit and no ETag/`If-Match` support at all for this
+surface, so the action does not invent those limits. It opportunistically
+captures and forwards any ETag the service happens to return, using the
+identical headerless-safe drift model, in case a future preview revision adds
+one. A live read-only GET currently returns `{ "rules": [] }` without an ETag.
+Set Inbound Azure Resource Rules documents only a `200` response (no `204`
+alternative), and any other status is treated as a validation error rather
+than an accepted no-content response. Because Azure resource rules grant
+access to a specific Azure resource instance rather than any client IP, they
+do not participate in the inbound-Deny non-empty-configuration requirement
+that guards against total public lockout -- that requirement remains bound to
+`inboundFirewallRules` only.
+
 Inbound exceptions are staged and verified before changing inbound public
 access from `Allow` to `Deny`. The transition requires
 `allow-network-policy-update`, `allow-inbound-firewall-update`, and the
 independent `acknowledge-firewall-lockout-risk` before any mutation in the
-network unit, including recovery. Inbound `Deny` to `Allow` opens the master
-policy before firewall relaxation/removal. Combined inbound/outbound
-transitions run direction-specific pre-policy surfaces, the single
-communication policy PUT, then direction-specific post-policy surfaces.
+network unit, including recovery; `allow-inbound-azure-resource-rule-update`
+is a fully independent safeguard scoped only to its own surface and neither
+satisfies nor is implied by the lockout safeguards. Inbound `Deny` to `Allow`
+opens the master policy before firewall and Azure resource rule
+relaxation/removal (firewall first, then Azure resource rules). Combined
+inbound/outbound transitions run direction-specific pre-policy surfaces (both
+inbound exception surfaces staged before an `Allow` -> `Deny` transition, or
+relaxed together after a `Deny` -> `Allow` transition), the single
+communication policy PUT, then direction-specific post-policy surfaces. Each
+surface runs exactly once per apply.
 
 GitHub-hosted live validation is intentionally limited to an authenticated
-read-only plan probe with desired inbound `Allow`. A self-hosted runner with a
-stable, allow-listed egress address remains the recommended future mutation
-test path.
+read-only plan probe with desired inbound `Allow`, covering both the firewall
+and Azure resource rule surfaces. A self-hosted runner with a stable,
+allow-listed egress address remains the recommended future mutation test path.
 
 Tenant-level and workspace-level Private Link configuration remains out of
 scope because the required controls are portal/ARM surfaces rather than
-documented Fabric workspace REST operations. Trusted workspace access also
-requires a separate Azure Storage resource rule and is not represented as a
-Fabric-only mutation.
+documented Fabric workspace REST operations. Fully configuring trusted
+workspace access for a specific Azure resource (for example, an Azure Storage
+account) also requires a resource-instance rule on that target resource's own
+network settings; that half of the configuration remains an ARM/portal
+surface for the target resource and is out of scope, even though this action
+now manages the Fabric-side `inboundAzureResourceRules` allow list.
 
 ### Network safeguards
 
@@ -241,6 +272,8 @@ For every new item:
 - [Get workspace firewall rules](https://learn.microsoft.com/en-us/rest/api/fabric/core/workspaces/get-firewall-rules)
 - [Set workspace firewall rules](https://learn.microsoft.com/en-us/rest/api/fabric/core/workspaces/set-firewall-rules)
 - [Workspace IP firewall overview](https://learn.microsoft.com/en-us/fabric/security/security-workspace-level-firewall-overview)
+- [Get inbound Azure resource rules](https://learn.microsoft.com/en-us/rest/api/fabric/core/workspaces/get-inbound-azure-resource-rules)
+- [Set inbound Azure resource rules](https://learn.microsoft.com/en-us/rest/api/fabric/core/workspaces/set-inbound-azure-resource-rules)
 - [Outbound cloud connection rules](https://learn.microsoft.com/en-us/rest/api/fabric/core/workspaces/set-outbound-cloud-connection-rules)
 - [Outbound gateway rules](https://learn.microsoft.com/en-us/rest/api/fabric/core/workspaces/set-outbound-gateway-rules)
 - [Managed private endpoints](https://learn.microsoft.com/en-us/rest/api/fabric/core/managed-private-endpoints)

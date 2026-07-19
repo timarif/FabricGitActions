@@ -7,13 +7,14 @@ metadata:
 workspace:
   id: ${var.FABRIC_WORKSPACE_ID}
 
-# Stages a complete preview inbound IP firewall allow list while public inbound
-# access remains Allow, and tightens outbound access protection (OAP).
-# Outbound cloud connection and gateway rules may only be declared while
-# outboundDefaultAction is Deny; apply lands the master policy switch and the
-# configured allow lists together as one approved mutation. The declared
-# managed private endpoint makes this a guarded two-plan rollout: first create
-# and approve the endpoint, then replan before OAP can tighten to Deny.
+# Stages a complete preview inbound IP firewall allow list and Azure resource
+# instance allow list while public inbound access remains Allow, and tightens
+# outbound access protection (OAP). Outbound cloud connection and gateway
+# rules may only be declared while outboundDefaultAction is Deny; apply lands
+# the master policy switch and the configured allow lists together as one
+# approved mutation. The declared managed private endpoint makes this a
+# guarded two-plan rollout: first create and approve the endpoint, then
+# replan before OAP can tighten to Deny.
 networkProtection:
   communicationPolicy:
     inboundDefaultAction: Allow
@@ -26,6 +27,10 @@ networkProtection:
         value: 23.45.67.80-23.45.67.89
       - displayName: vpn-cidr
         value: 34.56.78.0/24
+  inboundAzureResourceRules:
+    rules:
+      - displayName: trusted-storage-account
+        resourceId: ${var.PRIVATE_LINK_RESOURCE_ID}
   outboundCloudConnectionRules:
     defaultAction: Deny
     rules:

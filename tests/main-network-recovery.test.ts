@@ -35,6 +35,7 @@ import {
 } from "../src/checkpoint";
 import {
   hashCommunicationPolicy,
+  hashInboundAzureResourceRules,
   hashInboundFirewallRules,
   NetworkProtectionAdapter,
   normalizeNetworkProtection,
@@ -415,6 +416,184 @@ items: []
       loadCheckpoint(checkpointFile, approved)?.networkProtection,
     ).toMatchObject({
       inboundFirewallRules: { phase: "verified" },
+      communicationPolicy: { phase: "verified" },
+      completedAt: expect.any(String),
+    });
+    expect(actionCore.setFailed).toHaveBeenCalledWith(
+      expect.stringContaining("directory not found"),
+    );
+  });
+
+  it("recovers a started inbound Azure resource rule unit before unrelated item loading", async () => {
+    const root = mkdtempSync(
+      path.join(tmpdir(), "fabric-main-azure-resource-recovery-"),
+    );
+    const manifestPath = path.join(root, "deployment.yaml");
+    const approvedPlanFile = path.join(root, "approved-plan.json");
+    const planFile = path.join(root, "current-plan.json");
+    const checkpointFile = path.join(root, "checkpoint.json");
+    const resultFile = path.join(root, "result.json");
+    const resourceId =
+      "/subscriptions/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/resourceGroups/data/providers/Microsoft.Sql/servers/sqlserver";
+    const manifest = `
+apiVersion: fabric.deploy/v1alpha1
+kind: FabricDeployment
+metadata:
+  deploymentId: main-azure-resource-recovery
+workspace:
+  id: ${WORKSPACE_ID}
+networkProtection:
+  communicationPolicy:
+    inboundDefaultAction: Allow
+    outboundDefaultAction: Allow
+  inboundAzureResourceRules:
+    rules:
+      - displayName: sql-server
+        resourceId: ${resourceId}
+items: []
+`;
+    writeFileSync(manifestPath, manifest, "utf8");
+    const loaded = loadManifest(manifestPath);
+    const desired = normalizeNetworkProtection(
+      loaded.manifest.networkProtection!,
+    );
+    const plan = buildPlan(loaded, {
+      mode: "plan",
+      environment: "dev",
+    });
+    const desiredPolicyHash = hashCommunicationPolicy(
+      desired.communicationPolicy,
+    );
+    const desiredAzureResourceHash = hashInboundAzureResourceRules(
+      desired.inboundAzureResourceRules!,
+    );
+    plan.networkProtection = {
+      workspaceId: WORKSPACE_ID,
+      communicationPolicy: {
+        action: "no-op",
+        reason: "matches",
+        desiredHash: desiredPolicyHash,
+        observedStateHash: desiredPolicyHash,
+        desiredInboundDefaultAction: "Allow",
+        desiredOutboundDefaultAction: "Allow",
+        observedInboundDefaultAction: "Allow",
+        observedOutboundDefaultAction: "Allow",
+        isRelaxation: false,
+      },
+      inboundAzureResourceRules: {
+        action: "update",
+        reason: "differs",
+        desiredHash: desiredAzureResourceHash,
+        observedStateHash: hashInboundAzureResourceRules({ rules: [] }),
+        etag: "approval-etag",
+        ruleCount: 1,
+      },
+    };
+    const approved = rehashPlan(plan);
+    writeFileSync(
+      approvedPlanFile,
+      `${JSON.stringify(approved, null, 2)}\n`,
+      "utf8",
+    );
+    const checkpoint = createCheckpoint(approved);
+    checkpoint.networkProtection = {
+      workspaceId: WORKSPACE_ID,
+      inboundAzureResourceRules: {
+        desiredHash: desiredAzureResourceHash,
+        phase: "submitting",
+        updatedAt: "2026-07-19T00:00:00.000Z",
+      },
+      updatedAt: "2026-07-19T00:00:00.000Z",
+    };
+    writeCheckpoint(checkpointFile, checkpoint);
+    writeFileSync(
+      manifestPath,
+      manifest.replace(
+        "items: []",
+        `items:
+  - logicalId: missing
+    type: Lakehouse
+    path: items/does-not-exist`,
+      ),
+      "utf8",
+    );
+
+    const calls: string[] = [];
+    const freshNetworkPlan = {
+      ...approved.networkProtection!,
+      communicationPolicy: {
+        ...approved.networkProtection!.communicationPolicy,
+        etag: "policy-etag",
+      },
+    };
+    vi.spyOn(NetworkProtectionAdapter.prototype, "plan").mockImplementation(
+      async () => {
+        calls.push("network-plan");
+        return freshNetworkPlan;
+      },
+    );
+    vi.spyOn(
+      NetworkProtectionAdapter.prototype,
+      "getInboundAzureResourceRules",
+    ).mockImplementation(async () => {
+      calls.push("azure-resource-get");
+      return {
+        configuration: desired.inboundAzureResourceRules!,
+        etag: "approval-etag",
+      };
+    });
+    vi.spyOn(
+      NetworkProtectionAdapter.prototype,
+      "putInboundAzureResourceRules",
+    ).mockImplementation(async () => {
+      calls.push("azure-resource-put");
+      return {
+        configuration: desired.inboundAzureResourceRules!,
+        etag: "updated-azure-resource-etag",
+      };
+    });
+    vi.spyOn(
+      NetworkProtectionAdapter.prototype,
+      "getCommunicationPolicy",
+    ).mockImplementation(async () => {
+      calls.push("policy-get");
+      return {
+        policy: desired.communicationPolicy,
+        etag: "policy-etag",
+      };
+    });
+
+    for (const [name, value] of Object.entries({
+      mode: "apply",
+      manifest: manifestPath,
+      environment: "dev",
+      "auth-mode": "service-principal-secret",
+      "tenant-id": "tenant",
+      "client-id": "client",
+      "client-secret": "secret",
+      "approved-plan-file": approvedPlanFile,
+      "plan-file": planFile,
+      "checkpoint-file": checkpointFile,
+      "result-file": resultFile,
+      "allow-inbound-azure-resource-rule-update": "true",
+    })) {
+      actionCore.inputs.set(name, value);
+    }
+
+    await run();
+
+    expect(calls).toEqual([
+      "network-plan",
+      "network-plan",
+      "azure-resource-get",
+      "policy-get",
+    ]);
+    expect(calls).not.toContain("azure-resource-put");
+    expect(enrichPlanWithFabric).not.toHaveBeenCalled();
+    expect(
+      loadCheckpoint(checkpointFile, approved)?.networkProtection,
+    ).toMatchObject({
+      inboundAzureResourceRules: { phase: "verified" },
       communicationPolicy: { phase: "verified" },
       completedAt: expect.any(String),
     });

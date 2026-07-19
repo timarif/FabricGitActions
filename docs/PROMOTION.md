@@ -59,8 +59,11 @@ for the promotion. Lakehouse deletion requires both `allow_delete` and
 communication policy default action from `Deny` to `Allow` requires both
 `allow_network_policy_update` and `allow_network_policy_relaxation`.
 Replacing the preview inbound firewall requires
-`allow_inbound_firewall_update`. Changing observed inbound `Allow` to desired
-`Deny` additionally requires `allow_network_policy_update` and the independent
+`allow_inbound_firewall_update`. Replacing the preview inbound Azure resource
+instance rules requires the independent `allow_inbound_azure_resource_rule_update`,
+which does not imply and is not implied by the firewall safeguard. Changing
+observed inbound `Allow` to desired `Deny` additionally requires
+`allow_network_policy_update` and the independent
 `acknowledge_firewall_lockout_risk`; no other allow flag implies that
 acknowledgement.
 Managed private endpoint creation and deletion use independent

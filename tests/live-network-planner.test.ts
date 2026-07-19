@@ -113,6 +113,14 @@ describe("network protection live planning", () => {
             },
           ],
         },
+        inboundAzureResourceRules: {
+          rules: [
+            {
+              displayName: "sql-server",
+              resourceId: TARGET_ID,
+            },
+          ],
+        },
         managedPrivateEndpoints: [
           {
             name: "storage-blob",
@@ -143,6 +151,12 @@ describe("network protection live planning", () => {
     );
     expect(
       enriched.networkProtection?.inboundFirewallRules,
+    ).toMatchObject({
+      action: "blocked",
+      ruleCount: 1,
+    });
+    expect(
+      enriched.networkProtection?.inboundAzureResourceRules,
     ).toMatchObject({
       action: "blocked",
       ruleCount: 1,

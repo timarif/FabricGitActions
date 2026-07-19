@@ -179,7 +179,10 @@ export interface ApplyPlanOptions {
     Partial<
       Pick<
         NetworkProtectionAdapter,
-        "getInboundFirewallRules" | "putInboundFirewallRules"
+        | "getInboundFirewallRules"
+        | "putInboundFirewallRules"
+        | "getInboundAzureResourceRules"
+        | "putInboundAzureResourceRules"
       >
     >;
   managedPrivateEndpointAdapter?: Pick<
@@ -211,6 +214,7 @@ export interface ApplyPlanOptions {
   allowNetworkPolicyUpdate?: boolean;
   allowNetworkPolicyRelaxation?: boolean;
   allowInboundFirewallUpdate?: boolean;
+  allowInboundAzureResourceRuleUpdate?: boolean;
   acknowledgeFirewallLockoutRisk?: boolean;
   allowOutboundCloudConnectionRuleUpdate?: boolean;
   allowOutboundGatewayRuleUpdate?: boolean;
@@ -956,6 +960,8 @@ function networkProtectionApplyOptions(
       runtimeOptions.allowNetworkPolicyRelaxation ?? false,
     allowInboundFirewallUpdate:
       runtimeOptions.allowInboundFirewallUpdate ?? false,
+    allowInboundAzureResourceRuleUpdate:
+      runtimeOptions.allowInboundAzureResourceRuleUpdate ?? false,
     acknowledgeFirewallLockoutRisk:
       runtimeOptions.acknowledgeFirewallLockoutRisk ?? false,
     allowOutboundCloudConnectionRuleUpdate:
@@ -984,6 +990,8 @@ function preflightRuntimeNetworkProtection(
       runtimeOptions.allowNetworkPolicyRelaxation ?? false,
     allowInboundFirewallUpdate:
       runtimeOptions.allowInboundFirewallUpdate ?? false,
+    allowInboundAzureResourceRuleUpdate:
+      runtimeOptions.allowInboundAzureResourceRuleUpdate ?? false,
     acknowledgeFirewallLockoutRisk:
       runtimeOptions.acknowledgeFirewallLockoutRisk ?? false,
     allowOutboundCloudConnectionRuleUpdate:

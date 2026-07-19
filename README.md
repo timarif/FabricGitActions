@@ -122,8 +122,8 @@ adapters remain `unknown`.
 An optional top-level `networkProtection` manifest section manages the GA
 workspace network communication policy, outbound cloud connection and gateway
 rules, managed private endpoints, and the preview workspace inbound IP
-firewall, either for the manifest's own managed/target workspace or an
-independent explicit `workspaceId`:
+firewall and Azure resource instance rules, either for the manifest's own
+managed/target workspace or an independent explicit `workspaceId`:
 
 ```yaml
 networkProtection:
@@ -136,6 +136,10 @@ networkProtection:
         value: 12.34.56.78
       - displayName: vpn-cidr
         value: 34.56.78.0/24
+  inboundAzureResourceRules:
+    rules:
+      - displayName: trusted-sql-server
+        resourceId: /subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/example/providers/Microsoft.Sql/servers/example-sql
   outboundCloudConnectionRules:
     defaultAction: Deny
     rules:
@@ -169,11 +173,25 @@ fields, duplicate or case-ambiguous names, malformed/non-public values, and
 duplicate or overlapping address declarations. IPv6 support is not documented
 by Fabric and fails closed.
 
+`inboundAzureResourceRules` uses the documented full-replacement body exactly:
+`rules[]` entries contain only `displayName` and `resourceId` (a full ARM
+resource ID). Each rule allows a specific Azure resource instance to reach the
+workspace regardless of the IP firewall allow list. `resourceId` is validated
+and canonicalized the same way as managed private endpoint target identities.
+Duplicate resource IDs and unknown fields are rejected. Display names are
+descriptive rather than identifiers, so Fabric's documented body permits the
+same display name for different resources. The action does not invent
+rule-count or display-name length limits that the preview API does not
+document.
+Unlike inbound firewall rules, Azure resource rules grant access to specific
+resources rather than any client IP, so inbound `Deny` does not require a
+non-empty `inboundAzureResourceRules` configuration on its own -- only the
+firewall's non-empty-rule requirement guards against total public lockout.
+
 Inbound `Deny` is accepted only with an explicit non-empty approved firewall
 configuration. An empty `rules` array is permitted only while the desired
 inbound policy is `Allow`, for example to clear staged rules after first opening
-the master policy. Inbound Azure resource rules and the External Data Shares
-policy remain unsupported.
+the master policy. The External Data Shares policy remains unsupported.
 `outboundCloudConnectionRules` and `outboundGatewayRules` are optional and may
 only be declared while `outboundDefaultAction` is `Deny`, matching the Fabric
 API's own requirement that outbound access protection (OAP) be enabled before
@@ -195,9 +213,12 @@ Network safeguards are independent and default to `false`:
   `allow-network-policy-update` for either an inbound or outbound
   Deny -> Allow transition)
 - `allow-inbound-firewall-update`
+- `allow-inbound-azure-resource-rule-update`
 - `acknowledge-firewall-lockout-risk` (required independently, together with
   both `allow-network-policy-update` and
-  `allow-inbound-firewall-update`, for observed inbound Allow -> desired Deny)
+  `allow-inbound-firewall-update`, for observed inbound Allow -> desired Deny;
+  `allow-inbound-azure-resource-rule-update` does not participate in or
+  satisfy this lockout acknowledgement)
 - `allow-outbound-cloud-connection-rule-update`
 - `allow-outbound-gateway-rule-update`
 - `allow-managed-private-endpoint-create`
@@ -206,17 +227,18 @@ Network safeguards are independent and default to `false`:
 Every configured surface is preflighted before any Fabric item is mutated.
 Present managed private endpoints are verified or created after item
 reconciliation, OAP policy/rules run next, and absent endpoint deletions run
-last. An interrupted inbound firewall or policy operation is recovered before
-unrelated item loading, while untouched operations are never started by early
-recovery.
+last. An interrupted inbound firewall, Azure resource rule, or policy
+operation is recovered before unrelated item loading, while untouched
+operations are never started by early recovery.
 
 Safe ordering is directional even though both defaults share one communication
-policy PUT. Inbound `Allow` -> `Deny` stages and verifies firewall exceptions
-before the policy; inbound `Deny` -> `Allow` opens the policy before firewall
-relaxation or removal. Outbound `Allow` -> `Deny` writes the policy before OAP
-rules; other outbound rule updates run before the policy. Combined transitions
-apply all required pre-policy surfaces, write the single policy body, then
-apply required post-policy surfaces.
+policy PUT. Inbound `Allow` -> `Deny` stages and verifies every inbound
+exception surface (firewall rules, then Azure resource instance rules) before
+the policy; inbound `Deny` -> `Allow` opens the policy before those surfaces
+relax or clear. Outbound `Allow` -> `Deny` writes the policy before OAP rules;
+other outbound rule updates run before the policy. Combined transitions apply
+all required pre-policy surfaces, write the single policy body, then apply
+required post-policy surfaces. Each surface runs exactly once per apply.
 
 Outbound `Allow` -> `Deny` is intentionally deferred when a declared present
 endpoint is missing, provisioning, awaiting approval, or otherwise not safely
@@ -227,14 +249,19 @@ tighten. A managed workspace bootstrap likewise requires a replan before
 same-workspace endpoints can run; an explicit independent
 `networkProtection.workspaceId` remains actionable.
 
-The inbound firewall API is preview. Although the reference documents an ETag,
-live GET responses can omit it. Apply sends the fresh value as quoted
-`If-Match` when available. A plan approved without an ETag remains actionable
-only while fresh discovery is also headerless and the observed body hash still
-matches; losing ETag support after approving a token-bound plan fails closed.
-Only HTTP 429 is retried; transport failures, 408, and 5xx remain ambiguous and
-are resolved by checkpointed read-back rather than blind resubmission.
-GitHub-hosted live validation is plan-only and never enables inbound `Deny`.
+The inbound firewall and Azure resource rule APIs are preview. The firewall
+reference documents an ETag, but live GET responses can omit it; the official
+reference for Azure resource rules does not document an ETag or `If-Match`
+support at all. Apply sends any fresh ETag as quoted `If-Match` when the
+adapter observes one for either surface. A plan approved without an ETag
+remains actionable only while fresh discovery is also headerless and the
+observed body hash still matches; losing ETag support after approving a
+token-bound plan fails closed. Only HTTP 429 is retried; transport failures,
+408, and 5xx remain ambiguous and are resolved by checkpointed read-back
+rather than blind resubmission. Unlike Set Firewall Rules (which accepts `200`
+or `204`), Set Inbound Azure Resource Rules documents only `200`; any other
+status is treated as a validation error. GitHub-hosted live validation is
+plan-only and never enables inbound `Deny`.
 
 ## Authenticated Fabric plan with GitHub OIDC
 

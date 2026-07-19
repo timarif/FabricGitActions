@@ -12,6 +12,7 @@ import {
 } from "../src/checkpoint";
 import {
   hashCommunicationPolicy,
+  hashInboundAzureResourceRules,
   hashInboundFirewallRules,
   normalizeNetworkProtection,
 } from "../src/fabric/network-protection";
@@ -117,6 +118,18 @@ function buildApprovedPlan(
       observedStateHash: hashInboundFirewallRules({ rules: [] }),
       etag: "firewall-etag",
       ruleCount: canonical.inboundFirewallRules.rules.length,
+    };
+  }
+  if (canonical.inboundAzureResourceRules) {
+    plan.networkProtection.inboundAzureResourceRules = {
+      action: "update",
+      reason: "differs",
+      desiredHash: hashInboundAzureResourceRules(
+        canonical.inboundAzureResourceRules,
+      ),
+      observedStateHash: hashInboundAzureResourceRules({ rules: [] }),
+      etag: "azure-resource-etag",
+      ruleCount: canonical.inboundAzureResourceRules.rules.length,
     };
   }
   return rehashPlan(plan);
@@ -291,6 +304,61 @@ describe("network protection apply integration", () => {
 
     expect(create).not.toHaveBeenCalled();
     expect(adapter.putInboundFirewallRules).not.toHaveBeenCalled();
+    expect(adapter.putCommunicationPolicy).not.toHaveBeenCalled();
+  });
+
+  it("preflights the inbound Azure resource rule safeguard independently before any item mutation", async () => {
+    const desired: NetworkProtectionManifest = {
+      communicationPolicy: {
+        inboundDefaultAction: "Allow",
+        outboundDefaultAction: "Allow",
+      },
+      inboundAzureResourceRules: {
+        rules: [
+          {
+            displayName: "sql-server",
+            resourceId:
+              "/subscriptions/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/resourceGroups/data/providers/Microsoft.Sql/servers/sqlserver",
+          },
+        ],
+      },
+    };
+    const loaded = loadedWithLakehouseAndNetworkProtection();
+    loaded.manifest.networkProtection = desired;
+    const approved = buildApprovedPlan(loaded, "no-op", desired);
+    const create = vi.fn();
+    const adapter = {
+      ...networkProtectionAdapter([]),
+      getInboundAzureResourceRules: vi.fn(),
+      putInboundAzureResourceRules: vi.fn(),
+    };
+    adapter.plan.mockResolvedValue(
+      approved.networkProtection as never,
+    );
+
+    await expect(
+      applyApprovedPlan({
+        approvedPlan: approved,
+        currentPlan: approved,
+        loadedManifest: loaded,
+        lakehouseAdapter: {
+          plan: vi.fn(),
+          create,
+          update: vi.fn(),
+          resumeCreate: vi.fn(),
+          verify: vi.fn(),
+        },
+        networkProtectionAdapter: adapter,
+        allowCreate: true,
+        allowUpdate: false,
+        allowNetworkPolicyUpdate: true,
+        allowInboundAzureResourceRuleUpdate: false,
+        ...files(),
+      }),
+    ).rejects.toThrow("allow-inbound-azure-resource-rule-update is false");
+
+    expect(create).not.toHaveBeenCalled();
+    expect(adapter.putInboundAzureResourceRules).not.toHaveBeenCalled();
     expect(adapter.putCommunicationPolicy).not.toHaveBeenCalled();
   });
 

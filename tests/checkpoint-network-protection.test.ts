@@ -14,7 +14,7 @@ import {
   normalizeManagedPrivateEndpoints,
   planManagedPrivateEndpoints,
 } from "../src/fabric/managed-private-endpoints";
-import { hashInboundFirewallRules } from "../src/fabric/network-protection";
+import { hashInboundAzureResourceRules, hashInboundFirewallRules } from "../src/fabric/network-protection";
 import { buildPlan, rehashPlan } from "../src/planner";
 import type { LoadedManifest } from "../src/types";
 
@@ -81,6 +81,29 @@ function planWithInboundFirewall() {
     }),
     observedStateHash: hashInboundFirewallRules({ rules: [] }),
     etag: "firewall-etag",
+    ruleCount: 1,
+  };
+  return rehashPlan(plan);
+}
+
+const AZURE_RESOURCE_ID =
+  "/subscriptions/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/resourcegroups/data/providers/microsoft.sql/servers/sqlserver";
+
+function planWithInboundAzureResourceRules() {
+  const plan = planWithNetworkProtection();
+  plan.networkProtection!.inboundAzureResourceRules = {
+    action: "update",
+    reason: "differs",
+    desiredHash: hashInboundAzureResourceRules({
+      rules: [
+        {
+          displayName: "sql-server",
+          resourceId: AZURE_RESOURCE_ID,
+        },
+      ],
+    }),
+    observedStateHash: hashInboundAzureResourceRules({ rules: [] }),
+    etag: "azure-resource-etag",
     ruleCount: 1,
   };
   return rehashPlan(plan);
@@ -186,6 +209,91 @@ describe("network protection checkpoint", () => {
     checkpoint.networkProtection.inboundFirewallRules = {
       desiredHash:
         plan.networkProtection!.inboundFirewallRules!.desiredHash,
+      phase: "submitting",
+      updatedAt: "2026-07-19T00:00:00.000Z",
+      unexpected: true,
+    } as never;
+    writeCheckpoint(checkpointFile, checkpoint);
+    expect(() => loadCheckpoint(checkpointFile, plan)).toThrow(
+      "invalid structure",
+    );
+  });
+
+  it("round-trips a submitting inbound Azure resource rules surface bound to the approved hash", () => {
+    const plan = planWithInboundAzureResourceRules();
+    const checkpoint = createCheckpoint(plan);
+    checkpoint.networkProtection = {
+      workspaceId: WORKSPACE_ID,
+      inboundAzureResourceRules: {
+        desiredHash:
+          plan.networkProtection!.inboundAzureResourceRules!.desiredHash,
+        phase: "submitting",
+        updatedAt: "2026-07-19T00:00:00.000Z",
+      },
+      updatedAt: "2026-07-19T00:00:00.000Z",
+    };
+    const root = mkdtempSync(
+      path.join(tmpdir(), "fabric-azure-resource-checkpoint-"),
+    );
+    const checkpointFile = path.join(root, "checkpoint.json");
+
+    writeCheckpoint(checkpointFile, checkpoint);
+
+    expect(
+      loadCheckpoint(checkpointFile, plan)?.networkProtection
+        ?.inboundAzureResourceRules,
+    ).toEqual(checkpoint.networkProtection.inboundAzureResourceRules);
+  });
+
+  it("requires every configured Azure resource rule surface before a completed marker is accepted", () => {
+    const plan = planWithInboundAzureResourceRules();
+    const checkpoint = createCheckpoint(plan);
+    checkpoint.networkProtection = {
+      workspaceId: WORKSPACE_ID,
+      communicationPolicy: {
+        desiredHash:
+          plan.networkProtection!.communicationPolicy.desiredHash,
+        phase: "verified",
+        updatedAt: "2026-07-19T00:00:00.000Z",
+      },
+      completedAt: "2026-07-19T00:00:00.000Z",
+      updatedAt: "2026-07-19T00:00:00.000Z",
+    };
+    const root = mkdtempSync(
+      path.join(tmpdir(), "fabric-azure-resource-checkpoint-"),
+    );
+    const checkpointFile = path.join(root, "checkpoint.json");
+    writeCheckpoint(checkpointFile, checkpoint);
+
+    expect(() => loadCheckpoint(checkpointFile, plan)).toThrow(
+      "'inboundAzureResourceRules' is not verified",
+    );
+  });
+
+  it("rejects inbound Azure resource rule checkpoint tampering and unknown checkpoint fields", () => {
+    const plan = planWithInboundAzureResourceRules();
+    const checkpoint = createCheckpoint(plan);
+    checkpoint.networkProtection = {
+      workspaceId: WORKSPACE_ID,
+      inboundAzureResourceRules: {
+        desiredHash: "0".repeat(64),
+        phase: "submitting",
+        updatedAt: "2026-07-19T00:00:00.000Z",
+      },
+      updatedAt: "2026-07-19T00:00:00.000Z",
+    };
+    const root = mkdtempSync(
+      path.join(tmpdir(), "fabric-azure-resource-checkpoint-"),
+    );
+    const checkpointFile = path.join(root, "checkpoint.json");
+    writeCheckpoint(checkpointFile, checkpoint);
+    expect(() => loadCheckpoint(checkpointFile, plan)).toThrow(
+      "'inboundAzureResourceRules' does not match",
+    );
+
+    checkpoint.networkProtection.inboundAzureResourceRules = {
+      desiredHash:
+        plan.networkProtection!.inboundAzureResourceRules!.desiredHash,
       phase: "submitting",
       updatedAt: "2026-07-19T00:00:00.000Z",
       unexpected: true,

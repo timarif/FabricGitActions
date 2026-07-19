@@ -192,6 +192,11 @@ function assertCheckpointMatchesPlan(
       planned.inboundFirewallRules,
     );
     assertCheckpointNetworkSurfaceMatchesPlan(
+      "inboundAzureResourceRules",
+      checkpoint.networkProtection.inboundAzureResourceRules,
+      planned.inboundAzureResourceRules,
+    );
+    assertCheckpointNetworkSurfaceMatchesPlan(
       "outboundCloudConnectionRules",
       checkpoint.networkProtection.outboundCloudConnectionRules,
       planned.outboundCloudConnectionRules,
@@ -207,6 +212,7 @@ function assertCheckpointMatchesPlan(
         .blockedByManagedPrivateEndpoints?.length ?? 0) > 0 &&
       (checkpoint.networkProtection.communicationPolicy ||
         checkpoint.networkProtection.inboundFirewallRules ||
+        checkpoint.networkProtection.inboundAzureResourceRules ||
         checkpoint.networkProtection.outboundCloudConnectionRules ||
         checkpoint.networkProtection.outboundGatewayRules)
     ) {
@@ -228,6 +234,11 @@ function assertCheckpointMatchesPlan(
         "inboundFirewallRules",
         checkpoint.networkProtection.inboundFirewallRules,
         planned.inboundFirewallRules,
+      );
+      assertCompletedNetworkSurface(
+        "inboundAzureResourceRules",
+        checkpoint.networkProtection.inboundAzureResourceRules,
+        planned.inboundAzureResourceRules,
       );
       assertCompletedNetworkSurface(
         "outboundCloudConnectionRules",
@@ -1093,6 +1104,7 @@ function isCheckpointNetworkProtection(value: unknown): boolean {
     "workspaceId",
     "communicationPolicy",
     "inboundFirewallRules",
+    "inboundAzureResourceRules",
     "outboundCloudConnectionRules",
     "outboundGatewayRules",
     "managedPrivateEndpoints",
@@ -1112,6 +1124,7 @@ function isCheckpointNetworkProtection(value: unknown): boolean {
   const surfaces = [
     state.communicationPolicy,
     state.inboundFirewallRules,
+    state.inboundAzureResourceRules,
     state.outboundCloudConnectionRules,
     state.outboundGatewayRules,
   ];
@@ -1122,6 +1135,8 @@ function isCheckpointNetworkProtection(value: unknown): boolean {
       isCheckpointNetworkSurface(state.communicationPolicy)) &&
     (state.inboundFirewallRules === undefined ||
       isCheckpointNetworkSurface(state.inboundFirewallRules)) &&
+    (state.inboundAzureResourceRules === undefined ||
+      isCheckpointNetworkSurface(state.inboundAzureResourceRules)) &&
     (state.outboundCloudConnectionRules === undefined ||
       isCheckpointNetworkSurface(state.outboundCloudConnectionRules)) &&
     (state.outboundGatewayRules === undefined ||

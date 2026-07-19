@@ -16,6 +16,7 @@ import {
   type DeploymentPlan,
   type NetworkDefaultAction,
   type PlannedAction,
+  type PlannedInboundAzureResourceRules,
   type PlannedInboundFirewallRules,
   type PlannedItem,
   type PlannedNetworkProtection,
@@ -182,6 +183,7 @@ function isPlannedNetworkProtection(
     "workspaceId",
     "communicationPolicy",
     "inboundFirewallRules",
+    "inboundAzureResourceRules",
     "outboundCloudConnectionRules",
     "outboundGatewayRules",
     "managedPrivateEndpoints",
@@ -239,6 +241,8 @@ function isPlannedNetworkProtection(
     (!requiresWorkspaceId || typeof plan.workspaceId === "string") &&
     (plan.inboundFirewallRules === undefined ||
       isPlannedInboundFirewallRules(plan.inboundFirewallRules)) &&
+    (plan.inboundAzureResourceRules === undefined ||
+      isPlannedInboundAzureResourceRules(plan.inboundAzureResourceRules)) &&
     (plan.outboundCloudConnectionRules === undefined ||
       isPlannedNetworkSurface(plan.outboundCloudConnectionRules)) &&
     (plan.outboundGatewayRules === undefined ||
@@ -277,6 +281,41 @@ function isPlannedInboundFirewallRules(
     Number.isInteger(surface.ruleCount) &&
     surface.ruleCount >= 0 &&
     surface.ruleCount <= 256 &&
+    (discovered
+      ? isHash(surface.observedStateHash) &&
+        (surface.etag === undefined ||
+          (typeof surface.etag === "string" &&
+            surface.etag.trim().length > 0))
+      : surface.observedStateHash === undefined &&
+        surface.etag === undefined)
+  );
+}
+
+function isPlannedInboundAzureResourceRules(
+  value: unknown,
+): value is PlannedInboundAzureResourceRules {
+  if (value === null || typeof value !== "object") {
+    return false;
+  }
+  const surface = value as Record<string, unknown>;
+  const allowedKeys = new Set([
+    "action",
+    "reason",
+    "desiredHash",
+    "observedStateHash",
+    "etag",
+    "ruleCount",
+  ]);
+  if (Object.keys(surface).some((key) => !allowedKeys.has(key))) {
+    return false;
+  }
+  const action = String(surface.action);
+  const discovered = action === "update" || action === "no-op";
+  return (
+    isPlannedNetworkSurface(surface) &&
+    typeof surface.ruleCount === "number" &&
+    Number.isInteger(surface.ruleCount) &&
+    surface.ruleCount >= 0 &&
     (discovered
       ? isHash(surface.observedStateHash) &&
         (surface.etag === undefined ||

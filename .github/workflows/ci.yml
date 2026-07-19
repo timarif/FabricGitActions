@@ -103,7 +103,7 @@ jobs:
           variables: >-
             {"FABRIC_WORKSPACE_ID":"00000000-0000-0000-0000-000000000001","FABRIC_GATEWAY_ID":"00000000-0000-0000-0000-000000000003","PRIVATE_LINK_RESOURCE_ID":"/subscriptions/00000000-0000-0000-0000-000000000004/resourceGroups/ci/providers/Microsoft.Storage/storageAccounts/example"}
 
-      - name: Validate read-only inbound firewall probe
+      - name: Validate read-only inbound network probe
         uses: ./
         with:
           mode: validate

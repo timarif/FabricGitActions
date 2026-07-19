@@ -94,6 +94,10 @@ export async function run(): Promise<void> {
       mode === "apply"
         ? readBooleanInput("allow-inbound-firewall-update")
         : false;
+    const allowInboundAzureResourceRuleUpdate =
+      mode === "apply"
+        ? readBooleanInput("allow-inbound-azure-resource-rule-update")
+        : false;
     const acknowledgeFirewallLockoutRisk =
       mode === "apply"
         ? readBooleanInput("acknowledge-firewall-lockout-risk")
@@ -287,6 +291,7 @@ export async function run(): Promise<void> {
         allowNetworkPolicyUpdate,
         allowNetworkPolicyRelaxation,
         allowInboundFirewallUpdate,
+        allowInboundAzureResourceRuleUpdate,
         acknowledgeFirewallLockoutRisk,
         allowOutboundCloudConnectionRuleUpdate,
         allowOutboundGatewayRuleUpdate,
@@ -428,6 +433,17 @@ export async function run(): Promise<void> {
       "inbound-firewall-rule-count",
       String(plan.networkProtection?.inboundFirewallRules?.ruleCount ?? 0),
     );
+    core.setOutput(
+      "inbound-azure-resource-rule-action",
+      plan.networkProtection?.inboundAzureResourceRules?.action ??
+        "not-configured",
+    );
+    core.setOutput(
+      "inbound-azure-resource-rule-count",
+      String(
+        plan.networkProtection?.inboundAzureResourceRules?.ruleCount ?? 0,
+      ),
+    );
     const managedPrivateEndpoints =
       plan.networkProtection?.managedPrivateEndpoints ?? [];
     core.setOutput(
@@ -522,6 +538,7 @@ export async function run(): Promise<void> {
         allowNetworkPolicyUpdate,
         allowNetworkPolicyRelaxation,
         allowInboundFirewallUpdate,
+        allowInboundAzureResourceRuleUpdate,
         acknowledgeFirewallLockoutRisk,
         allowOutboundCloudConnectionRuleUpdate,
         allowOutboundGatewayRuleUpdate,
@@ -552,6 +569,18 @@ export async function run(): Promise<void> {
         "inbound-firewall-rule-count",
         String(
           approvedPlan.networkProtection?.inboundFirewallRules
+            ?.ruleCount ?? 0,
+        ),
+      );
+      core.setOutput(
+        "inbound-azure-resource-rule-action",
+        approvedPlan.networkProtection?.inboundAzureResourceRules?.action ??
+          "not-configured",
+      );
+      core.setOutput(
+        "inbound-azure-resource-rule-count",
+        String(
+          approvedPlan.networkProtection?.inboundAzureResourceRules
             ?.ruleCount ?? 0,
         ),
       );

@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       probe_inbound_firewall:
-        description: Run only the read-only preview inbound firewall planning probe. This never applies changes.
+        description: Run only the read-only preview inbound firewall and Azure resource instance rule planning probe. This never applies changes.
         required: true
         default: false
         type: boolean
@@ -49,7 +49,7 @@ jobs:
               or .action == "blocked"
           ' live-output/fabric-plan.json
 
-      - name: Read-only inbound firewall plan probe
+      - name: Read-only inbound network plan probe
         if: ${{ inputs.probe_inbound_firewall }}
         id: firewall-plan
         uses: ./
@@ -63,7 +63,7 @@ jobs:
           client-id: ${{ vars.FABRIC_CLIENT_ID }}
           plan-file: live-output/inbound-firewall-plan.json
 
-      - name: Verify read-only inbound firewall probe
+      - name: Verify read-only inbound network probe
         if: ${{ inputs.probe_inbound_firewall }}
         shell: bash
         run: |
@@ -74,6 +74,11 @@ jobs:
             and (
               .networkProtection.inboundFirewallRules.action == "update"
               or .networkProtection.inboundFirewallRules.action == "no-op"
+            )
+            and .networkProtection.inboundAzureResourceRules.ruleCount == 1
+            and (
+              .networkProtection.inboundAzureResourceRules.action == "update"
+              or .networkProtection.inboundAzureResourceRules.action == "no-op"
             )
           ' live-output/inbound-firewall-plan.json
 

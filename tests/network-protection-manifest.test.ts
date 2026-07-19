@@ -331,22 +331,70 @@ items:
     });
   });
 
-  it("continues to reject later inbound security surfaces", () => {
-    for (const unsupported of [
-      "inboundAzureResourceRules",
-      "inboundExternalDataSharesPolicy",
-    ]) {
-      const manifestPath = writeManifest(
-        `  communicationPolicy:
+  it("loads the exact documented inbound Azure resource rules body without requiring inbound Deny", () => {
+    const manifestPath = writeManifest(
+      `  communicationPolicy:
     inboundDefaultAction: Allow
     outboundDefaultAction: Allow
-  ${unsupported}: {}`,
-      );
+  inboundAzureResourceRules:
+    rules:
+      - displayName: sql-server
+        resourceId: ${TARGET_ID}`,
+    );
 
-      expect(() =>
-        loadNetworkProtectionManifest(manifestPath),
-      ).toThrow(unsupported);
-    }
+    expect(
+      loadManifest(manifestPath).manifest.networkProtection
+        ?.inboundAzureResourceRules,
+    ).toEqual({
+      rules: [
+        {
+          displayName: "sql-server",
+          resourceId: TARGET_ID,
+        },
+      ],
+    });
+  });
+
+  it("rejects an unknown inboundAzureResourceRules property and malformed resourceId", () => {
+    const unknownProperty = writeManifest(
+      `  communicationPolicy:
+    inboundDefaultAction: Allow
+    outboundDefaultAction: Allow
+  inboundAzureResourceRules:
+    rules:
+      - displayName: sql-server
+        resourceId: ${TARGET_ID}
+        extra: true`,
+    );
+    expect(() => loadManifest(unknownProperty)).toThrow(
+      "Invalid deployment manifest",
+    );
+
+    const malformedResourceId = writeManifest(
+      `  communicationPolicy:
+    inboundDefaultAction: Allow
+    outboundDefaultAction: Allow
+  inboundAzureResourceRules:
+    rules:
+      - displayName: sql-server
+        resourceId: not-an-arm-id`,
+    );
+    expect(() =>
+      loadNetworkProtectionManifest(malformedResourceId),
+    ).toThrow("ARM resource ID");
+  });
+
+  it("continues to reject later inbound security surfaces", () => {
+    const manifestPath = writeManifest(
+      `  communicationPolicy:
+    inboundDefaultAction: Allow
+    outboundDefaultAction: Allow
+  inboundExternalDataSharesPolicy: {}`,
+    );
+
+    expect(() =>
+      loadNetworkProtectionManifest(manifestPath),
+    ).toThrow("inboundExternalDataSharesPolicy");
   });
 
   it("rejects outboundCloudConnectionRules declared alongside outbound Allow", () => {

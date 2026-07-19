@@ -130,6 +130,14 @@ describe("plan reporting", () => {
             etag: "firewall-etag",
             ruleCount: 3,
           },
+          inboundAzureResourceRules: {
+            action: "update",
+            reason: "Preview Azure resource rules differ.",
+            desiredHash: "3".repeat(64),
+            observedStateHash: "4".repeat(64),
+            etag: "azure-resource-etag",
+            ruleCount: 2,
+          },
           outboundCloudConnectionRules: {
             action: "update",
             reason: "Outbound access protection is not yet enabled.",
@@ -166,6 +174,10 @@ describe("plan reporting", () => {
       "Inbound IP firewall rules (Preview)",
     );
     expect(content).toContain("3 rule(s)");
+    expect(content).toContain(
+      "Inbound Azure resource instance rules (Preview)",
+    );
+    expect(content).toContain("2 rule(s)");
     expect(content).toContain("Outbound cloud connection rules");
     expect(content).toContain("Managed private endpoints");
     expect(content).toContain("storage-blob");

@@ -74,6 +74,15 @@ export interface InboundFirewallRulesManifest {
   rules: InboundFirewallRuleManifest[];
 }
 
+export interface InboundAzureResourceRuleManifest {
+  displayName: string;
+  resourceId: string;
+}
+
+export interface InboundAzureResourceRulesManifest {
+  rules: InboundAzureResourceRuleManifest[];
+}
+
 export interface OutboundConnectionEndpointRuleManifest {
   hostnamePattern: string;
 }
@@ -115,6 +124,7 @@ export interface NetworkProtectionManifest {
   workspaceId?: string;
   communicationPolicy: NetworkCommunicationPolicyManifest;
   inboundFirewallRules?: InboundFirewallRulesManifest;
+  inboundAzureResourceRules?: InboundAzureResourceRulesManifest;
   outboundCloudConnectionRules?: OutboundCloudConnectionRulesManifest;
   outboundGatewayRules?: OutboundGatewayRulesManifest;
   managedPrivateEndpoints?: ManagedPrivateEndpointManifest[];
@@ -274,6 +284,11 @@ export interface PlannedInboundFirewallRules extends PlannedNetworkSurface {
   ruleCount: number;
 }
 
+export interface PlannedInboundAzureResourceRules extends PlannedNetworkSurface {
+  etag?: string;
+  ruleCount: number;
+}
+
 export type ManagedPrivateEndpointAction = Extract<
   PlannedAction,
   "create" | "delete" | "no-op" | "blocked" | "unknown"
@@ -301,6 +316,7 @@ export interface PlannedNetworkProtection {
   workspaceId?: string;
   communicationPolicy: PlannedNetworkCommunicationPolicy;
   inboundFirewallRules?: PlannedInboundFirewallRules;
+  inboundAzureResourceRules?: PlannedInboundAzureResourceRules;
   outboundCloudConnectionRules?: PlannedNetworkSurface;
   outboundGatewayRules?: PlannedNetworkSurface;
   managedPrivateEndpoints?: PlannedManagedPrivateEndpoint[];
@@ -410,6 +426,7 @@ export interface ApplyNetworkProtectionResult {
   workspaceId: string;
   communicationPolicy: ApplyNetworkSurfaceResult;
   inboundFirewallRules?: ApplyNetworkSurfaceResult;
+  inboundAzureResourceRules?: ApplyNetworkSurfaceResult;
   outboundCloudConnectionRules?: ApplyNetworkSurfaceResult;
   outboundGatewayRules?: ApplyNetworkSurfaceResult;
   managedPrivateEndpoints?: ApplyManagedPrivateEndpointResult[];
@@ -531,6 +548,7 @@ export interface ApplyCheckpointNetworkProtection {
   workspaceId: string;
   communicationPolicy?: ApplyCheckpointNetworkSurface;
   inboundFirewallRules?: ApplyCheckpointNetworkSurface;
+  inboundAzureResourceRules?: ApplyCheckpointNetworkSurface;
   outboundCloudConnectionRules?: ApplyCheckpointNetworkSurface;
   outboundGatewayRules?: ApplyCheckpointNetworkSurface;
   managedPrivateEndpoints?: Record<

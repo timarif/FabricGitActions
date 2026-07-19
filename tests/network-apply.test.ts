@@ -8,6 +8,7 @@ import { createCheckpoint, loadCheckpoint, writeCheckpoint } from "../src/checkp
 import { FabricApiError } from "../src/fabric/client";
 import {
   hashCommunicationPolicy,
+  hashInboundAzureResourceRules,
   hashInboundFirewallRules,
   hashOutboundCloudConnectionRules,
   hashOutboundGatewayRules,
@@ -70,6 +71,27 @@ const INBOUND_TIGHTENING_DESIRED: NetworkProtectionManifest = {
   },
 };
 
+const AZURE_RESOURCE_ID =
+  "/subscriptions/00000000-0000-0000-0000-000000000001/resourceGroups/rg/providers/Microsoft.Sql/servers/sqlserver";
+
+const INBOUND_TIGHTENING_WITH_AZURE_RESOURCE_DESIRED: NetworkProtectionManifest = {
+  communicationPolicy: {
+    inboundDefaultAction: "Deny",
+    outboundDefaultAction: "Allow",
+  },
+  inboundFirewallRules: {
+    rules: [
+      {
+        displayName: "corporate",
+        value: "12.34.56.78",
+      },
+    ],
+  },
+  inboundAzureResourceRules: {
+    rules: [{ displayName: "sql-server", resourceId: AZURE_RESOURCE_ID }],
+  },
+};
+
 const INBOUND_RELAXING_DESIRED: NetworkProtectionManifest = {
   communicationPolicy: {
     inboundDefaultAction: "Allow",
@@ -78,6 +100,17 @@ const INBOUND_RELAXING_DESIRED: NetworkProtectionManifest = {
   inboundFirewallRules: {
     rules: [],
   },
+};
+
+const INBOUND_RELAXING_WITH_AZURE_RESOURCE_DESIRED: NetworkProtectionManifest = {
+  communicationPolicy: {
+    inboundDefaultAction: "Allow",
+    outboundDefaultAction: "Allow",
+  },
+  inboundFirewallRules: {
+    rules: [],
+  },
+  inboundAzureResourceRules: { rules: [] },
 };
 
 function canonicalOf(desired: NetworkProtectionManifest) {
@@ -93,6 +126,9 @@ function buildApprovedPlan(options: {
   firewallAction?: "update" | "no-op";
   firewallObservedHash?: string;
   firewallEtag?: string;
+  azureResourceAction?: "update" | "no-op";
+  azureResourceObservedHash?: string;
+  azureResourceEtag?: string;
   ruleAction?: "update" | "no-op";
   ruleObservedIsSentinel?: boolean;
 }): DeploymentPlan {
@@ -139,6 +175,23 @@ function buildApprovedPlan(options: {
             hashInboundFirewallRules({ rules: [] })),
       etag: options.firewallEtag ?? "firewall-etag",
       ruleCount: canonical.inboundFirewallRules.rules.length,
+    };
+  }
+  if (canonical.inboundAzureResourceRules) {
+    const desiredHash = hashInboundAzureResourceRules(
+      canonical.inboundAzureResourceRules,
+    );
+    networkProtection.inboundAzureResourceRules = {
+      action: options.azureResourceAction ?? "update",
+      reason: "azure-resource",
+      desiredHash,
+      observedStateHash:
+        options.azureResourceAction === "no-op"
+          ? desiredHash
+          : (options.azureResourceObservedHash ??
+            hashInboundAzureResourceRules({ rules: [] })),
+      etag: options.azureResourceEtag ?? "azure-resource-etag",
+      ruleCount: canonical.inboundAzureResourceRules.rules.length,
     };
   }
   if (canonical.outboundCloudConnectionRules) {
@@ -203,6 +256,8 @@ function mockAdapter() {
     putCommunicationPolicy: vi.fn(),
     getInboundFirewallRules: vi.fn(),
     putInboundFirewallRules: vi.fn(),
+    getInboundAzureResourceRules: vi.fn(),
+    putInboundAzureResourceRules: vi.fn(),
     getOutboundCloudConnectionRules: vi.fn(),
     putOutboundCloudConnectionRules: vi.fn(),
     getOutboundGatewayRules: vi.fn(),
@@ -227,6 +282,7 @@ function baseOptions(
     allowNetworkPolicyUpdate: false,
     allowNetworkPolicyRelaxation: false,
     allowInboundFirewallUpdate: false,
+    allowInboundAzureResourceRuleUpdate: false,
     acknowledgeFirewallLockoutRisk: false,
     allowOutboundCloudConnectionRuleUpdate: false,
     allowOutboundGatewayRuleUpdate: false,
@@ -262,6 +318,19 @@ function mockSuccessfulNetworkSurfaces(
     adapter.getInboundFirewallRules.mockResolvedValue({
       configuration: canonical.inboundFirewallRules,
       etag: "firewall-updated",
+    });
+  }
+  if (canonical.inboundAzureResourceRules) {
+    adapter.putInboundAzureResourceRules.mockImplementation(async () => {
+      calls.push("put-azure-resource");
+      return {
+        configuration: canonical.inboundAzureResourceRules!,
+        etag: "azure-resource-updated",
+      };
+    });
+    adapter.getInboundAzureResourceRules.mockResolvedValue({
+      configuration: canonical.inboundAzureResourceRules,
+      etag: "azure-resource-updated",
     });
   }
   if (canonical.outboundCloudConnectionRules) {
@@ -408,6 +477,32 @@ describe("preflightNetworkProtection", () => {
     ).toThrow("allow-inbound-firewall-update is false");
   });
 
+  it("requires the inbound Azure resource rule safeguard independently, without any other flag implying it", () => {
+    const plan = buildApprovedPlan({
+      desired: INBOUND_RELAXING_WITH_AZURE_RESOURCE_DESIRED,
+      observedInbound: "Allow",
+      observedOutbound: "Allow",
+      policyAction: "no-op",
+      firewallAction: "no-op",
+      azureResourceAction: "update",
+    });
+
+    expect(() =>
+      preflightNetworkProtection({
+        approvedPlan: plan,
+        currentPlan: plan,
+        checkpoint: createCheckpoint(plan),
+        allowNetworkPolicyUpdate: true,
+        allowNetworkPolicyRelaxation: true,
+        allowInboundFirewallUpdate: true,
+        acknowledgeFirewallLockoutRisk: true,
+        allowInboundAzureResourceRuleUpdate: false,
+        allowOutboundCloudConnectionRuleUpdate: false,
+        allowOutboundGatewayRuleUpdate: false,
+      }),
+    ).toThrow("allow-inbound-azure-resource-rule-update is false");
+  });
+
   it("requires all three independent safeguards before any inbound Allow -> Deny unit mutation", () => {
     const plan = buildApprovedPlan({
       desired: INBOUND_TIGHTENING_DESIRED,
@@ -457,6 +552,32 @@ describe("preflightNetworkProtection", () => {
         acknowledgeFirewallLockoutRisk: true,
       }),
     ).not.toThrow();
+  });
+
+  it("does not let allow-inbound-azure-resource-rule-update satisfy the inbound-Deny lockout safeguards", () => {
+    const plan = buildApprovedPlan({
+      desired: INBOUND_TIGHTENING_WITH_AZURE_RESOURCE_DESIRED,
+      observedInbound: "Allow",
+      observedOutbound: "Allow",
+      policyAction: "update",
+      firewallAction: "update",
+      azureResourceAction: "update",
+    });
+
+    expect(() =>
+      preflightNetworkProtection({
+        approvedPlan: plan,
+        currentPlan: plan,
+        checkpoint: createCheckpoint(plan),
+        allowNetworkPolicyUpdate: false,
+        allowNetworkPolicyRelaxation: false,
+        allowInboundFirewallUpdate: false,
+        allowInboundAzureResourceRuleUpdate: true,
+        acknowledgeFirewallLockoutRisk: true,
+        allowOutboundCloudConnectionRuleUpdate: false,
+        allowOutboundGatewayRuleUpdate: false,
+      }),
+    ).toThrow("requires allow-network-policy-update");
   });
 
   it("skips re-authorization once a surface is checkpointed verified", () => {
@@ -596,6 +717,75 @@ describe("applyNetworkProtection ordering", () => {
     ).toMatchObject({ ifMatchEtag: "firewall-etag" });
   });
 
+  it("stages and verifies firewall then Azure resource rules, exactly once each, before inbound Allow -> Deny", async () => {
+    const plan = buildApprovedPlan({
+      desired: INBOUND_TIGHTENING_WITH_AZURE_RESOURCE_DESIRED,
+      observedInbound: "Allow",
+      observedOutbound: "Allow",
+      policyAction: "update",
+      firewallAction: "update",
+      azureResourceAction: "update",
+    });
+    const adapter = mockAdapter();
+    const calls: string[] = [];
+    adapter.plan.mockResolvedValue(plan.networkProtection);
+    mockSuccessfulNetworkSurfaces(
+      adapter,
+      INBOUND_TIGHTENING_WITH_AZURE_RESOURCE_DESIRED,
+      calls,
+    );
+
+    const result = await applyNetworkProtection(
+      baseOptions(plan, adapter, checkpointFilePath(), {
+        desired: INBOUND_TIGHTENING_WITH_AZURE_RESOURCE_DESIRED,
+        allowNetworkPolicyUpdate: true,
+        allowInboundFirewallUpdate: true,
+        allowInboundAzureResourceRuleUpdate: true,
+        acknowledgeFirewallLockoutRisk: true,
+      }),
+    );
+
+    expect(calls).toEqual(["put-firewall", "put-azure-resource", "put-policy"]);
+    expect(adapter.putInboundFirewallRules).toHaveBeenCalledTimes(1);
+    expect(adapter.putInboundAzureResourceRules).toHaveBeenCalledTimes(1);
+    expect(adapter.putCommunicationPolicy).toHaveBeenCalledTimes(1);
+    expect(
+      adapter.putInboundAzureResourceRules.mock.calls[0]?.[2],
+    ).toMatchObject({ ifMatchEtag: "azure-resource-etag" });
+    expect(result?.inboundAzureResourceRules?.status).toBe("updated");
+  });
+
+  it("requires the Azure resource rule safeguard independently even when the firewall safeguard is granted", async () => {
+    const plan = buildApprovedPlan({
+      desired: INBOUND_TIGHTENING_WITH_AZURE_RESOURCE_DESIRED,
+      observedInbound: "Allow",
+      observedOutbound: "Allow",
+      policyAction: "update",
+      firewallAction: "update",
+      azureResourceAction: "update",
+    });
+    const adapter = mockAdapter();
+    const calls: string[] = [];
+    adapter.plan.mockResolvedValue(plan.networkProtection);
+    mockSuccessfulNetworkSurfaces(
+      adapter,
+      INBOUND_TIGHTENING_WITH_AZURE_RESOURCE_DESIRED,
+      calls,
+    );
+
+    await expect(
+      applyNetworkProtection(
+        baseOptions(plan, adapter, checkpointFilePath(), {
+          desired: INBOUND_TIGHTENING_WITH_AZURE_RESOURCE_DESIRED,
+          allowNetworkPolicyUpdate: true,
+          allowInboundFirewallUpdate: true,
+          allowInboundAzureResourceRuleUpdate: false,
+          acknowledgeFirewallLockoutRisk: true,
+        }),
+      ),
+    ).rejects.toThrow("allow-inbound-azure-resource-rule-update is false");
+  });
+
   it("uses the freshly observed inbound firewall ETag rather than the approval-time value", async () => {
     const plan = buildApprovedPlan({
       desired: INBOUND_RELAXING_DESIRED,
@@ -686,6 +876,56 @@ describe("applyNetworkProtection ordering", () => {
     expect(adapter.putInboundFirewallRules).not.toHaveBeenCalled();
   });
 
+  it("fails closed on inbound Azure resource rule count drift after approval", async () => {
+    const plan = buildApprovedPlan({
+      desired: INBOUND_RELAXING_WITH_AZURE_RESOURCE_DESIRED,
+      observedInbound: "Allow",
+      observedOutbound: "Allow",
+      policyAction: "no-op",
+      firewallAction: "no-op",
+      azureResourceAction: "no-op",
+    });
+    const fresh = structuredClone(plan.networkProtection!);
+    fresh.inboundAzureResourceRules!.ruleCount = 5;
+    const adapter = mockAdapter();
+    adapter.plan.mockResolvedValue(fresh);
+
+    await expect(
+      applyNetworkProtection(
+        baseOptions(plan, adapter, checkpointFilePath(), {
+          desired: INBOUND_RELAXING_WITH_AZURE_RESOURCE_DESIRED,
+          allowInboundAzureResourceRuleUpdate: true,
+        }),
+      ),
+    ).rejects.toThrow("metadata drifted after approval");
+    expect(adapter.putInboundAzureResourceRules).not.toHaveBeenCalled();
+  });
+
+  it("fails closed if the approval-time Azure resource rule ETag disappears from fresh discovery", async () => {
+    const plan = buildApprovedPlan({
+      desired: INBOUND_RELAXING_WITH_AZURE_RESOURCE_DESIRED,
+      observedInbound: "Allow",
+      observedOutbound: "Allow",
+      policyAction: "no-op",
+      firewallAction: "no-op",
+      azureResourceAction: "update",
+    });
+    const fresh = structuredClone(plan.networkProtection!);
+    delete fresh.inboundAzureResourceRules!.etag;
+    const adapter = mockAdapter();
+    adapter.plan.mockResolvedValue(fresh);
+
+    await expect(
+      applyNetworkProtection(
+        baseOptions(plan, adapter, checkpointFilePath(), {
+          desired: INBOUND_RELAXING_WITH_AZURE_RESOURCE_DESIRED,
+          allowInboundAzureResourceRuleUpdate: true,
+        }),
+      ),
+    ).rejects.toThrow("metadata drifted after approval");
+    expect(adapter.putInboundAzureResourceRules).not.toHaveBeenCalled();
+  });
+
   it("checkpoints the inbound firewall replacement before dispatch", async () => {
     const plan = buildApprovedPlan({
       desired: INBOUND_RELAXING_DESIRED,
@@ -766,6 +1006,39 @@ describe("applyNetworkProtection ordering", () => {
     );
 
     expect(calls).toEqual(["put-policy", "put-firewall"]);
+  });
+
+  it("moves inbound Deny -> Allow before clearing or relaxing firewall and Azure resource rules, exactly once each", async () => {
+    const plan = buildApprovedPlan({
+      desired: INBOUND_RELAXING_WITH_AZURE_RESOURCE_DESIRED,
+      observedInbound: "Deny",
+      observedOutbound: "Allow",
+      policyAction: "update",
+      firewallAction: "update",
+      azureResourceAction: "update",
+    });
+    const adapter = mockAdapter();
+    const calls: string[] = [];
+    adapter.plan.mockResolvedValue(plan.networkProtection);
+    mockSuccessfulNetworkSurfaces(
+      adapter,
+      INBOUND_RELAXING_WITH_AZURE_RESOURCE_DESIRED,
+      calls,
+    );
+
+    await applyNetworkProtection(
+      baseOptions(plan, adapter, checkpointFilePath(), {
+        desired: INBOUND_RELAXING_WITH_AZURE_RESOURCE_DESIRED,
+        allowNetworkPolicyUpdate: true,
+        allowNetworkPolicyRelaxation: true,
+        allowInboundFirewallUpdate: true,
+        allowInboundAzureResourceRuleUpdate: true,
+      }),
+    );
+
+    expect(calls).toEqual(["put-policy", "put-firewall", "put-azure-resource"]);
+    expect(adapter.putInboundFirewallRules).toHaveBeenCalledTimes(1);
+    expect(adapter.putInboundAzureResourceRules).toHaveBeenCalledTimes(1);
   });
 
   it("orders combined inbound and outbound tightening firewall -> policy -> OAP rules", async () => {

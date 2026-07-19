@@ -134,6 +134,33 @@ export const deploymentSchema = {
             },
           },
         },
+        inboundAzureResourceRules: {
+          type: "object",
+          additionalProperties: false,
+          required: ["rules"],
+          properties: {
+            rules: {
+              type: "array",
+              items: {
+                type: "object",
+                additionalProperties: false,
+                required: ["displayName", "resourceId"],
+                properties: {
+                  displayName: {
+                    type: "string",
+                    minLength: 1,
+                    pattern: "^\\S(?:[\\s\\S]*\\S)?$",
+                  },
+                  resourceId: {
+                    type: "string",
+                    minLength: 1,
+                    pattern: "^\\S+$",
+                  },
+                },
+              },
+            },
+          },
+        },
         outboundCloudConnectionRules: {
           type: "object",
           additionalProperties: false,

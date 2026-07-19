@@ -1,11 +1,13 @@
 import { compareCanonicalStrings, sha256, stableJson } from "../hash";
 import type {
+  InboundAzureResourceRulesManifest,
   InboundFirewallRulesManifest,
   NetworkCommunicationPolicyManifest,
   NetworkDefaultAction,
   NetworkProtectionManifest,
   OutboundCloudConnectionRulesManifest,
   OutboundGatewayRulesManifest,
+  PlannedInboundAzureResourceRules,
   PlannedInboundFirewallRules,
   PlannedNetworkCommunicationPolicy,
   PlannedNetworkProtection,
@@ -14,6 +16,7 @@ import type {
 import { FabricApiError, FabricClient } from "./client";
 import {
   buildStaticManagedPrivateEndpointPlans,
+  canonicalizeArmResourceId,
   managedPrivateEndpointOapBlockers,
   ManagedPrivateEndpointAdapter,
   normalizeManagedPrivateEndpoints,
@@ -45,6 +48,15 @@ export interface CanonicalInboundFirewallRule {
 
 export interface CanonicalInboundFirewallRules {
   rules: CanonicalInboundFirewallRule[];
+}
+
+export interface CanonicalInboundAzureResourceRule {
+  displayName: string;
+  resourceId: string;
+}
+
+export interface CanonicalInboundAzureResourceRules {
+  rules: CanonicalInboundAzureResourceRule[];
 }
 
 export interface CanonicalOutboundConnectionEndpointRule {
@@ -80,6 +92,7 @@ export interface CanonicalNetworkProtection {
   workspaceId?: string;
   communicationPolicy: CanonicalNetworkCommunicationPolicy;
   inboundFirewallRules?: CanonicalInboundFirewallRules;
+  inboundAzureResourceRules?: CanonicalInboundAzureResourceRules;
   outboundCloudConnectionRules?: CanonicalOutboundCloudConnectionRules;
   outboundGatewayRules?: CanonicalOutboundGatewayRules;
   managedPrivateEndpoints?: CanonicalManagedPrivateEndpoint[];
@@ -92,6 +105,11 @@ export interface NetworkCommunicationPolicySnapshot {
 
 export interface InboundFirewallRulesSnapshot {
   configuration: CanonicalInboundFirewallRules;
+  etag?: string;
+}
+
+export interface InboundAzureResourceRulesSnapshot {
+  configuration: CanonicalInboundAzureResourceRules;
   etag?: string;
 }
 
@@ -117,6 +135,7 @@ export function normalizeNetworkProtection(
       "workspaceId",
       "communicationPolicy",
       "inboundFirewallRules",
+      "inboundAzureResourceRules",
       "outboundCloudConnectionRules",
       "outboundGatewayRules",
       "managedPrivateEndpoints",
@@ -138,6 +157,13 @@ export function normalizeNetworkProtection(
       : normalizeInboundFirewallRules(
           desired.inboundFirewallRules,
           "networkProtection.inboundFirewallRules",
+        );
+  const inboundAzureResourceRules =
+    desired.inboundAzureResourceRules === undefined
+      ? undefined
+      : normalizeInboundAzureResourceRules(
+          desired.inboundAzureResourceRules,
+          "networkProtection.inboundAzureResourceRules",
         );
   const outboundCloudConnectionRules =
     desired.outboundCloudConnectionRules === undefined
@@ -182,6 +208,7 @@ export function normalizeNetworkProtection(
     ...(workspaceId ? { workspaceId } : {}),
     communicationPolicy,
     ...(inboundFirewallRules ? { inboundFirewallRules } : {}),
+    ...(inboundAzureResourceRules ? { inboundAzureResourceRules } : {}),
     ...(outboundCloudConnectionRules ? { outboundCloudConnectionRules } : {}),
     ...(outboundGatewayRules ? { outboundGatewayRules } : {}),
     ...(managedPrivateEndpoints ? { managedPrivateEndpoints } : {}),
@@ -472,6 +499,72 @@ function formatIpv4Address(value: number): string {
 }
 
 /**
+ * Validates and canonicalizes the preview workspace inbound Azure resource
+ * instance rules body: `GET/PUT
+ * /v1/workspaces/{workspaceId}/networking/communicationPolicy/inbound/azureResources`.
+ * Each rule allows a specific Azure resource instance (identified by its full
+ * ARM resource ID) to reach the workspace regardless of the IP firewall
+ * allow list. Unlike inbound firewall rules, Fabric does not document that
+ * `communicationPolicy.inboundDefaultAction` must be `Deny` before these
+ * rules take effect, and an empty configuration never blocks a Deny
+ * transition on its own -- only the firewall's non-empty-rule requirement
+ * guards against total public lockout, because Azure resource rules grant
+ * access to specific resources rather than to any client IP.
+ */
+export function normalizeInboundAzureResourceRules(
+  value: InboundAzureResourceRulesManifest,
+  context: string,
+): CanonicalInboundAzureResourceRules {
+  if (!isRecord(value)) {
+    throw new Error(`${context} must be an object.`);
+  }
+  assertOnlyKeys(value, ["rules"], context);
+  if (!Array.isArray(value.rules)) {
+    throw new Error(`${context}.rules must be an array.`);
+  }
+
+  const seenResourceIds = new Map<string, string>();
+  const normalized = value.rules.map((rule, index) => {
+    const ruleContext = `${context}.rules[${index}]`;
+    if (!isRecord(rule)) {
+      throw new Error(`${ruleContext} must be an object.`);
+    }
+    assertOnlyKeys(rule, ["displayName", "resourceId"], ruleContext);
+    const displayName = assertNonBlankString(
+      rule.displayName,
+      `${ruleContext}.displayName`,
+    );
+    if (displayName.trim() !== displayName) {
+      throw new Error(
+        `${ruleContext}.displayName must not contain leading or trailing whitespace.`,
+      );
+    }
+
+    const resourceId = canonicalizeArmResourceId(
+      rule.resourceId,
+      `${ruleContext}.resourceId`,
+    );
+    const previousResourceId = seenResourceIds.get(resourceId);
+    if (previousResourceId !== undefined) {
+      throw new Error(
+        `${context}.rules declares duplicate or case-ambiguous resourceId '${rule.resourceId as string}' (already declared as '${previousResourceId}').`,
+      );
+    }
+    seenResourceIds.set(resourceId, rule.resourceId as string);
+
+    return { displayName, resourceId };
+  });
+
+  normalized.sort(
+    (left, right) =>
+      compareCanonicalStrings(left.resourceId, right.resourceId) ||
+      compareCanonicalStrings(left.displayName, right.displayName),
+  );
+
+  return { rules: normalized };
+}
+
+/**
  * Normalizes an `outboundCloudConnectionRules` body. The manifest shape and
  * the official GA request/response shape are identical, so this function is
  * reused both to validate manifest input and to canonically parse live GET
@@ -652,6 +745,12 @@ export function hashInboundFirewallRules(
   return sha256(stableJson(rules));
 }
 
+export function hashInboundAzureResourceRules(
+  rules: CanonicalInboundAzureResourceRules,
+): string {
+  return sha256(stableJson(rules));
+}
+
 export function hashOutboundCloudConnectionRules(
   rules: CanonicalOutboundCloudConnectionRules,
 ): string {
@@ -693,6 +792,18 @@ function buildStaticNetworkProtectionPlan(
               canonical.inboundFirewallRules,
             ),
             ruleCount: canonical.inboundFirewallRules.rules.length,
+          },
+        }
+      : {}),
+    ...(canonical.inboundAzureResourceRules
+      ? {
+          inboundAzureResourceRules: {
+            action,
+            reason,
+            desiredHash: hashInboundAzureResourceRules(
+              canonical.inboundAzureResourceRules,
+            ),
+            ruleCount: canonical.inboundAzureResourceRules.rules.length,
           },
         }
       : {}),
@@ -772,6 +883,10 @@ function communicationPolicyPath(workspaceId: string): string {
 
 function inboundFirewallPath(workspaceId: string): string {
   return `${communicationPolicyPath(workspaceId)}/inbound/firewall`;
+}
+
+function inboundAzureResourcesPath(workspaceId: string): string {
+  return `${communicationPolicyPath(workspaceId)}/inbound/azureResources`;
 }
 
 function outboundConnectionsPath(workspaceId: string): string {
@@ -889,6 +1004,69 @@ export class NetworkProtectionAdapter {
     if (response.body !== undefined) {
       throw new Error(
         "Fabric Set Firewall Rules returned an unexpected response body.",
+      );
+    }
+    const etag = response.headers.get("etag")?.trim();
+    return {
+      configuration: desired,
+      ...(etag ? { etag } : {}),
+    };
+  }
+
+  async getInboundAzureResourceRules(
+    workspaceId: string,
+  ): Promise<InboundAzureResourceRulesSnapshot> {
+    assertGuid(workspaceId, "workspace ID");
+    const response = await this.client.request<unknown>(
+      "GET",
+      inboundAzureResourcesPath(workspaceId),
+    );
+    if (response.body === undefined) {
+      throw new Error(
+        "Fabric Get Inbound Azure Resource Rules response is empty.",
+      );
+    }
+    // The official reference does not document an ETag for this preview
+    // surface (unlike the sibling IP firewall rules API). Capture one
+    // opportunistically so the same headerless-safe drift model still
+    // applies if a future revision starts returning it.
+    const etag = response.headers.get("etag")?.trim();
+    return {
+      configuration: normalizeInboundAzureResourceRules(
+        response.body as InboundAzureResourceRulesManifest,
+        "Fabric inbound Azure resource rules response",
+      ),
+      ...(etag ? { etag } : {}),
+    };
+  }
+
+  async putInboundAzureResourceRules(
+    workspaceId: string,
+    desired: CanonicalInboundAzureResourceRules,
+    options: { ifMatchEtag?: string; onDispatch?: () => void },
+  ): Promise<InboundAzureResourceRulesSnapshot> {
+    assertGuid(workspaceId, "workspace ID");
+    const response = await this.client.request<unknown>(
+      "PUT",
+      inboundAzureResourcesPath(workspaceId),
+      {
+        body: desired,
+        retryable: true,
+        retryMode: "throttling-only",
+        // The official reference documents only a 200 response for Set
+        // Inbound Azure Resource Rules (unlike firewall rules, which also
+        // document 204). Any other status is a validation error and must
+        // not be treated as an accepted no-content response.
+        acceptedStatuses: [200],
+        ...(options.ifMatchEtag
+          ? { headers: { "if-match": quoteEtag(options.ifMatchEtag) } }
+          : {}),
+        onDispatch: options.onDispatch,
+      },
+    );
+    if (response.body !== undefined) {
+      throw new Error(
+        "Fabric Set Inbound Azure Resource Rules returned an unexpected response body.",
       );
     }
     const etag = response.headers.get("etag")?.trim();
@@ -1044,6 +1222,13 @@ export class NetworkProtectionAdapter {
         )
       : undefined;
 
+    const inboundAzureResourceRules = canonical.inboundAzureResourceRules
+      ? await this.planInboundAzureResourceRulesSurface(
+          targetWorkspaceId,
+          canonical.inboundAzureResourceRules,
+        )
+      : undefined;
+
     const outboundCloudConnectionRules = canonical.outboundCloudConnectionRules
       ? await this.planOutboundSurface(
           targetWorkspaceId,
@@ -1095,6 +1280,7 @@ export class NetworkProtectionAdapter {
       workspaceId: targetWorkspaceId,
       communicationPolicy,
       ...(inboundFirewallRules ? { inboundFirewallRules } : {}),
+      ...(inboundAzureResourceRules ? { inboundAzureResourceRules } : {}),
       ...(outboundCloudConnectionRules ? { outboundCloudConnectionRules } : {}),
       ...(outboundGatewayRules ? { outboundGatewayRules } : {}),
       ...(managedPrivateEndpoints ? { managedPrivateEndpoints } : {}),
@@ -1114,6 +1300,28 @@ export class NetworkProtectionAdapter {
       reason: matches
         ? "The preview inbound firewall rules already match the desired configuration."
         : "The preview inbound firewall rules differ from the desired full-replacement configuration.",
+      desiredHash,
+      observedStateHash: observedHash,
+      ...(observed.etag ? { etag: observed.etag } : {}),
+      ruleCount: desired.rules.length,
+    };
+  }
+
+  private async planInboundAzureResourceRulesSurface(
+    workspaceId: string,
+    desired: CanonicalInboundAzureResourceRules,
+  ): Promise<PlannedInboundAzureResourceRules> {
+    const observed = await this.getInboundAzureResourceRules(workspaceId);
+    const desiredHash = hashInboundAzureResourceRules(desired);
+    const observedHash = hashInboundAzureResourceRules(
+      observed.configuration,
+    );
+    const matches = observedHash === desiredHash;
+    return {
+      action: matches ? "no-op" : "update",
+      reason: matches
+        ? "The preview inbound Azure resource instance rules already match the desired configuration."
+        : "The preview inbound Azure resource instance rules differ from the desired full-replacement configuration.",
       desiredHash,
       observedStateHash: observedHash,
       ...(observed.etag ? { etag: observed.etag } : {}),
