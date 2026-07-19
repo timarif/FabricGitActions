@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       probe_inbound_firewall:
-        description: Run only the read-only preview inbound firewall and Azure resource instance rule planning probe. This never applies changes.
+        description: Run only the read-only preview inbound firewall, Azure resource instance rule, and External Data Shares policy planning probe. This never applies changes.
         required: true
         default: false
         type: boolean
@@ -79,6 +79,11 @@ jobs:
             and (
               .networkProtection.inboundAzureResourceRules.action == "update"
               or .networkProtection.inboundAzureResourceRules.action == "no-op"
+            )
+            and .networkProtection.inboundExternalDataSharesPolicy.desiredDefaultAction == "Deny"
+            and (
+              .networkProtection.inboundExternalDataSharesPolicy.action == "update"
+              or .networkProtection.inboundExternalDataSharesPolicy.action == "no-op"
             )
           ' live-output/inbound-firewall-plan.json
 

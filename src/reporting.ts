@@ -215,6 +215,14 @@ export async function writeJobSummary(plan: DeploymentPlan): Promise<void> {
         networkProtection.inboundAzureResourceRules.reason,
       ]);
     }
+    if (networkProtection.inboundExternalDataSharesPolicy) {
+      surfaceRows.push([
+        "Inbound External Data Shares policy (Preview)",
+        networkProtection.inboundExternalDataSharesPolicy.action,
+        `${networkProtection.inboundExternalDataSharesPolicy.desiredDefaultAction}${networkProtection.inboundExternalDataSharesPolicy.isRelaxation ? " (relaxation)" : ""}`,
+        networkProtection.inboundExternalDataSharesPolicy.reason,
+      ]);
+    }
     if (networkProtection.outboundCloudConnectionRules) {
       surfaceRows.push([
         "Outbound cloud connection rules",

@@ -1,6 +1,7 @@
 import { compareCanonicalStrings, sha256, stableJson } from "../hash";
 import type {
   InboundAzureResourceRulesManifest,
+  InboundExternalDataSharesPolicyManifest,
   InboundFirewallRulesManifest,
   NetworkCommunicationPolicyManifest,
   NetworkDefaultAction,
@@ -8,6 +9,7 @@ import type {
   OutboundCloudConnectionRulesManifest,
   OutboundGatewayRulesManifest,
   PlannedInboundAzureResourceRules,
+  PlannedInboundExternalDataSharesPolicy,
   PlannedInboundFirewallRules,
   PlannedNetworkCommunicationPolicy,
   PlannedNetworkProtection,
@@ -59,6 +61,10 @@ export interface CanonicalInboundAzureResourceRules {
   rules: CanonicalInboundAzureResourceRule[];
 }
 
+export interface CanonicalInboundExternalDataSharesPolicy {
+  defaultAction: NetworkDefaultAction;
+}
+
 export interface CanonicalOutboundConnectionEndpointRule {
   hostnamePattern: string;
 }
@@ -93,6 +99,7 @@ export interface CanonicalNetworkProtection {
   communicationPolicy: CanonicalNetworkCommunicationPolicy;
   inboundFirewallRules?: CanonicalInboundFirewallRules;
   inboundAzureResourceRules?: CanonicalInboundAzureResourceRules;
+  inboundExternalDataSharesPolicy?: CanonicalInboundExternalDataSharesPolicy;
   outboundCloudConnectionRules?: CanonicalOutboundCloudConnectionRules;
   outboundGatewayRules?: CanonicalOutboundGatewayRules;
   managedPrivateEndpoints?: CanonicalManagedPrivateEndpoint[];
@@ -110,6 +117,11 @@ export interface InboundFirewallRulesSnapshot {
 
 export interface InboundAzureResourceRulesSnapshot {
   configuration: CanonicalInboundAzureResourceRules;
+  etag?: string;
+}
+
+export interface InboundExternalDataSharesPolicySnapshot {
+  configuration: CanonicalInboundExternalDataSharesPolicy;
   etag?: string;
 }
 
@@ -136,6 +148,7 @@ export function normalizeNetworkProtection(
       "communicationPolicy",
       "inboundFirewallRules",
       "inboundAzureResourceRules",
+      "inboundExternalDataSharesPolicy",
       "outboundCloudConnectionRules",
       "outboundGatewayRules",
       "managedPrivateEndpoints",
@@ -164,6 +177,13 @@ export function normalizeNetworkProtection(
       : normalizeInboundAzureResourceRules(
           desired.inboundAzureResourceRules,
           "networkProtection.inboundAzureResourceRules",
+        );
+  const inboundExternalDataSharesPolicy =
+    desired.inboundExternalDataSharesPolicy === undefined
+      ? undefined
+      : normalizeInboundExternalDataSharesPolicy(
+          desired.inboundExternalDataSharesPolicy,
+          "networkProtection.inboundExternalDataSharesPolicy",
         );
   const outboundCloudConnectionRules =
     desired.outboundCloudConnectionRules === undefined
@@ -209,6 +229,9 @@ export function normalizeNetworkProtection(
     communicationPolicy,
     ...(inboundFirewallRules ? { inboundFirewallRules } : {}),
     ...(inboundAzureResourceRules ? { inboundAzureResourceRules } : {}),
+    ...(inboundExternalDataSharesPolicy
+      ? { inboundExternalDataSharesPolicy }
+      : {}),
     ...(outboundCloudConnectionRules ? { outboundCloudConnectionRules } : {}),
     ...(outboundGatewayRules ? { outboundGatewayRules } : {}),
     ...(managedPrivateEndpoints ? { managedPrivateEndpoints } : {}),
@@ -565,6 +588,29 @@ export function normalizeInboundAzureResourceRules(
 }
 
 /**
+ * Validates and canonicalizes the preview workspace inbound External Data
+ * Shares bypass policy body: `{ defaultAction }`. The manifest shape and the
+ * official GET/PUT request/response shape are identical (the same as the
+ * communication policy's own `NetworkAccessRule` fields, but scoped to a
+ * single default action), so this function is reused both to validate
+ * manifest input and to canonically parse live GET responses.
+ */
+export function normalizeInboundExternalDataSharesPolicy(
+  value: InboundExternalDataSharesPolicyManifest,
+  context: string,
+): CanonicalInboundExternalDataSharesPolicy {
+  if (!isRecord(value)) {
+    throw new Error(`${context} must be an object.`);
+  }
+  assertOnlyKeys(value, ["defaultAction"], context);
+  const defaultAction = assertDefaultAction(
+    value.defaultAction,
+    `${context}.defaultAction`,
+  );
+  return { defaultAction };
+}
+
+/**
  * Normalizes an `outboundCloudConnectionRules` body. The manifest shape and
  * the official GA request/response shape are identical, so this function is
  * reused both to validate manifest input and to canonically parse live GET
@@ -751,6 +797,12 @@ export function hashInboundAzureResourceRules(
   return sha256(stableJson(rules));
 }
 
+export function hashInboundExternalDataSharesPolicy(
+  policy: CanonicalInboundExternalDataSharesPolicy,
+): string {
+  return sha256(stableJson(policy));
+}
+
 export function hashOutboundCloudConnectionRules(
   rules: CanonicalOutboundCloudConnectionRules,
 ): string {
@@ -804,6 +856,19 @@ function buildStaticNetworkProtectionPlan(
               canonical.inboundAzureResourceRules,
             ),
             ruleCount: canonical.inboundAzureResourceRules.rules.length,
+          },
+        }
+      : {}),
+    ...(canonical.inboundExternalDataSharesPolicy
+      ? {
+          inboundExternalDataSharesPolicy: {
+            action,
+            reason,
+            desiredHash: hashInboundExternalDataSharesPolicy(
+              canonical.inboundExternalDataSharesPolicy,
+            ),
+            desiredDefaultAction:
+              canonical.inboundExternalDataSharesPolicy.defaultAction,
           },
         }
       : {}),
@@ -887,6 +952,10 @@ function inboundFirewallPath(workspaceId: string): string {
 
 function inboundAzureResourcesPath(workspaceId: string): string {
   return `${communicationPolicyPath(workspaceId)}/inbound/azureResources`;
+}
+
+function inboundExternalDataSharesPath(workspaceId: string): string {
+  return `${communicationPolicyPath(workspaceId)}/inbound/externalDataShares`;
 }
 
 function outboundConnectionsPath(workspaceId: string): string {
@@ -1076,6 +1145,67 @@ export class NetworkProtectionAdapter {
     };
   }
 
+  async getInboundExternalDataSharesPolicy(
+    workspaceId: string,
+  ): Promise<InboundExternalDataSharesPolicySnapshot> {
+    assertGuid(workspaceId, "workspace ID");
+    const response = await this.client.request<unknown>(
+      "GET",
+      inboundExternalDataSharesPath(workspaceId),
+    );
+    if (response.body === undefined) {
+      throw new Error(
+        "Fabric Get Inbound External Data Shares Policy response is empty.",
+      );
+    }
+    // The official reference documents an ETag for this surface, but a live
+    // preview response can still omit it. Capture opportunistically so the
+    // same headerless-safe drift model applies either way.
+    const etag = response.headers.get("etag")?.trim();
+    return {
+      configuration: normalizeInboundExternalDataSharesPolicy(
+        response.body as InboundExternalDataSharesPolicyManifest,
+        "Fabric inbound External Data Shares policy response",
+      ),
+      ...(etag ? { etag } : {}),
+    };
+  }
+
+  async putInboundExternalDataSharesPolicy(
+    workspaceId: string,
+    desired: CanonicalInboundExternalDataSharesPolicy,
+    options: { ifMatchEtag?: string; onDispatch?: () => void },
+  ): Promise<InboundExternalDataSharesPolicySnapshot> {
+    assertGuid(workspaceId, "workspace ID");
+    const response = await this.client.request<unknown>(
+      "PUT",
+      inboundExternalDataSharesPath(workspaceId),
+      {
+        body: desired,
+        retryable: true,
+        retryMode: "throttling-only",
+        // The official reference documents only a 200 response for Set
+        // Inbound External Data Shares Policy (no 204 alternative, like the
+        // sibling Azure resource rules surface).
+        acceptedStatuses: [200],
+        ...(options.ifMatchEtag
+          ? { headers: { "if-match": quoteEtag(options.ifMatchEtag) } }
+          : {}),
+        onDispatch: options.onDispatch,
+      },
+    );
+    if (response.body !== undefined) {
+      throw new Error(
+        "Fabric Set Inbound External Data Shares Policy returned an unexpected response body.",
+      );
+    }
+    const etag = response.headers.get("etag")?.trim();
+    return {
+      configuration: desired,
+      ...(etag ? { etag } : {}),
+    };
+  }
+
   async getOutboundCloudConnectionRules(
     workspaceId: string,
   ): Promise<CanonicalOutboundCloudConnectionRules> {
@@ -1229,6 +1359,14 @@ export class NetworkProtectionAdapter {
         )
       : undefined;
 
+    const inboundExternalDataSharesPolicy =
+      canonical.inboundExternalDataSharesPolicy
+        ? await this.planInboundExternalDataSharesPolicySurface(
+            targetWorkspaceId,
+            canonical.inboundExternalDataSharesPolicy,
+          )
+        : undefined;
+
     const outboundCloudConnectionRules = canonical.outboundCloudConnectionRules
       ? await this.planOutboundSurface(
           targetWorkspaceId,
@@ -1281,6 +1419,9 @@ export class NetworkProtectionAdapter {
       communicationPolicy,
       ...(inboundFirewallRules ? { inboundFirewallRules } : {}),
       ...(inboundAzureResourceRules ? { inboundAzureResourceRules } : {}),
+      ...(inboundExternalDataSharesPolicy
+        ? { inboundExternalDataSharesPolicy }
+        : {}),
       ...(outboundCloudConnectionRules ? { outboundCloudConnectionRules } : {}),
       ...(outboundGatewayRules ? { outboundGatewayRules } : {}),
       ...(managedPrivateEndpoints ? { managedPrivateEndpoints } : {}),
@@ -1326,6 +1467,34 @@ export class NetworkProtectionAdapter {
       observedStateHash: observedHash,
       ...(observed.etag ? { etag: observed.etag } : {}),
       ruleCount: desired.rules.length,
+    };
+  }
+
+  private async planInboundExternalDataSharesPolicySurface(
+    workspaceId: string,
+    desired: CanonicalInboundExternalDataSharesPolicy,
+  ): Promise<PlannedInboundExternalDataSharesPolicy> {
+    const observed =
+      await this.getInboundExternalDataSharesPolicy(workspaceId);
+    const desiredHash = hashInboundExternalDataSharesPolicy(desired);
+    const observedHash = hashInboundExternalDataSharesPolicy(
+      observed.configuration,
+    );
+    const matches = observedHash === desiredHash;
+    const isRelaxation =
+      observed.configuration.defaultAction === "Deny" &&
+      desired.defaultAction === "Allow";
+    return {
+      action: matches ? "no-op" : "update",
+      reason: matches
+        ? "The preview inbound External Data Shares bypass policy already matches the desired configuration."
+        : `The preview inbound External Data Shares bypass policy differs from the desired configuration (observed=${observed.configuration.defaultAction}, desired=${desired.defaultAction}).`,
+      desiredHash,
+      observedStateHash: observedHash,
+      ...(observed.etag ? { etag: observed.etag } : {}),
+      desiredDefaultAction: desired.defaultAction,
+      observedDefaultAction: observed.configuration.defaultAction,
+      isRelaxation,
     };
   }
 

@@ -14,7 +14,11 @@ workspace:
 # the master policy switch and the configured allow lists together as one
 # approved mutation. The declared managed private endpoint makes this a
 # guarded two-plan rollout: first create and approve the endpoint, then
-# replan before OAP can tighten to Deny.
+# replan before OAP can tighten to Deny. The preview External Data Shares
+# bypass policy is declared Deny (disabled) here; enabling it (Allow) is a
+# security relaxation that requires the independent
+# allow-inbound-external-data-share-policy-relaxation safeguard in addition
+# to allow-inbound-external-data-share-policy-update.
 networkProtection:
   communicationPolicy:
     inboundDefaultAction: Allow
@@ -31,6 +35,8 @@ networkProtection:
     rules:
       - displayName: trusted-storage-account
         resourceId: ${var.PRIVATE_LINK_RESOURCE_ID}
+  inboundExternalDataSharesPolicy:
+    defaultAction: Deny
   outboundCloudConnectionRules:
     defaultAction: Deny
     rules:

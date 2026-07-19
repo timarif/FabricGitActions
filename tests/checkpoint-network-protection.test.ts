@@ -14,7 +14,11 @@ import {
   normalizeManagedPrivateEndpoints,
   planManagedPrivateEndpoints,
 } from "../src/fabric/managed-private-endpoints";
-import { hashInboundAzureResourceRules, hashInboundFirewallRules } from "../src/fabric/network-protection";
+import {
+  hashInboundAzureResourceRules,
+  hashInboundExternalDataSharesPolicy,
+  hashInboundFirewallRules,
+} from "../src/fabric/network-protection";
 import { buildPlan, rehashPlan } from "../src/planner";
 import type { LoadedManifest } from "../src/types";
 
@@ -105,6 +109,25 @@ function planWithInboundAzureResourceRules() {
     observedStateHash: hashInboundAzureResourceRules({ rules: [] }),
     etag: "azure-resource-etag",
     ruleCount: 1,
+  };
+  return rehashPlan(plan);
+}
+
+function planWithInboundExternalDataSharesPolicy() {
+  const plan = planWithNetworkProtection();
+  plan.networkProtection!.inboundExternalDataSharesPolicy = {
+    action: "update",
+    reason: "differs",
+    desiredHash: hashInboundExternalDataSharesPolicy({
+      defaultAction: "Allow",
+    }),
+    observedStateHash: hashInboundExternalDataSharesPolicy({
+      defaultAction: "Deny",
+    }),
+    etag: '"a1b2c3d4"',
+    desiredDefaultAction: "Allow",
+    observedDefaultAction: "Deny",
+    isRelaxation: true,
   };
   return rehashPlan(plan);
 }
@@ -294,6 +317,93 @@ describe("network protection checkpoint", () => {
     checkpoint.networkProtection.inboundAzureResourceRules = {
       desiredHash:
         plan.networkProtection!.inboundAzureResourceRules!.desiredHash,
+      phase: "submitting",
+      updatedAt: "2026-07-19T00:00:00.000Z",
+      unexpected: true,
+    } as never;
+    writeCheckpoint(checkpointFile, checkpoint);
+    expect(() => loadCheckpoint(checkpointFile, plan)).toThrow(
+      "invalid structure",
+    );
+  });
+
+  it("round-trips a submitting inbound External Data Shares policy surface bound to the approved hash", () => {
+    const plan = planWithInboundExternalDataSharesPolicy();
+    const checkpoint = createCheckpoint(plan);
+    checkpoint.networkProtection = {
+      workspaceId: WORKSPACE_ID,
+      inboundExternalDataSharesPolicy: {
+        desiredHash:
+          plan.networkProtection!.inboundExternalDataSharesPolicy!
+            .desiredHash,
+        phase: "submitting",
+        updatedAt: "2026-07-19T00:00:00.000Z",
+      },
+      updatedAt: "2026-07-19T00:00:00.000Z",
+    };
+    const root = mkdtempSync(
+      path.join(tmpdir(), "fabric-external-data-shares-checkpoint-"),
+    );
+    const checkpointFile = path.join(root, "checkpoint.json");
+
+    writeCheckpoint(checkpointFile, checkpoint);
+
+    expect(
+      loadCheckpoint(checkpointFile, plan)?.networkProtection
+        ?.inboundExternalDataSharesPolicy,
+    ).toEqual(checkpoint.networkProtection.inboundExternalDataSharesPolicy);
+  });
+
+  it("requires the External Data Shares policy surface before a completed marker is accepted", () => {
+    const plan = planWithInboundExternalDataSharesPolicy();
+    const checkpoint = createCheckpoint(plan);
+    checkpoint.networkProtection = {
+      workspaceId: WORKSPACE_ID,
+      communicationPolicy: {
+        desiredHash:
+          plan.networkProtection!.communicationPolicy.desiredHash,
+        phase: "verified",
+        updatedAt: "2026-07-19T00:00:00.000Z",
+      },
+      completedAt: "2026-07-19T00:00:00.000Z",
+      updatedAt: "2026-07-19T00:00:00.000Z",
+    };
+    const root = mkdtempSync(
+      path.join(tmpdir(), "fabric-external-data-shares-checkpoint-"),
+    );
+    const checkpointFile = path.join(root, "checkpoint.json");
+    writeCheckpoint(checkpointFile, checkpoint);
+
+    expect(() => loadCheckpoint(checkpointFile, plan)).toThrow(
+      "'inboundExternalDataSharesPolicy' is not verified",
+    );
+  });
+
+  it("rejects inbound External Data Shares policy checkpoint tampering and unknown checkpoint fields", () => {
+    const plan = planWithInboundExternalDataSharesPolicy();
+    const checkpoint = createCheckpoint(plan);
+    checkpoint.networkProtection = {
+      workspaceId: WORKSPACE_ID,
+      inboundExternalDataSharesPolicy: {
+        desiredHash: "0".repeat(64),
+        phase: "submitting",
+        updatedAt: "2026-07-19T00:00:00.000Z",
+      },
+      updatedAt: "2026-07-19T00:00:00.000Z",
+    };
+    const root = mkdtempSync(
+      path.join(tmpdir(), "fabric-external-data-shares-checkpoint-"),
+    );
+    const checkpointFile = path.join(root, "checkpoint.json");
+    writeCheckpoint(checkpointFile, checkpoint);
+    expect(() => loadCheckpoint(checkpointFile, plan)).toThrow(
+      "'inboundExternalDataSharesPolicy' does not match",
+    );
+
+    checkpoint.networkProtection.inboundExternalDataSharesPolicy = {
+      desiredHash:
+        plan.networkProtection!.inboundExternalDataSharesPolicy!
+          .desiredHash,
       phase: "submitting",
       updatedAt: "2026-07-19T00:00:00.000Z",
       unexpected: true,

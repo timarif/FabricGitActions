@@ -58,7 +58,7 @@
 - [x] Guarded managed private endpoint create/delete, checkpoint, and recovery
 - [x] Guarded declarative inbound IP firewall rules
 - [x] Guarded declarative inbound Azure resource instance rules
-- [ ] Inbound External Data Shares policy
+- [x] Guarded declarative inbound External Data Shares bypass policy
 - [x] Network recovery
 - [ ] Disposable managed private endpoint live validation
 

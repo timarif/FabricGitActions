@@ -98,6 +98,18 @@ export async function run(): Promise<void> {
       mode === "apply"
         ? readBooleanInput("allow-inbound-azure-resource-rule-update")
         : false;
+    const allowInboundExternalDataSharePolicyUpdate =
+      mode === "apply"
+        ? readBooleanInput(
+            "allow-inbound-external-data-share-policy-update",
+          )
+        : false;
+    const allowInboundExternalDataSharePolicyRelaxation =
+      mode === "apply"
+        ? readBooleanInput(
+            "allow-inbound-external-data-share-policy-relaxation",
+          )
+        : false;
     const acknowledgeFirewallLockoutRisk =
       mode === "apply"
         ? readBooleanInput("acknowledge-firewall-lockout-risk")
@@ -292,6 +304,8 @@ export async function run(): Promise<void> {
         allowNetworkPolicyRelaxation,
         allowInboundFirewallUpdate,
         allowInboundAzureResourceRuleUpdate,
+        allowInboundExternalDataSharePolicyUpdate,
+        allowInboundExternalDataSharePolicyRelaxation,
         acknowledgeFirewallLockoutRisk,
         allowOutboundCloudConnectionRuleUpdate,
         allowOutboundGatewayRuleUpdate,
@@ -444,6 +458,16 @@ export async function run(): Promise<void> {
         plan.networkProtection?.inboundAzureResourceRules?.ruleCount ?? 0,
       ),
     );
+    core.setOutput(
+      "inbound-external-data-share-policy-action",
+      plan.networkProtection?.inboundExternalDataSharesPolicy?.action ??
+        "not-configured",
+    );
+    core.setOutput(
+      "inbound-external-data-share-policy-default-action",
+      plan.networkProtection?.inboundExternalDataSharesPolicy
+        ?.desiredDefaultAction ?? "",
+    );
     const managedPrivateEndpoints =
       plan.networkProtection?.managedPrivateEndpoints ?? [];
     core.setOutput(
@@ -539,6 +563,8 @@ export async function run(): Promise<void> {
         allowNetworkPolicyRelaxation,
         allowInboundFirewallUpdate,
         allowInboundAzureResourceRuleUpdate,
+        allowInboundExternalDataSharePolicyUpdate,
+        allowInboundExternalDataSharePolicyRelaxation,
         acknowledgeFirewallLockoutRisk,
         allowOutboundCloudConnectionRuleUpdate,
         allowOutboundGatewayRuleUpdate,
@@ -583,6 +609,16 @@ export async function run(): Promise<void> {
           approvedPlan.networkProtection?.inboundAzureResourceRules
             ?.ruleCount ?? 0,
         ),
+      );
+      core.setOutput(
+        "inbound-external-data-share-policy-action",
+        approvedPlan.networkProtection?.inboundExternalDataSharesPolicy
+          ?.action ?? "not-configured",
+      );
+      core.setOutput(
+        "inbound-external-data-share-policy-default-action",
+        approvedPlan.networkProtection?.inboundExternalDataSharesPolicy
+          ?.desiredDefaultAction ?? "",
       );
       core.setOutput(
         "requires-item-replan",

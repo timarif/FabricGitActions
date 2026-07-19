@@ -138,6 +138,16 @@ describe("plan reporting", () => {
             etag: "azure-resource-etag",
             ruleCount: 2,
           },
+          inboundExternalDataSharesPolicy: {
+            action: "update",
+            reason: "Preview External Data Shares bypass policy differs.",
+            desiredHash: "5".repeat(64),
+            observedStateHash: "6".repeat(64),
+            etag: '"a1b2c3d4"',
+            desiredDefaultAction: "Allow",
+            observedDefaultAction: "Deny",
+            isRelaxation: true,
+          },
           outboundCloudConnectionRules: {
             action: "update",
             reason: "Outbound access protection is not yet enabled.",
@@ -178,6 +188,10 @@ describe("plan reporting", () => {
       "Inbound Azure resource instance rules (Preview)",
     );
     expect(content).toContain("2 rule(s)");
+    expect(content).toContain(
+      "Inbound External Data Shares policy (Preview)",
+    );
+    expect(content).toContain("Allow (relaxation)");
     expect(content).toContain("Outbound cloud connection rules");
     expect(content).toContain("Managed private endpoints");
     expect(content).toContain("storage-blob");

@@ -11,6 +11,7 @@ import {
 import {
   hashCommunicationPolicy,
   hashInboundAzureResourceRules,
+  hashInboundExternalDataSharesPolicy,
   hashInboundFirewallRules,
 } from "../src/fabric/network-protection";
 import { loadApprovedPlan } from "../src/plan-artifact";
@@ -596,6 +597,131 @@ describe("approved plan loading", () => {
     expect(() => loadApprovedPlan(planPath)).toThrow(
       "invalid structure",
     );
+  });
+
+  function planWithExternalDataShares(
+    observedDefaultAction: "Allow" | "Deny",
+    desiredDefaultAction: "Allow" | "Deny",
+  ) {
+    const plan = createPlan();
+    const desiredPolicyHash = hashCommunicationPolicy({
+      inbound: { publicAccessRules: { defaultAction: "Allow" } },
+      outbound: { publicAccessRules: { defaultAction: "Allow" } },
+    });
+    plan.networkProtection = {
+      workspaceId: "11111111-1111-4111-8111-111111111111",
+      communicationPolicy: {
+        action: "no-op",
+        reason: "Matches.",
+        desiredHash: desiredPolicyHash,
+        observedStateHash: desiredPolicyHash,
+        desiredInboundDefaultAction: "Allow",
+        desiredOutboundDefaultAction: "Allow",
+        observedInboundDefaultAction: "Allow",
+        observedOutboundDefaultAction: "Allow",
+        isRelaxation: false,
+      },
+      inboundExternalDataSharesPolicy: {
+        action:
+          observedDefaultAction === desiredDefaultAction
+            ? "no-op"
+            : "update",
+        reason: "differs",
+        desiredHash: hashInboundExternalDataSharesPolicy({
+          defaultAction: desiredDefaultAction,
+        }),
+        observedStateHash: hashInboundExternalDataSharesPolicy({
+          defaultAction: observedDefaultAction,
+        }),
+        etag: '"a1b2c3d4"',
+        desiredDefaultAction,
+        observedDefaultAction,
+        isRelaxation:
+          observedDefaultAction === "Deny" && desiredDefaultAction === "Allow",
+      },
+    };
+    return plan;
+  }
+
+  it("round-trips an approved inbound External Data Shares policy plan, including a headerless ETag", () => {
+    const root = mkdtempSync(path.join(tmpdir(), "fabric-plan-"));
+    const planPath = path.join(root, "plan.json");
+    const approved = rehashPlan(
+      planWithExternalDataShares("Deny", "Allow"),
+    );
+    writeFileSync(planPath, JSON.stringify(approved), "utf8");
+
+    expect(
+      loadApprovedPlan(planPath).networkProtection
+        ?.inboundExternalDataSharesPolicy,
+    ).toMatchObject({
+      action: "update",
+      desiredDefaultAction: "Allow",
+      observedDefaultAction: "Deny",
+      isRelaxation: true,
+      etag: '"a1b2c3d4"',
+    });
+
+    const headerless = structuredClone(approved);
+    delete headerless.networkProtection!.inboundExternalDataSharesPolicy!
+      .etag;
+    writeFileSync(
+      planPath,
+      JSON.stringify(rehashPlan(headerless)),
+      "utf8",
+    );
+    expect(
+      loadApprovedPlan(planPath).networkProtection
+        ?.inboundExternalDataSharesPolicy,
+    ).not.toHaveProperty("etag");
+  });
+
+  it("rejects a plan artifact that reclassifies an enabling External Data Shares transition as non-relaxing", () => {
+    const root = mkdtempSync(path.join(tmpdir(), "fabric-plan-"));
+    const planPath = path.join(root, "plan.json");
+    const plan = planWithExternalDataShares("Deny", "Allow");
+    const approved = rehashPlan(plan);
+
+    approved.networkProtection!.inboundExternalDataSharesPolicy!.isRelaxation =
+      false;
+    writeFileSync(
+      planPath,
+      JSON.stringify(rehashPlan(approved)),
+      "utf8",
+    );
+    expect(() => loadApprovedPlan(planPath)).toThrow("invalid structure");
+  });
+
+  it("rejects rehashed inbound External Data Shares policy metadata tampering and unknown properties", () => {
+    const root = mkdtempSync(path.join(tmpdir(), "fabric-plan-"));
+    const planPath = path.join(root, "plan.json");
+    const approved = rehashPlan(
+      planWithExternalDataShares("Deny", "Allow"),
+    );
+
+    approved.networkProtection!.inboundExternalDataSharesPolicy!.etag = "";
+    writeFileSync(
+      planPath,
+      JSON.stringify(rehashPlan(approved)),
+      "utf8",
+    );
+    expect(() => loadApprovedPlan(planPath)).toThrow("invalid structure");
+
+    approved.networkProtection!.inboundExternalDataSharesPolicy!.etag =
+      '"a1b2c3d4"';
+    (
+      approved.networkProtection!
+        .inboundExternalDataSharesPolicy as unknown as Record<
+        string,
+        unknown
+      >
+    ).unexpected = true;
+    writeFileSync(
+      planPath,
+      JSON.stringify(rehashPlan(approved)),
+      "utf8",
+    );
+    expect(() => loadApprovedPlan(planPath)).toThrow("invalid structure");
   });
 
   it("round-trips a guarded managed private endpoint plan without exposing requestMessage", () => {

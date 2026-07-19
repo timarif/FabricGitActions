@@ -133,6 +133,14 @@ inputs:
     description: Allow apply mode to replace the complete preview workspace inbound Azure resource instance rule set.
     required: false
     default: "false"
+  allow-inbound-external-data-share-policy-update:
+    description: Allow apply mode to update the preview workspace inbound External Data Shares bypass policy.
+    required: false
+    default: "false"
+  allow-inbound-external-data-share-policy-relaxation:
+    description: Allow apply mode to enable the inbound External Data Shares bypass policy (an observed Deny -> desired Allow transition). Required in addition to allow-inbound-external-data-share-policy-update.
+    required: false
+    default: "false"
   acknowledge-firewall-lockout-risk:
     description: Acknowledge the lockout risk when an approved plan changes inbound public access from Allow to Deny. Required independently from all other network safeguards.
     required: false
@@ -195,6 +203,10 @@ outputs:
     description: Planned action for the preview workspace inbound Azure resource instance rules, or not-configured.
   inbound-azure-resource-rule-count:
     description: Number of approved inbound Azure resource instance rules.
+  inbound-external-data-share-policy-action:
+    description: Planned or applied action for the preview workspace inbound External Data Shares bypass policy, or not-configured.
+  inbound-external-data-share-policy-default-action:
+    description: Approved desired defaultAction (Allow or Deny) for the inbound External Data Shares bypass policy, or empty when not configured.
   managed-private-endpoint-count:
     description: Number of declared managed private endpoints.
   managed-private-endpoint-create-count:

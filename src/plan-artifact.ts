@@ -8,6 +8,7 @@ import {
 } from "./fabric/managed-private-endpoints";
 import {
   hashCommunicationPolicy,
+  hashInboundExternalDataSharesPolicy,
 } from "./fabric/network-protection";
 import { compareCanonicalStrings, sha256, stableJson } from "./hash";
 import { rehashPlan } from "./planner";
@@ -17,6 +18,7 @@ import {
   type NetworkDefaultAction,
   type PlannedAction,
   type PlannedInboundAzureResourceRules,
+  type PlannedInboundExternalDataSharesPolicy,
   type PlannedInboundFirewallRules,
   type PlannedItem,
   type PlannedNetworkProtection,
@@ -184,6 +186,7 @@ function isPlannedNetworkProtection(
     "communicationPolicy",
     "inboundFirewallRules",
     "inboundAzureResourceRules",
+    "inboundExternalDataSharesPolicy",
     "outboundCloudConnectionRules",
     "outboundGatewayRules",
     "managedPrivateEndpoints",
@@ -243,6 +246,10 @@ function isPlannedNetworkProtection(
       isPlannedInboundFirewallRules(plan.inboundFirewallRules)) &&
     (plan.inboundAzureResourceRules === undefined ||
       isPlannedInboundAzureResourceRules(plan.inboundAzureResourceRules)) &&
+    (plan.inboundExternalDataSharesPolicy === undefined ||
+      isPlannedInboundExternalDataSharesPolicy(
+        plan.inboundExternalDataSharesPolicy,
+      )) &&
     (plan.outboundCloudConnectionRules === undefined ||
       isPlannedNetworkSurface(plan.outboundCloudConnectionRules)) &&
     (plan.outboundGatewayRules === undefined ||
@@ -323,6 +330,72 @@ function isPlannedInboundAzureResourceRules(
             surface.etag.trim().length > 0))
       : surface.observedStateHash === undefined &&
         surface.etag === undefined)
+  );
+}
+
+function isPlannedInboundExternalDataSharesPolicy(
+  value: unknown,
+): value is PlannedInboundExternalDataSharesPolicy {
+  if (value === null || typeof value !== "object") {
+    return false;
+  }
+  const surface = value as Record<string, unknown>;
+  const allowedKeys = new Set([
+    "action",
+    "reason",
+    "desiredHash",
+    "observedStateHash",
+    "etag",
+    "desiredDefaultAction",
+    "observedDefaultAction",
+    "isRelaxation",
+  ]);
+  if (Object.keys(surface).some((key) => !allowedKeys.has(key))) {
+    return false;
+  }
+  const action = String(surface.action);
+  const desiredDefaultAction = surface.desiredDefaultAction;
+  if (
+    !NETWORK_SURFACE_ACTIONS.has(action) ||
+    typeof surface.reason !== "string" ||
+    !isHash(surface.desiredHash) ||
+    !isNetworkDefaultAction(desiredDefaultAction) ||
+    surface.desiredHash !==
+      hashInboundExternalDataSharesPolicy({
+        defaultAction: desiredDefaultAction,
+      })
+  ) {
+    return false;
+  }
+  const discovered = action === "update" || action === "no-op";
+  if (!discovered) {
+    return (
+      surface.observedStateHash === undefined &&
+      surface.etag === undefined &&
+      surface.observedDefaultAction === undefined &&
+      surface.isRelaxation === undefined
+    );
+  }
+  const observedDefaultAction = surface.observedDefaultAction;
+  if (
+    !isNetworkDefaultAction(observedDefaultAction) ||
+    !isHash(surface.observedStateHash) ||
+    typeof surface.isRelaxation !== "boolean" ||
+    (surface.etag !== undefined &&
+      (typeof surface.etag !== "string" ||
+        surface.etag.trim().length === 0))
+  ) {
+    return false;
+  }
+  const observedHash = hashInboundExternalDataSharesPolicy({
+    defaultAction: observedDefaultAction,
+  });
+  const isRelaxation =
+    observedDefaultAction === "Deny" && desiredDefaultAction === "Allow";
+  return (
+    surface.observedStateHash === observedHash &&
+    surface.isRelaxation === isRelaxation &&
+    (action === "no-op") === (surface.desiredHash === observedHash)
   );
 }
 

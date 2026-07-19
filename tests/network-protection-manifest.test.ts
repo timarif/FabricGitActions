@@ -384,7 +384,22 @@ items:
     ).toThrow("ARM resource ID");
   });
 
-  it("continues to reject later inbound security surfaces", () => {
+  it("loads the exact documented inbound External Data Shares policy body", () => {
+    const manifestPath = writeManifest(
+      `  communicationPolicy:
+    inboundDefaultAction: Allow
+    outboundDefaultAction: Allow
+  inboundExternalDataSharesPolicy:
+    defaultAction: Deny`,
+    );
+
+    expect(
+      loadManifest(manifestPath).manifest.networkProtection
+        ?.inboundExternalDataSharesPolicy,
+    ).toEqual({ defaultAction: "Deny" });
+  });
+
+  it("requires an explicit defaultAction for inboundExternalDataSharesPolicy and rejects unknown properties", () => {
     const manifestPath = writeManifest(
       `  communicationPolicy:
     inboundDefaultAction: Allow
@@ -394,7 +409,19 @@ items:
 
     expect(() =>
       loadNetworkProtectionManifest(manifestPath),
-    ).toThrow("inboundExternalDataSharesPolicy");
+    ).toThrow("inboundExternalDataSharesPolicy.defaultAction");
+
+    const unknownProperty = writeManifest(
+      `  communicationPolicy:
+    inboundDefaultAction: Allow
+    outboundDefaultAction: Allow
+  inboundExternalDataSharesPolicy:
+    defaultAction: Deny
+    extra: true`,
+    );
+    expect(() => loadManifest(unknownProperty)).toThrow(
+      "Invalid deployment manifest",
+    );
   });
 
   it("rejects outboundCloudConnectionRules declared alongside outbound Allow", () => {

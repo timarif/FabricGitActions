@@ -5,9 +5,9 @@ metadata:
   deploymentId: fabric-inbound-network-readonly-probe
 
 # This fixture is intentionally plan-only for GitHub-hosted runners. It reads
-# the live communication policy and preview inbound firewall and Azure
-# resource instance rule configuration but keeps inbound public access at
-# Allow and must never be used by a live apply job.
+# the live communication policy and preview inbound firewall, Azure resource
+# instance, and External Data Shares bypass policy configuration but keeps
+# inbound public access at Allow and must never be used by a live apply job.
 networkProtection:
   communicationPolicy:
     inboundDefaultAction: Allow
@@ -20,5 +20,10 @@ networkProtection:
     rules:
       - displayName: readonly-plan-probe-resource
         resourceId: /subscriptions/00000000-0000-0000-0000-000000000004/resourceGroups/ci/providers/Microsoft.Storage/storageAccounts/example
+  # Deny keeps the probe's desired state on the tightening/safe side of the
+  # bypass toggle. This is read-only (plan mode only, never applied), so the
+  # actual observed live value may still differ and show `update`.
+  inboundExternalDataSharesPolicy:
+    defaultAction: Deny
 
 items: []

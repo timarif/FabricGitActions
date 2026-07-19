@@ -183,6 +183,8 @@ export interface ApplyPlanOptions {
         | "putInboundFirewallRules"
         | "getInboundAzureResourceRules"
         | "putInboundAzureResourceRules"
+        | "getInboundExternalDataSharesPolicy"
+        | "putInboundExternalDataSharesPolicy"
       >
     >;
   managedPrivateEndpointAdapter?: Pick<
@@ -215,6 +217,8 @@ export interface ApplyPlanOptions {
   allowNetworkPolicyRelaxation?: boolean;
   allowInboundFirewallUpdate?: boolean;
   allowInboundAzureResourceRuleUpdate?: boolean;
+  allowInboundExternalDataSharePolicyUpdate?: boolean;
+  allowInboundExternalDataSharePolicyRelaxation?: boolean;
   acknowledgeFirewallLockoutRisk?: boolean;
   allowOutboundCloudConnectionRuleUpdate?: boolean;
   allowOutboundGatewayRuleUpdate?: boolean;
@@ -962,6 +966,10 @@ function networkProtectionApplyOptions(
       runtimeOptions.allowInboundFirewallUpdate ?? false,
     allowInboundAzureResourceRuleUpdate:
       runtimeOptions.allowInboundAzureResourceRuleUpdate ?? false,
+    allowInboundExternalDataSharePolicyUpdate:
+      runtimeOptions.allowInboundExternalDataSharePolicyUpdate ?? false,
+    allowInboundExternalDataSharePolicyRelaxation:
+      runtimeOptions.allowInboundExternalDataSharePolicyRelaxation ?? false,
     acknowledgeFirewallLockoutRisk:
       runtimeOptions.acknowledgeFirewallLockoutRisk ?? false,
     allowOutboundCloudConnectionRuleUpdate:
@@ -992,6 +1000,10 @@ function preflightRuntimeNetworkProtection(
       runtimeOptions.allowInboundFirewallUpdate ?? false,
     allowInboundAzureResourceRuleUpdate:
       runtimeOptions.allowInboundAzureResourceRuleUpdate ?? false,
+    allowInboundExternalDataSharePolicyUpdate:
+      runtimeOptions.allowInboundExternalDataSharePolicyUpdate ?? false,
+    allowInboundExternalDataSharePolicyRelaxation:
+      runtimeOptions.allowInboundExternalDataSharePolicyRelaxation ?? false,
     acknowledgeFirewallLockoutRisk:
       runtimeOptions.acknowledgeFirewallLockoutRisk ?? false,
     allowOutboundCloudConnectionRuleUpdate:

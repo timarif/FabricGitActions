@@ -13,6 +13,7 @@ import {
 import {
   hashCommunicationPolicy,
   hashInboundAzureResourceRules,
+  hashInboundExternalDataSharesPolicy,
   hashInboundFirewallRules,
   normalizeNetworkProtection,
 } from "../src/fabric/network-protection";
@@ -132,6 +133,27 @@ function buildApprovedPlan(
       ruleCount: canonical.inboundAzureResourceRules.rules.length,
     };
   }
+  if (canonical.inboundExternalDataSharesPolicy) {
+    const desiredDefaultAction =
+      canonical.inboundExternalDataSharesPolicy.defaultAction;
+    const observedDefaultAction =
+      desiredDefaultAction === "Allow" ? "Deny" : "Allow";
+    plan.networkProtection.inboundExternalDataSharesPolicy = {
+      action: "update",
+      reason: "differs",
+      desiredHash: hashInboundExternalDataSharesPolicy(
+        canonical.inboundExternalDataSharesPolicy,
+      ),
+      observedStateHash: hashInboundExternalDataSharesPolicy({
+        defaultAction: observedDefaultAction,
+      }),
+      etag: "external-data-shares-etag",
+      desiredDefaultAction,
+      observedDefaultAction,
+      isRelaxation:
+        observedDefaultAction === "Deny" && desiredDefaultAction === "Allow",
+    };
+  }
   return rehashPlan(plan);
 }
 
@@ -157,6 +179,55 @@ function networkProtectionAdapter(calls: string[]) {
 }
 
 describe("network protection apply integration", () => {
+  it("rejects a rehashed plan that omits networkProtection before any item mutation", async () => {
+    const desired: NetworkProtectionManifest = {
+      communicationPolicy: {
+        inboundDefaultAction: "Allow",
+        outboundDefaultAction: "Allow",
+      },
+      inboundExternalDataSharesPolicy: { defaultAction: "Allow" },
+    };
+    const loaded = loadedWithLakehouseAndNetworkProtection();
+    loaded.manifest.networkProtection = desired;
+    const current = buildApprovedPlan(loaded, "no-op", desired);
+    const tampered = structuredClone(current);
+    delete tampered.networkProtection;
+    const approved = rehashPlan(tampered);
+    const create = vi.fn();
+    const adapter = {
+      ...networkProtectionAdapter([]),
+      getInboundExternalDataSharesPolicy: vi.fn(),
+      putInboundExternalDataSharesPolicy: vi.fn(),
+    };
+
+    await expect(
+      applyApprovedPlan({
+        approvedPlan: approved,
+        currentPlan: current,
+        loadedManifest: loaded,
+        lakehouseAdapter: {
+          plan: vi.fn(),
+          create,
+          update: vi.fn(),
+          resumeCreate: vi.fn(),
+          verify: vi.fn(),
+        },
+        networkProtectionAdapter: adapter,
+        allowCreate: true,
+        allowUpdate: false,
+        allowNetworkPolicyUpdate: false,
+        allowInboundExternalDataSharePolicyUpdate: false,
+        allowInboundExternalDataSharePolicyRelaxation: false,
+        ...files(),
+      }),
+    ).rejects.toThrow("omits networkProtection");
+
+    expect(create).not.toHaveBeenCalled();
+    expect(adapter.plan).not.toHaveBeenCalled();
+    expect(adapter.putInboundExternalDataSharesPolicy).not.toHaveBeenCalled();
+    expect(adapter.putCommunicationPolicy).not.toHaveBeenCalled();
+  });
+
   it("applies network protection only after every item stage completes", async () => {
     const loaded = loadedWithLakehouseAndNetworkProtection();
     const approved = buildApprovedPlan(loaded, "update");
@@ -359,6 +430,105 @@ describe("network protection apply integration", () => {
 
     expect(create).not.toHaveBeenCalled();
     expect(adapter.putInboundAzureResourceRules).not.toHaveBeenCalled();
+    expect(adapter.putCommunicationPolicy).not.toHaveBeenCalled();
+  });
+
+  it("preflights the inbound External Data Shares policy relaxation safeguard independently before any item mutation", async () => {
+    const desired: NetworkProtectionManifest = {
+      communicationPolicy: {
+        inboundDefaultAction: "Allow",
+        outboundDefaultAction: "Allow",
+      },
+      inboundExternalDataSharesPolicy: { defaultAction: "Allow" },
+    };
+    const loaded = loadedWithLakehouseAndNetworkProtection();
+    loaded.manifest.networkProtection = desired;
+    const approved = buildApprovedPlan(loaded, "no-op", desired);
+    const create = vi.fn();
+    const adapter = {
+      ...networkProtectionAdapter([]),
+      getInboundExternalDataSharesPolicy: vi.fn(),
+      putInboundExternalDataSharesPolicy: vi.fn(),
+    };
+    adapter.plan.mockResolvedValue(
+      approved.networkProtection as never,
+    );
+
+    await expect(
+      applyApprovedPlan({
+        approvedPlan: approved,
+        currentPlan: approved,
+        loadedManifest: loaded,
+        lakehouseAdapter: {
+          plan: vi.fn(),
+          create,
+          update: vi.fn(),
+          resumeCreate: vi.fn(),
+          verify: vi.fn(),
+        },
+        networkProtectionAdapter: adapter,
+        allowCreate: true,
+        allowUpdate: false,
+        allowNetworkPolicyUpdate: true,
+        allowInboundExternalDataSharePolicyUpdate: true,
+        allowInboundExternalDataSharePolicyRelaxation: false,
+        ...files(),
+      }),
+    ).rejects.toThrow(
+      "allow-inbound-external-data-share-policy-relaxation is false",
+    );
+
+    expect(create).not.toHaveBeenCalled();
+    expect(adapter.putInboundExternalDataSharesPolicy).not.toHaveBeenCalled();
+    expect(adapter.putCommunicationPolicy).not.toHaveBeenCalled();
+  });
+
+  it("rejects a rehashed plan that omits the External Data Shares policy before any item mutation", async () => {
+    const desired: NetworkProtectionManifest = {
+      communicationPolicy: {
+        inboundDefaultAction: "Allow",
+        outboundDefaultAction: "Allow",
+      },
+      inboundExternalDataSharesPolicy: { defaultAction: "Allow" },
+    };
+    const loaded = loadedWithLakehouseAndNetworkProtection();
+    loaded.manifest.networkProtection = desired;
+    const current = buildApprovedPlan(loaded, "no-op", desired);
+    const tampered = structuredClone(current);
+    delete tampered.networkProtection!.inboundExternalDataSharesPolicy;
+    const approved = rehashPlan(tampered);
+    const create = vi.fn();
+    const adapter = {
+      ...networkProtectionAdapter([]),
+      getInboundExternalDataSharesPolicy: vi.fn(),
+      putInboundExternalDataSharesPolicy: vi.fn(),
+    };
+
+    await expect(
+      applyApprovedPlan({
+        approvedPlan: approved,
+        currentPlan: current,
+        loadedManifest: loaded,
+        lakehouseAdapter: {
+          plan: vi.fn(),
+          create,
+          update: vi.fn(),
+          resumeCreate: vi.fn(),
+          verify: vi.fn(),
+        },
+        networkProtectionAdapter: adapter,
+        allowCreate: true,
+        allowUpdate: false,
+        allowNetworkPolicyUpdate: false,
+        allowInboundExternalDataSharePolicyUpdate: false,
+        allowInboundExternalDataSharePolicyRelaxation: false,
+        ...files(),
+      }),
+    ).rejects.toThrow("omits inbound External Data Shares policy");
+
+    expect(create).not.toHaveBeenCalled();
+    expect(adapter.plan).not.toHaveBeenCalled();
+    expect(adapter.putInboundExternalDataSharesPolicy).not.toHaveBeenCalled();
     expect(adapter.putCommunicationPolicy).not.toHaveBeenCalled();
   });
 

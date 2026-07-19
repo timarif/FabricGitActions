@@ -161,6 +161,14 @@ export const deploymentSchema = {
             },
           },
         },
+        inboundExternalDataSharesPolicy: {
+          type: "object",
+          additionalProperties: false,
+          required: ["defaultAction"],
+          properties: {
+            defaultAction: networkDefaultActionSchema,
+          },
+        },
         outboundCloudConnectionRules: {
           type: "object",
           additionalProperties: false,

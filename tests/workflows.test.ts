@@ -53,6 +53,8 @@ describe("deployment workflow metadata", () => {
       "allow-network-policy-relaxation",
       "allow-inbound-firewall-update",
       "allow-inbound-azure-resource-rule-update",
+      "allow-inbound-external-data-share-policy-update",
+      "allow-inbound-external-data-share-policy-relaxation",
       "acknowledge-firewall-lockout-risk",
       "allow-outbound-cloud-connection-rule-update",
       "allow-outbound-gateway-rule-update",
@@ -83,6 +85,16 @@ describe("deployment workflow metadata", () => {
     expect(
       (action.outputs as Record<string, unknown>)[
         "inbound-azure-resource-rule-count"
+      ],
+    ).toBeDefined();
+    expect(
+      (action.outputs as Record<string, unknown>)[
+        "inbound-external-data-share-policy-action"
+      ],
+    ).toBeDefined();
+    expect(
+      (action.outputs as Record<string, unknown>)[
+        "inbound-external-data-share-policy-default-action"
       ],
     ).toBeDefined();
     expect(
@@ -128,6 +140,14 @@ describe("deployment workflow metadata", () => {
         default: false,
         type: "boolean",
       },
+      allow_inbound_external_data_share_policy_update: {
+        default: false,
+        type: "boolean",
+      },
+      allow_inbound_external_data_share_policy_relaxation: {
+        default: false,
+        type: "boolean",
+      },
       acknowledge_firewall_lockout_risk: {
         default: false,
         type: "boolean",
@@ -161,6 +181,14 @@ describe("deployment workflow metadata", () => {
     expect(applyWith["allow-inbound-azure-resource-rule-update"]).toBe(
       "${{ inputs.allow_inbound_azure_resource_rule_update }}",
     );
+    expect(
+      applyWith["allow-inbound-external-data-share-policy-update"],
+    ).toBe("${{ inputs.allow_inbound_external_data_share_policy_update }}");
+    expect(
+      applyWith["allow-inbound-external-data-share-policy-relaxation"],
+    ).toBe(
+      "${{ inputs.allow_inbound_external_data_share_policy_relaxation }}",
+    );
     expect(applyWith["acknowledge-firewall-lockout-risk"]).toBe(
       "${{ inputs.acknowledge_firewall_lockout_risk }}",
     );
@@ -191,6 +219,14 @@ describe("deployment workflow metadata", () => {
         default: false,
       },
       allow_inbound_azure_resource_rule_update: {
+        required: true,
+        default: false,
+      },
+      allow_inbound_external_data_share_policy_update: {
+        required: true,
+        default: false,
+      },
+      allow_inbound_external_data_share_policy_relaxation: {
         required: true,
         default: false,
       },
@@ -228,6 +264,16 @@ describe("deployment workflow metadata", () => {
       );
       expect(jobWith.allow_inbound_azure_resource_rule_update).toBe(
         "${{ inputs.allow_inbound_azure_resource_rule_update }}",
+      );
+      expect(
+        jobWith.allow_inbound_external_data_share_policy_update,
+      ).toBe(
+        "${{ inputs.allow_inbound_external_data_share_policy_update }}",
+      );
+      expect(
+        jobWith.allow_inbound_external_data_share_policy_relaxation,
+      ).toBe(
+        "${{ inputs.allow_inbound_external_data_share_policy_relaxation }}",
       );
       expect(jobWith.acknowledge_firewall_lockout_risk).toBe(
         "${{ inputs.acknowledge_firewall_lockout_risk }}",
@@ -267,6 +313,9 @@ describe("deployment workflow metadata", () => {
     );
     expect(inspectStep?.run).toContain(
       ".networkProtection.inboundAzureResourceRules",
+    );
+    expect(inspectStep?.run).toContain(
+      ".networkProtection.inboundExternalDataSharesPolicy",
     );
     expect(inspectStep?.run).toContain(
       ".networkProtection.outboundGatewayRules",
@@ -435,6 +484,9 @@ describe("deployment workflow metadata", () => {
     );
     expect(verify?.run).toContain(
       ".networkProtection.inboundAzureResourceRules.ruleCount == 1",
+    );
+    expect(verify?.run).toContain(
+      '.networkProtection.inboundExternalDataSharesPolicy.desiredDefaultAction == "Deny"',
     );
     expect(verify?.run).toContain(
       '.networkProtection.communicationPolicy.desiredInboundDefaultAction == "Allow"',

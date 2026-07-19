@@ -62,6 +62,11 @@ Replacing the preview inbound firewall requires
 `allow_inbound_firewall_update`. Replacing the preview inbound Azure resource
 instance rules requires the independent `allow_inbound_azure_resource_rule_update`,
 which does not imply and is not implied by the firewall safeguard. Changing
+the preview inbound External Data Shares bypass policy requires the
+independent `allow_inbound_external_data_share_policy_update`; enabling the
+bypass (an observed `Deny` -> desired `Allow` transition) additionally
+requires `allow_inbound_external_data_share_policy_relaxation`, while
+disabling it never requires that relaxation approval. Changing
 observed inbound `Allow` to desired `Deny` additionally requires
 `allow_network_policy_update` and the independent
 `acknowledge_firewall_lockout_risk`; no other allow flag implies that

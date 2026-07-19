@@ -167,6 +167,17 @@
             }
           }
         },
+        "inboundExternalDataSharesPolicy": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["defaultAction"],
+          "properties": {
+            "defaultAction": {
+              "type": "string",
+              "enum": ["Allow", "Deny"]
+            }
+          }
+        },
         "outboundCloudConnectionRules": {
           "type": "object",
           "additionalProperties": false,

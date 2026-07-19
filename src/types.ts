@@ -83,6 +83,10 @@ export interface InboundAzureResourceRulesManifest {
   rules: InboundAzureResourceRuleManifest[];
 }
 
+export interface InboundExternalDataSharesPolicyManifest {
+  defaultAction: NetworkDefaultAction;
+}
+
 export interface OutboundConnectionEndpointRuleManifest {
   hostnamePattern: string;
 }
@@ -125,6 +129,7 @@ export interface NetworkProtectionManifest {
   communicationPolicy: NetworkCommunicationPolicyManifest;
   inboundFirewallRules?: InboundFirewallRulesManifest;
   inboundAzureResourceRules?: InboundAzureResourceRulesManifest;
+  inboundExternalDataSharesPolicy?: InboundExternalDataSharesPolicyManifest;
   outboundCloudConnectionRules?: OutboundCloudConnectionRulesManifest;
   outboundGatewayRules?: OutboundGatewayRulesManifest;
   managedPrivateEndpoints?: ManagedPrivateEndpointManifest[];
@@ -289,6 +294,14 @@ export interface PlannedInboundAzureResourceRules extends PlannedNetworkSurface 
   ruleCount: number;
 }
 
+export interface PlannedInboundExternalDataSharesPolicy
+  extends PlannedNetworkSurface {
+  etag?: string;
+  desiredDefaultAction: NetworkDefaultAction;
+  observedDefaultAction?: NetworkDefaultAction;
+  isRelaxation?: boolean;
+}
+
 export type ManagedPrivateEndpointAction = Extract<
   PlannedAction,
   "create" | "delete" | "no-op" | "blocked" | "unknown"
@@ -317,6 +330,7 @@ export interface PlannedNetworkProtection {
   communicationPolicy: PlannedNetworkCommunicationPolicy;
   inboundFirewallRules?: PlannedInboundFirewallRules;
   inboundAzureResourceRules?: PlannedInboundAzureResourceRules;
+  inboundExternalDataSharesPolicy?: PlannedInboundExternalDataSharesPolicy;
   outboundCloudConnectionRules?: PlannedNetworkSurface;
   outboundGatewayRules?: PlannedNetworkSurface;
   managedPrivateEndpoints?: PlannedManagedPrivateEndpoint[];
@@ -427,6 +441,7 @@ export interface ApplyNetworkProtectionResult {
   communicationPolicy: ApplyNetworkSurfaceResult;
   inboundFirewallRules?: ApplyNetworkSurfaceResult;
   inboundAzureResourceRules?: ApplyNetworkSurfaceResult;
+  inboundExternalDataSharesPolicy?: ApplyNetworkSurfaceResult;
   outboundCloudConnectionRules?: ApplyNetworkSurfaceResult;
   outboundGatewayRules?: ApplyNetworkSurfaceResult;
   managedPrivateEndpoints?: ApplyManagedPrivateEndpointResult[];
@@ -549,6 +564,7 @@ export interface ApplyCheckpointNetworkProtection {
   communicationPolicy?: ApplyCheckpointNetworkSurface;
   inboundFirewallRules?: ApplyCheckpointNetworkSurface;
   inboundAzureResourceRules?: ApplyCheckpointNetworkSurface;
+  inboundExternalDataSharesPolicy?: ApplyCheckpointNetworkSurface;
   outboundCloudConnectionRules?: ApplyCheckpointNetworkSurface;
   outboundGatewayRules?: ApplyCheckpointNetworkSurface;
   managedPrivateEndpoints?: Record<

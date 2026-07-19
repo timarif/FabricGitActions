@@ -36,6 +36,7 @@ import {
 import {
   hashCommunicationPolicy,
   hashInboundAzureResourceRules,
+  hashInboundExternalDataSharesPolicy,
   hashInboundFirewallRules,
   NetworkProtectionAdapter,
   normalizeNetworkProtection,
@@ -594,6 +595,208 @@ items: []
       loadCheckpoint(checkpointFile, approved)?.networkProtection,
     ).toMatchObject({
       inboundAzureResourceRules: { phase: "verified" },
+      communicationPolicy: { phase: "verified" },
+      completedAt: expect.any(String),
+    });
+    expect(actionCore.setFailed).toHaveBeenCalledWith(
+      expect.stringContaining("directory not found"),
+    );
+  });
+
+  it("recovers a started inbound External Data Shares policy unit before unrelated item loading, reasserting both safeguards", async () => {
+    const root = mkdtempSync(
+      path.join(tmpdir(), "fabric-main-external-data-shares-recovery-"),
+    );
+    const manifestPath = path.join(root, "deployment.yaml");
+    const approvedPlanFile = path.join(root, "approved-plan.json");
+    const planFile = path.join(root, "current-plan.json");
+    const checkpointFile = path.join(root, "checkpoint.json");
+    const resultFile = path.join(root, "result.json");
+    const manifest = `
+apiVersion: fabric.deploy/v1alpha1
+kind: FabricDeployment
+metadata:
+  deploymentId: main-external-data-shares-recovery
+workspace:
+  id: ${WORKSPACE_ID}
+networkProtection:
+  communicationPolicy:
+    inboundDefaultAction: Allow
+    outboundDefaultAction: Allow
+  inboundExternalDataSharesPolicy:
+    defaultAction: Allow
+items: []
+`;
+    writeFileSync(manifestPath, manifest, "utf8");
+    const loaded = loadManifest(manifestPath);
+    const desired = normalizeNetworkProtection(
+      loaded.manifest.networkProtection!,
+    );
+    const plan = buildPlan(loaded, {
+      mode: "plan",
+      environment: "dev",
+    });
+    const desiredPolicyHash = hashCommunicationPolicy(
+      desired.communicationPolicy,
+    );
+    const desiredExternalDataSharesHash = hashInboundExternalDataSharesPolicy(
+      desired.inboundExternalDataSharesPolicy!,
+    );
+    plan.networkProtection = {
+      workspaceId: WORKSPACE_ID,
+      communicationPolicy: {
+        action: "no-op",
+        reason: "matches",
+        desiredHash: desiredPolicyHash,
+        observedStateHash: desiredPolicyHash,
+        desiredInboundDefaultAction: "Allow",
+        desiredOutboundDefaultAction: "Allow",
+        observedInboundDefaultAction: "Allow",
+        observedOutboundDefaultAction: "Allow",
+        isRelaxation: false,
+      },
+      inboundExternalDataSharesPolicy: {
+        action: "update",
+        reason: "differs",
+        desiredHash: desiredExternalDataSharesHash,
+        observedStateHash: hashInboundExternalDataSharesPolicy({
+          defaultAction: "Deny",
+        }),
+        etag: "approval-etag",
+        desiredDefaultAction: "Allow",
+        observedDefaultAction: "Deny",
+        isRelaxation: true,
+      },
+    };
+    const approved = rehashPlan(plan);
+    writeFileSync(
+      approvedPlanFile,
+      `${JSON.stringify(approved, null, 2)}\n`,
+      "utf8",
+    );
+    const checkpoint = createCheckpoint(approved);
+    checkpoint.networkProtection = {
+      workspaceId: WORKSPACE_ID,
+      inboundExternalDataSharesPolicy: {
+        desiredHash: desiredExternalDataSharesHash,
+        phase: "submitting",
+        updatedAt: "2026-07-19T00:00:00.000Z",
+      },
+      updatedAt: "2026-07-19T00:00:00.000Z",
+    };
+    writeCheckpoint(checkpointFile, checkpoint);
+    writeFileSync(
+      manifestPath,
+      manifest.replace(
+        "items: []",
+        `items:
+  - logicalId: missing
+    type: Lakehouse
+    path: items/does-not-exist`,
+      ),
+      "utf8",
+    );
+
+    const calls: string[] = [];
+    const freshNetworkPlan = {
+      ...approved.networkProtection!,
+      communicationPolicy: {
+        ...approved.networkProtection!.communicationPolicy,
+        etag: "policy-etag",
+      },
+    };
+    vi.spyOn(NetworkProtectionAdapter.prototype, "plan").mockImplementation(
+      async () => {
+        calls.push("network-plan");
+        return freshNetworkPlan;
+      },
+    );
+    vi.spyOn(
+      NetworkProtectionAdapter.prototype,
+      "getInboundExternalDataSharesPolicy",
+    ).mockImplementation(async () => {
+      calls.push("external-data-shares-get");
+      return {
+        configuration: desired.inboundExternalDataSharesPolicy!,
+        etag: "approval-etag",
+      };
+    });
+    const putExternalDataSharesPolicy = vi.spyOn(
+      NetworkProtectionAdapter.prototype,
+      "putInboundExternalDataSharesPolicy",
+    ).mockImplementation(async () => {
+      calls.push("external-data-shares-put");
+      return {
+        configuration: desired.inboundExternalDataSharesPolicy!,
+        etag: "updated-external-data-shares-etag",
+      };
+    });
+    vi.spyOn(
+      NetworkProtectionAdapter.prototype,
+      "getCommunicationPolicy",
+    ).mockImplementation(async () => {
+      calls.push("policy-get");
+      return {
+        policy: desired.communicationPolicy,
+        etag: "policy-etag",
+      };
+    });
+
+    // First attempt grants only the base safeguard; the independent
+    // relaxation safeguard is separately required and recovery must
+    // reassert both (mirroring preflightNetworkProtection).
+    for (const [name, value] of Object.entries({
+      mode: "apply",
+      manifest: manifestPath,
+      environment: "dev",
+      "auth-mode": "service-principal-secret",
+      "tenant-id": "tenant",
+      "client-id": "client",
+      "client-secret": "secret",
+      "approved-plan-file": approvedPlanFile,
+      "plan-file": planFile,
+      "checkpoint-file": checkpointFile,
+      "result-file": resultFile,
+      "allow-inbound-external-data-share-policy-update": "true",
+    })) {
+      actionCore.inputs.set(name, value);
+    }
+
+    await run();
+
+    expect(putExternalDataSharesPolicy).not.toHaveBeenCalled();
+    expect(actionCore.setFailed).toHaveBeenCalledWith(
+      expect.stringContaining(
+        "allow-inbound-external-data-share-policy-relaxation is false",
+      ),
+    );
+    expect(
+      loadCheckpoint(checkpointFile, approved)?.networkProtection
+        ?.inboundExternalDataSharesPolicy,
+    ).toMatchObject({ phase: "submitting" });
+
+    // Granting both independent safeguards allows recovery to complete.
+    actionCore.setFailed.mockClear();
+    calls.length = 0;
+    actionCore.inputs.set(
+      "allow-inbound-external-data-share-policy-relaxation",
+      "true",
+    );
+
+    await run();
+
+    expect(calls).toEqual([
+      "network-plan",
+      "network-plan",
+      "external-data-shares-get",
+      "policy-get",
+    ]);
+    expect(calls).not.toContain("external-data-shares-put");
+    expect(enrichPlanWithFabric).not.toHaveBeenCalled();
+    expect(
+      loadCheckpoint(checkpointFile, approved)?.networkProtection,
+    ).toMatchObject({
+      inboundExternalDataSharesPolicy: { phase: "verified" },
       communicationPolicy: { phase: "verified" },
       completedAt: expect.any(String),
     });

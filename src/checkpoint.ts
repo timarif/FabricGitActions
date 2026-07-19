@@ -197,6 +197,11 @@ function assertCheckpointMatchesPlan(
       planned.inboundAzureResourceRules,
     );
     assertCheckpointNetworkSurfaceMatchesPlan(
+      "inboundExternalDataSharesPolicy",
+      checkpoint.networkProtection.inboundExternalDataSharesPolicy,
+      planned.inboundExternalDataSharesPolicy,
+    );
+    assertCheckpointNetworkSurfaceMatchesPlan(
       "outboundCloudConnectionRules",
       checkpoint.networkProtection.outboundCloudConnectionRules,
       planned.outboundCloudConnectionRules,
@@ -213,6 +218,7 @@ function assertCheckpointMatchesPlan(
       (checkpoint.networkProtection.communicationPolicy ||
         checkpoint.networkProtection.inboundFirewallRules ||
         checkpoint.networkProtection.inboundAzureResourceRules ||
+        checkpoint.networkProtection.inboundExternalDataSharesPolicy ||
         checkpoint.networkProtection.outboundCloudConnectionRules ||
         checkpoint.networkProtection.outboundGatewayRules)
     ) {
@@ -239,6 +245,11 @@ function assertCheckpointMatchesPlan(
         "inboundAzureResourceRules",
         checkpoint.networkProtection.inboundAzureResourceRules,
         planned.inboundAzureResourceRules,
+      );
+      assertCompletedNetworkSurface(
+        "inboundExternalDataSharesPolicy",
+        checkpoint.networkProtection.inboundExternalDataSharesPolicy,
+        planned.inboundExternalDataSharesPolicy,
       );
       assertCompletedNetworkSurface(
         "outboundCloudConnectionRules",
@@ -1105,6 +1116,7 @@ function isCheckpointNetworkProtection(value: unknown): boolean {
     "communicationPolicy",
     "inboundFirewallRules",
     "inboundAzureResourceRules",
+    "inboundExternalDataSharesPolicy",
     "outboundCloudConnectionRules",
     "outboundGatewayRules",
     "managedPrivateEndpoints",
@@ -1125,6 +1137,7 @@ function isCheckpointNetworkProtection(value: unknown): boolean {
     state.communicationPolicy,
     state.inboundFirewallRules,
     state.inboundAzureResourceRules,
+    state.inboundExternalDataSharesPolicy,
     state.outboundCloudConnectionRules,
     state.outboundGatewayRules,
   ];
@@ -1137,6 +1150,8 @@ function isCheckpointNetworkProtection(value: unknown): boolean {
       isCheckpointNetworkSurface(state.inboundFirewallRules)) &&
     (state.inboundAzureResourceRules === undefined ||
       isCheckpointNetworkSurface(state.inboundAzureResourceRules)) &&
+    (state.inboundExternalDataSharesPolicy === undefined ||
+      isCheckpointNetworkSurface(state.inboundExternalDataSharesPolicy)) &&
     (state.outboundCloudConnectionRules === undefined ||
       isCheckpointNetworkSurface(state.outboundCloudConnectionRules)) &&
     (state.outboundGatewayRules === undefined ||

@@ -121,6 +121,7 @@ describe("network protection live planning", () => {
             },
           ],
         },
+        inboundExternalDataSharesPolicy: { defaultAction: "Deny" },
         managedPrivateEndpoints: [
           {
             name: "storage-blob",
@@ -160,6 +161,12 @@ describe("network protection live planning", () => {
     ).toMatchObject({
       action: "blocked",
       ruleCount: 1,
+    });
+    expect(
+      enriched.networkProtection?.inboundExternalDataSharesPolicy,
+    ).toMatchObject({
+      action: "blocked",
+      desiredDefaultAction: "Deny",
     });
     expect(enriched.networkProtection?.communicationPolicy.reason).toContain(
       "managed workspace must be provisioned",

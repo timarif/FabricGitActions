@@ -5,11 +5,13 @@ import { FabricClient } from "../src/fabric/client";
 import {
   hashCommunicationPolicy,
   hashInboundAzureResourceRules,
+  hashInboundExternalDataSharesPolicy,
   hashInboundFirewallRules,
   hashOutboundCloudConnectionRules,
   hashOutboundGatewayRules,
   NetworkProtectionAdapter,
   normalizeInboundAzureResourceRules,
+  normalizeInboundExternalDataSharesPolicy,
   normalizeInboundFirewallRules,
   normalizeNetworkProtection,
   quoteEtag,
@@ -647,6 +649,77 @@ describe("normalizeInboundAzureResourceRules", () => {
   });
 });
 
+describe("normalizeInboundExternalDataSharesPolicy", () => {
+  it("accepts the exact documented Allow/Deny body", () => {
+    expect(
+      normalizeInboundExternalDataSharesPolicy(
+        { defaultAction: "Deny" },
+        "networkProtection.inboundExternalDataSharesPolicy",
+      ),
+    ).toEqual({ defaultAction: "Deny" });
+    expect(
+      normalizeInboundExternalDataSharesPolicy(
+        { defaultAction: "Allow" },
+        "networkProtection.inboundExternalDataSharesPolicy",
+      ),
+    ).toEqual({ defaultAction: "Allow" });
+  });
+
+  it("rejects a missing defaultAction, an invalid value, and unknown properties", () => {
+    expect(() =>
+      normalizeInboundExternalDataSharesPolicy(
+        {} as never,
+        "networkProtection.inboundExternalDataSharesPolicy",
+      ),
+    ).toThrow("must be either 'Allow' or 'Deny'");
+
+    expect(() =>
+      normalizeInboundExternalDataSharesPolicy(
+        { defaultAction: "Sometimes" } as never,
+        "networkProtection.inboundExternalDataSharesPolicy",
+      ),
+    ).toThrow("must be either 'Allow' or 'Deny'");
+
+    expect(() =>
+      normalizeInboundExternalDataSharesPolicy(
+        { defaultAction: "Deny", extra: true } as never,
+        "networkProtection.inboundExternalDataSharesPolicy",
+      ),
+    ).toThrow("unsupported property");
+  });
+
+  it("does not require inboundExternalDataSharesPolicy for inbound Deny and does not require firewall rules for it", () => {
+    const canonical = normalizeNetworkProtection({
+      communicationPolicy: {
+        inboundDefaultAction: "Deny",
+        outboundDefaultAction: "Allow",
+      },
+      inboundFirewallRules: {
+        rules: [{ displayName: "corporate", value: "12.34.56.78" }],
+      },
+      inboundExternalDataSharesPolicy: { defaultAction: "Deny" },
+    });
+    expect(canonical.inboundExternalDataSharesPolicy).toEqual({
+      defaultAction: "Deny",
+    });
+  });
+
+  it("rejects unknown top-level networkProtection.inboundExternalDataSharesPolicy shapes", () => {
+    expect(() =>
+      normalizeNetworkProtection({
+        communicationPolicy: {
+          inboundDefaultAction: "Allow",
+          outboundDefaultAction: "Allow",
+        },
+        inboundExternalDataSharesPolicy: {
+          defaultAction: "Deny",
+          extra: true,
+        } as never,
+      }),
+    ).toThrow("unsupported property");
+  });
+});
+
 describe("quoteEtag", () => {
   it("wraps a bare etag in quotes", () => {
     expect(quoteEtag("abc123")).toBe('"abc123"');
@@ -1115,6 +1188,157 @@ describe("NetworkProtectionAdapter GET/PUT", () => {
     },
   );
 
+  it("GETs the documented External Data Shares policy body and captures a documented ETag", async () => {
+    const requests: string[] = [];
+    const adapter = createAdapter(
+      vi.fn(async (input: string | URL) => {
+        requests.push(String(input));
+        return jsonResponse(
+          { defaultAction: "Deny" },
+          200,
+          { etag: '"a1b2c3d4"' },
+        );
+      }),
+    );
+
+    await expect(
+      adapter.getInboundExternalDataSharesPolicy(WORKSPACE_ID),
+    ).resolves.toEqual({
+      configuration: { defaultAction: "Deny" },
+      etag: '"a1b2c3d4"',
+    });
+    expect(requests[0]).toMatch(
+      /\/networking\/communicationPolicy\/inbound\/externalDataShares$/,
+    );
+  });
+
+  it("keeps a headerless live External Data Shares policy response actionable", async () => {
+    const missingEtag = createAdapter(
+      vi.fn(async () => jsonResponse({ defaultAction: "Allow" })),
+    );
+    await expect(
+      missingEtag.getInboundExternalDataSharesPolicy(WORKSPACE_ID),
+    ).resolves.toEqual({ configuration: { defaultAction: "Allow" } });
+  });
+
+  it("PUTs the exact documented External Data Shares policy body with If-Match and accepts only the documented 200 status", async () => {
+    const requests: Array<{ headers: Headers; body: unknown }> = [];
+    const adapter = createAdapter(
+      vi.fn(async (_input: string | URL, init?: RequestInit) => {
+        requests.push({
+          headers: new Headers(init?.headers),
+          body: JSON.parse(String(init?.body)),
+        });
+        return new Response(null, {
+          status: 200,
+          headers: { etag: '"e5f6g7h8"' },
+        });
+      }),
+    );
+    const desired = { defaultAction: "Allow" as const };
+
+    await expect(
+      adapter.putInboundExternalDataSharesPolicy(WORKSPACE_ID, desired, {
+        ifMatchEtag: "a1b2c3d4",
+      }),
+    ).resolves.toEqual({
+      configuration: desired,
+      etag: '"e5f6g7h8"',
+    });
+    expect(requests[0]?.headers.get("if-match")).toBe('"a1b2c3d4"');
+    expect(requests[0]?.body).toEqual(desired);
+  });
+
+  it("rejects a 204 for Set Inbound External Data Shares Policy because only 200 is documented", async () => {
+    const adapter = createAdapter(
+      vi.fn(async () => new Response(null, { status: 204 })),
+    );
+
+    await expect(
+      adapter.putInboundExternalDataSharesPolicy(
+        WORKSPACE_ID,
+        { defaultAction: "Deny" },
+        {},
+      ),
+    ).rejects.toThrow();
+  });
+
+  it("fails closed on undocumented External Data Shares policy PUT response bodies", async () => {
+    const desired = { defaultAction: "Deny" as const };
+    const unexpectedBody = createAdapter(
+      vi.fn(async () => jsonResponse(desired, 200, { etag: "updated" })),
+    );
+    await expect(
+      unexpectedBody.putInboundExternalDataSharesPolicy(
+        WORKSPACE_ID,
+        desired,
+        { ifMatchEtag: "observed" },
+      ),
+    ).rejects.toThrow("unexpected response body");
+  });
+
+  it("omits If-Match when no ETag is available for the External Data Shares policy", async () => {
+    const requests: Headers[] = [];
+    const adapter = createAdapter(
+      vi.fn(async (_input: string | URL, init?: RequestInit) => {
+        requests.push(new Headers(init?.headers));
+        return new Response(null, { status: 200 });
+      }),
+    );
+    const desired = { defaultAction: "Deny" as const };
+
+    await expect(
+      adapter.putInboundExternalDataSharesPolicy(WORKSPACE_ID, desired, {}),
+    ).resolves.toEqual({ configuration: desired });
+    expect(requests[0]?.get("if-match")).toBeNull();
+  });
+
+  it("retries only a definitive 429 for the External Data Shares policy PUT", async () => {
+    const desired = { defaultAction: "Deny" as const };
+    const onDispatch = vi.fn();
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(
+        jsonResponse({ errorCode: "TooManyRequests" }, 429, {
+          "retry-after": "0",
+        }),
+      )
+      .mockResolvedValueOnce(
+        new Response(null, { status: 200, headers: { etag: "updated" } }),
+      );
+    const adapter = createAdapter(fetchImpl);
+
+    await adapter.putInboundExternalDataSharesPolicy(WORKSPACE_ID, desired, {
+      ifMatchEtag: "observed",
+      onDispatch,
+    });
+
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(onDispatch).toHaveBeenCalledTimes(2);
+  });
+
+  it.each([
+    ["408", 408],
+    ["5xx", 503],
+  ])(
+    "does not blindly retry ambiguous External Data Shares policy %s responses",
+    async (_label, status) => {
+      const fetchImpl = vi.fn(async () =>
+        jsonResponse({ errorCode: "ambiguous" }, status),
+      );
+      const adapter = createAdapter(fetchImpl);
+
+      await expect(
+        adapter.putInboundExternalDataSharesPolicy(
+          WORKSPACE_ID,
+          { defaultAction: "Deny" },
+          { ifMatchEtag: "observed" },
+        ),
+      ).rejects.toMatchObject({ status });
+      expect(fetchImpl).toHaveBeenCalledOnce();
+    },
+  );
+
   it("retries a throttled communication-policy PUT with the same body", async () => {
     const desired = normalizeNetworkProtection(
       desiredAllowOutbound(),
@@ -1378,6 +1602,98 @@ describe("NetworkProtectionAdapter plan", () => {
       observedStateHash: hashInboundAzureResourceRules({ rules: [] }),
     });
     expect(result.inboundAzureResourceRules).not.toHaveProperty("etag");
+  });
+
+  it("classifies enabling the External Data Shares bypass (observed Deny -> desired Allow) as a relaxation", async () => {
+    const desired: NetworkProtectionManifest = {
+      communicationPolicy: {
+        inboundDefaultAction: "Allow",
+        outboundDefaultAction: "Allow",
+      },
+      inboundExternalDataSharesPolicy: { defaultAction: "Allow" },
+    };
+    const adapter = createAdapter(
+      vi.fn(async (input: string | URL) =>
+        String(input).endsWith("/inbound/externalDataShares")
+          ? jsonResponse({ defaultAction: "Deny" }, 200, {
+              etag: '"a1b2c3d4"',
+            })
+          : jsonResponse({
+              inbound: { publicAccessRules: { defaultAction: "Allow" } },
+              outbound: { publicAccessRules: { defaultAction: "Allow" } },
+            }),
+      ),
+    );
+
+    const result = await adapter.plan(WORKSPACE_ID, desired);
+
+    expect(result.inboundExternalDataSharesPolicy).toMatchObject({
+      action: "update",
+      desiredDefaultAction: "Allow",
+      observedDefaultAction: "Deny",
+      isRelaxation: true,
+      etag: '"a1b2c3d4"',
+      desiredHash: hashInboundExternalDataSharesPolicy({
+        defaultAction: "Allow",
+      }),
+    });
+  });
+
+  it("classifies disabling the External Data Shares bypass (observed Allow -> desired Deny) as tightening, not a relaxation", async () => {
+    const desired: NetworkProtectionManifest = {
+      communicationPolicy: {
+        inboundDefaultAction: "Allow",
+        outboundDefaultAction: "Allow",
+      },
+      inboundExternalDataSharesPolicy: { defaultAction: "Deny" },
+    };
+    const adapter = createAdapter(
+      vi.fn(async (input: string | URL) =>
+        String(input).endsWith("/inbound/externalDataShares")
+          ? jsonResponse({ defaultAction: "Allow" })
+          : jsonResponse({
+              inbound: { publicAccessRules: { defaultAction: "Allow" } },
+              outbound: { publicAccessRules: { defaultAction: "Allow" } },
+            }),
+      ),
+    );
+
+    const result = await adapter.plan(WORKSPACE_ID, desired);
+
+    expect(result.inboundExternalDataSharesPolicy).toMatchObject({
+      action: "update",
+      desiredDefaultAction: "Deny",
+      observedDefaultAction: "Allow",
+      isRelaxation: false,
+    });
+  });
+
+  it("reports no-op and no relaxation when the External Data Shares policy already matches", async () => {
+    const desired: NetworkProtectionManifest = {
+      communicationPolicy: {
+        inboundDefaultAction: "Allow",
+        outboundDefaultAction: "Allow",
+      },
+      inboundExternalDataSharesPolicy: { defaultAction: "Deny" },
+    };
+    const adapter = createAdapter(
+      vi.fn(async (input: string | URL) =>
+        String(input).endsWith("/inbound/externalDataShares")
+          ? jsonResponse({ defaultAction: "Deny" })
+          : jsonResponse({
+              inbound: { publicAccessRules: { defaultAction: "Allow" } },
+              outbound: { publicAccessRules: { defaultAction: "Allow" } },
+            }),
+      ),
+    );
+
+    const result = await adapter.plan(WORKSPACE_ID, desired);
+
+    expect(result.inboundExternalDataSharesPolicy).toMatchObject({
+      action: "no-op",
+      isRelaxation: false,
+    });
+    expect(result.inboundExternalDataSharesPolicy).not.toHaveProperty("etag");
   });
 
   it("reports no-op when the observed policy already matches the desired configuration", async () => {

@@ -113,6 +113,14 @@ on:
         required: false
         default: false
         type: boolean
+      allow_inbound_external_data_share_policy_update:
+        required: false
+        default: false
+        type: boolean
+      allow_inbound_external_data_share_policy_relaxation:
+        required: false
+        default: false
+        type: boolean
       acknowledge_firewall_lockout_risk:
         required: false
         default: false
@@ -278,6 +286,7 @@ jobs:
                     .networkProtection.communicationPolicy,
                     .networkProtection.inboundFirewallRules,
                     .networkProtection.inboundAzureResourceRules,
+                    .networkProtection.inboundExternalDataSharesPolicy,
                     .networkProtection.outboundCloudConnectionRules,
                     .networkProtection.outboundGatewayRules
                   ][];
@@ -313,6 +322,7 @@ jobs:
                   [
                     .networkProtection.inboundFirewallRules,
                     .networkProtection.inboundAzureResourceRules,
+                    .networkProtection.inboundExternalDataSharesPolicy,
                     .networkProtection.outboundCloudConnectionRules,
                     .networkProtection.outboundGatewayRules
                   ][];
@@ -476,6 +486,8 @@ jobs:
           allow-network-policy-relaxation: ${{ inputs.allow_network_policy_relaxation }}
           allow-inbound-firewall-update: ${{ inputs.allow_inbound_firewall_update }}
           allow-inbound-azure-resource-rule-update: ${{ inputs.allow_inbound_azure_resource_rule_update }}
+          allow-inbound-external-data-share-policy-update: ${{ inputs.allow_inbound_external_data_share_policy_update }}
+          allow-inbound-external-data-share-policy-relaxation: ${{ inputs.allow_inbound_external_data_share_policy_relaxation }}
           acknowledge-firewall-lockout-risk: ${{ inputs.acknowledge_firewall_lockout_risk }}
           allow-outbound-cloud-connection-rule-update: ${{ inputs.allow_outbound_cloud_connection_rule_update }}
           allow-outbound-gateway-rule-update: ${{ inputs.allow_outbound_gateway_rule_update }}

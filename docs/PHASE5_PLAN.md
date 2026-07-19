@@ -103,14 +103,13 @@ an explicit independent `networkProtection.workspaceId` remains actionable.
 
 ### Phase 5B: inbound access protection
 
-Phase 5B now covers both documented preview inbound allow-list APIs, leaving
-only the External Data Shares bypass policy for later:
+Phase 5B now covers all three documented preview inbound surfaces:
 
 | Surface | Fabric REST API |
 | --- | --- |
 | IP firewall rules | `GET/PUT /v1/workspaces/{workspaceId}/networking/communicationPolicy/inbound/firewall` (implemented) |
 | Azure resource instance rules | `GET/PUT /v1/workspaces/{workspaceId}/networking/communicationPolicy/inbound/azureResources` (implemented) |
-| External Data Shares policy | `GET/PUT /v1/workspaces/{workspaceId}/networking/communicationPolicy/inbound/externalDataShares` (deferred) |
+| External Data Shares bypass policy | `GET/PUT /v1/workspaces/{workspaceId}/networking/communicationPolicy/inbound/externalDataShares` (implemented) |
 
 `inboundFirewallRules` mirrors the documented request body exactly:
 `{ "rules": [{ "displayName": "...", "value": "..." }] }`. Rules are
@@ -118,7 +117,7 @@ canonicalized and hashed as a complete replacement. The validator accepts only
 documented public IPv4 single-address, range, and CIDR forms, enforces the
 256-rule and 128-character name limits, and rejects unknown fields,
 case-ambiguous names, malformed/non-public values, duplicates, and overlaps.
-IPv6, empty inbound-Deny allow lists, and External Data Shares fail closed.
+IPv6 and empty inbound-Deny allow lists fail closed.
 
 Authenticated planning binds the target workspace, canonical desired hash,
 observed hash, rule count, and GET ETag when Fabric returns one. The preview
@@ -154,25 +153,67 @@ do not participate in the inbound-Deny non-empty-configuration requirement
 that guards against total public lockout -- that requirement remains bound to
 `inboundFirewallRules` only.
 
+`inboundExternalDataSharesPolicy` mirrors the documented Get/Set Inbound
+External Data Shares Policy request/response body exactly:
+`{ "defaultAction": "Allow" | "Deny" }`. `defaultAction` defines whether
+External Data Shares traffic is allowed to bypass every other inbound
+restriction. The official reference marks **Set** Inbound External Data
+Shares Policy explicitly as preview (admin workspace role), while **Get**
+Inbound External Data Shares Policy is documented without a preview notice
+(viewer role) -- an asymmetry unlike the sibling firewall/Azure-resource
+surfaces, where both Get and Set are marked preview. The action treats both
+operations identically at runtime and calls out the asymmetry in documentation
+only. The GET example response documents an ETag (`ETag: "a1b2c3d4"`) and the
+PUT example documents a fresh one on success, so this surface follows the
+identical headerless-safe drift model as the other two: a fresh ETag is sent
+as quoted `If-Match` when available, but a live response omitting the header
+does not block planning. Like Azure resource rules, Set Inbound External Data
+Shares Policy documents only a `200` response (no `204` alternative); any
+other status is a validation error. Only definitive HTTP 429 is retried;
+transport failures, 408, and 5xx remain ambiguous. Because the bypass applies
+independently of any specific IP or resource identity, this surface does not
+participate in the firewall's non-empty-rule lockout requirement and may be
+declared regardless of the master inbound default action.
+
+Enabling the bypass (observed `Deny` -> desired `Allow`) is itself a security
+relaxation -- it lets External Data Shares traffic circumvent every other
+inbound restriction -- and requires the fully independent
+`allow-inbound-external-data-share-policy-relaxation` safeguard in addition to
+the base `allow-inbound-external-data-share-policy-update`. Tightening
+(disabling the bypass) never requires the relaxation safeguard. The plan's
+`isRelaxation` classification is bound to the approved hash (both desired and
+observed) and independently re-derived during drift checks, so a tampered
+plan artifact cannot reclassify an enabling transition as non-relaxing to
+bypass the extra safeguard.
+
 Inbound exceptions are staged and verified before changing inbound public
 access from `Allow` to `Deny`. The transition requires
 `allow-network-policy-update`, `allow-inbound-firewall-update`, and the
 independent `acknowledge-firewall-lockout-risk` before any mutation in the
 network unit, including recovery; `allow-inbound-azure-resource-rule-update`
-is a fully independent safeguard scoped only to its own surface and neither
-satisfies nor is implied by the lockout safeguards. Inbound `Deny` to `Allow`
-opens the master policy before firewall and Azure resource rule
-relaxation/removal (firewall first, then Azure resource rules). Combined
-inbound/outbound transitions run direction-specific pre-policy surfaces (both
-inbound exception surfaces staged before an `Allow` -> `Deny` transition, or
-relaxed together after a `Deny` -> `Allow` transition), the single
-communication policy PUT, then direction-specific post-policy surfaces. Each
-surface runs exactly once per apply.
+and `allow-inbound-external-data-share-policy-update`/`-relaxation` are each
+fully independent safeguards scoped only to their own surface and neither
+satisfy nor are implied by the lockout safeguards. Inbound `Deny` to `Allow`
+opens the master policy before firewall, Azure resource rule, and External
+Data Shares policy relaxation/removal (firewall first, then Azure resource
+rules, then the External Data Shares bypass policy). Combined inbound/outbound
+transitions run direction-specific pre-policy surfaces (all three inbound
+exception surfaces staged before an `Allow` -> `Deny` transition, or relaxed
+together after a `Deny` -> `Allow` transition), the single communication
+policy PUT, then direction-specific post-policy surfaces. Each surface runs
+exactly once per apply. Because enabling the bypass is itself a relaxation
+independent of the master policy's own transition, staging it before an
+inbound `Allow` -> `Deny` tightening keeps the bypass continuously in effect
+across the transition rather than opening a window where it is momentarily
+disabled; disabling it is deferred until after an inbound `Deny` -> `Allow`
+relaxation for the same reason, mirroring the ordering already used for the
+firewall and Azure resource rule allow lists.
 
 GitHub-hosted live validation is intentionally limited to an authenticated
-read-only plan probe with desired inbound `Allow`, covering both the firewall
-and Azure resource rule surfaces. A self-hosted runner with a stable,
-allow-listed egress address remains the recommended future mutation test path.
+read-only plan probe with desired inbound `Allow`, covering the firewall,
+Azure resource rule, and External Data Shares policy surfaces. A self-hosted
+runner with a stable, allow-listed egress address remains the recommended
+future mutation test path.
 
 Tenant-level and workspace-level Private Link configuration remains out of
 scope because the required controls are portal/ARM surfaces rather than
@@ -194,13 +235,15 @@ now manages the Fabric-side `inboundAzureResourceRules` allow list.
 - `allow-inbound-firewall-update`
 - `allow-inbound-azure-resource-rule-update`
 - `allow-inbound-external-data-share-policy-update`
+- `allow-inbound-external-data-share-policy-relaxation`
 - `acknowledge-firewall-lockout-risk`
 
 ### Network live validation
 
 Extend the disposable E2E workflow with an outbound-only fixture. Verify
 tighten, no-op, relax, private-endpoint cleanup, and final workspace deletion.
-Do not enable inbound deny from a GitHub-hosted runner.
+Do not enable inbound deny or the External Data Shares bypass from a
+GitHub-hosted runner.
 
 ## Phase 6: Power BI items
 
@@ -274,6 +317,8 @@ For every new item:
 - [Workspace IP firewall overview](https://learn.microsoft.com/en-us/fabric/security/security-workspace-level-firewall-overview)
 - [Get inbound Azure resource rules](https://learn.microsoft.com/en-us/rest/api/fabric/core/workspaces/get-inbound-azure-resource-rules)
 - [Set inbound Azure resource rules](https://learn.microsoft.com/en-us/rest/api/fabric/core/workspaces/set-inbound-azure-resource-rules)
+- [Get inbound External Data Shares policy](https://learn.microsoft.com/en-us/rest/api/fabric/core/workspaces/get-inbound-external-data-shares-policy)
+- [Set inbound External Data Shares policy](https://learn.microsoft.com/en-us/rest/api/fabric/core/workspaces/set-inbound-external-data-shares-policy)
 - [Outbound cloud connection rules](https://learn.microsoft.com/en-us/rest/api/fabric/core/workspaces/set-outbound-cloud-connection-rules)
 - [Outbound gateway rules](https://learn.microsoft.com/en-us/rest/api/fabric/core/workspaces/set-outbound-gateway-rules)
 - [Managed private endpoints](https://learn.microsoft.com/en-us/rest/api/fabric/core/managed-private-endpoints)

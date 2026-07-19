@@ -9,6 +9,7 @@ import { FabricApiError } from "../src/fabric/client";
 import {
   hashCommunicationPolicy,
   hashInboundAzureResourceRules,
+  hashInboundExternalDataSharesPolicy,
   hashInboundFirewallRules,
   hashOutboundCloudConnectionRules,
   hashOutboundGatewayRules,
@@ -113,6 +114,41 @@ const INBOUND_RELAXING_WITH_AZURE_RESOURCE_DESIRED: NetworkProtectionManifest = 
   inboundAzureResourceRules: { rules: [] },
 };
 
+const INBOUND_TIGHTENING_WITH_EXTERNAL_DATA_SHARES_ENABLE_DESIRED: NetworkProtectionManifest = {
+  communicationPolicy: {
+    inboundDefaultAction: "Deny",
+    outboundDefaultAction: "Allow",
+  },
+  inboundFirewallRules: {
+    rules: [
+      {
+        displayName: "corporate",
+        value: "12.34.56.78",
+      },
+    ],
+  },
+  inboundExternalDataSharesPolicy: { defaultAction: "Allow" },
+};
+
+const INBOUND_RELAXING_WITH_EXTERNAL_DATA_SHARES_DISABLE_DESIRED: NetworkProtectionManifest = {
+  communicationPolicy: {
+    inboundDefaultAction: "Allow",
+    outboundDefaultAction: "Allow",
+  },
+  inboundFirewallRules: {
+    rules: [],
+  },
+  inboundExternalDataSharesPolicy: { defaultAction: "Deny" },
+};
+
+const NO_INBOUND_CHANGE_WITH_EXTERNAL_DATA_SHARES_ENABLE_DESIRED: NetworkProtectionManifest = {
+  communicationPolicy: {
+    inboundDefaultAction: "Allow",
+    outboundDefaultAction: "Allow",
+  },
+  inboundExternalDataSharesPolicy: { defaultAction: "Allow" },
+};
+
 function canonicalOf(desired: NetworkProtectionManifest) {
   return normalizeNetworkProtection(desired);
 }
@@ -129,6 +165,9 @@ function buildApprovedPlan(options: {
   azureResourceAction?: "update" | "no-op";
   azureResourceObservedHash?: string;
   azureResourceEtag?: string;
+  externalDataSharesAction?: "update" | "no-op";
+  externalDataSharesObservedDefaultAction?: "Allow" | "Deny";
+  externalDataSharesEtag?: string;
   ruleAction?: "update" | "no-op";
   ruleObservedIsSentinel?: boolean;
 }): DeploymentPlan {
@@ -192,6 +231,31 @@ function buildApprovedPlan(options: {
             hashInboundAzureResourceRules({ rules: [] })),
       etag: options.azureResourceEtag ?? "azure-resource-etag",
       ruleCount: canonical.inboundAzureResourceRules.rules.length,
+    };
+  }
+  if (canonical.inboundExternalDataSharesPolicy) {
+    const desiredDefaultAction =
+      canonical.inboundExternalDataSharesPolicy.defaultAction;
+    const desiredHash = hashInboundExternalDataSharesPolicy(
+      canonical.inboundExternalDataSharesPolicy,
+    );
+    const observedDefaultAction =
+      options.externalDataSharesAction === "no-op"
+        ? desiredDefaultAction
+        : (options.externalDataSharesObservedDefaultAction ??
+          (desiredDefaultAction === "Allow" ? "Deny" : "Allow"));
+    networkProtection.inboundExternalDataSharesPolicy = {
+      action: options.externalDataSharesAction ?? "update",
+      reason: "external-data-shares",
+      desiredHash,
+      observedStateHash: hashInboundExternalDataSharesPolicy({
+        defaultAction: observedDefaultAction,
+      }),
+      etag: options.externalDataSharesEtag ?? "external-data-shares-etag",
+      desiredDefaultAction,
+      observedDefaultAction,
+      isRelaxation:
+        observedDefaultAction === "Deny" && desiredDefaultAction === "Allow",
     };
   }
   if (canonical.outboundCloudConnectionRules) {
@@ -258,6 +322,8 @@ function mockAdapter() {
     putInboundFirewallRules: vi.fn(),
     getInboundAzureResourceRules: vi.fn(),
     putInboundAzureResourceRules: vi.fn(),
+    getInboundExternalDataSharesPolicy: vi.fn(),
+    putInboundExternalDataSharesPolicy: vi.fn(),
     getOutboundCloudConnectionRules: vi.fn(),
     putOutboundCloudConnectionRules: vi.fn(),
     getOutboundGatewayRules: vi.fn(),
@@ -283,6 +349,8 @@ function baseOptions(
     allowNetworkPolicyRelaxation: false,
     allowInboundFirewallUpdate: false,
     allowInboundAzureResourceRuleUpdate: false,
+    allowInboundExternalDataSharePolicyUpdate: false,
+    allowInboundExternalDataSharePolicyRelaxation: false,
     acknowledgeFirewallLockoutRisk: false,
     allowOutboundCloudConnectionRuleUpdate: false,
     allowOutboundGatewayRuleUpdate: false,
@@ -333,6 +401,21 @@ function mockSuccessfulNetworkSurfaces(
       etag: "azure-resource-updated",
     });
   }
+  if (canonical.inboundExternalDataSharesPolicy) {
+    adapter.putInboundExternalDataSharesPolicy.mockImplementation(
+      async () => {
+        calls.push("put-external-data-shares");
+        return {
+          configuration: canonical.inboundExternalDataSharesPolicy!,
+          etag: "external-data-shares-updated",
+        };
+      },
+    );
+    adapter.getInboundExternalDataSharesPolicy.mockResolvedValue({
+      configuration: canonical.inboundExternalDataSharesPolicy,
+      etag: "external-data-shares-updated",
+    });
+  }
   if (canonical.outboundCloudConnectionRules) {
     adapter.putOutboundCloudConnectionRules.mockImplementation(
       async () => {
@@ -356,6 +439,33 @@ function mockSuccessfulNetworkSurfaces(
 }
 
 describe("preflightNetworkProtection", () => {
+  it("rejects an approved plan that omits the current networkProtection block", () => {
+    const current = buildApprovedPlan({
+      desired: NO_INBOUND_CHANGE_WITH_EXTERNAL_DATA_SHARES_ENABLE_DESIRED,
+      observedInbound: "Allow",
+      observedOutbound: "Allow",
+      policyAction: "no-op",
+      externalDataSharesAction: "update",
+      externalDataSharesObservedDefaultAction: "Deny",
+    });
+    const approved = structuredClone(current);
+    delete approved.networkProtection;
+
+    expect(() =>
+      preflightNetworkProtection({
+        approvedPlan: approved,
+        currentPlan: current,
+        checkpoint: createCheckpoint(approved),
+        allowNetworkPolicyUpdate: false,
+        allowNetworkPolicyRelaxation: false,
+        allowInboundExternalDataSharePolicyUpdate: false,
+        allowInboundExternalDataSharePolicyRelaxation: false,
+        allowOutboundCloudConnectionRuleUpdate: false,
+        allowOutboundGatewayRuleUpdate: false,
+      }),
+    ).toThrow("omits networkProtection");
+  });
+
   it("throws when a configured surface action is blocked", () => {
     const plan = buildApprovedPlan({
       desired: ALLOW_DESIRED,
@@ -580,6 +690,113 @@ describe("preflightNetworkProtection", () => {
     ).toThrow("requires allow-network-policy-update");
   });
 
+  it("requires the base inbound External Data Shares policy safeguard independently, without any other flag implying it", () => {
+    const plan = buildApprovedPlan({
+      desired: NO_INBOUND_CHANGE_WITH_EXTERNAL_DATA_SHARES_ENABLE_DESIRED,
+      observedInbound: "Allow",
+      observedOutbound: "Allow",
+      policyAction: "no-op",
+      externalDataSharesAction: "update",
+      externalDataSharesObservedDefaultAction: "Deny",
+    });
+
+    expect(() =>
+      preflightNetworkProtection({
+        approvedPlan: plan,
+        currentPlan: plan,
+        checkpoint: createCheckpoint(plan),
+        allowNetworkPolicyUpdate: true,
+        allowNetworkPolicyRelaxation: true,
+        allowInboundFirewallUpdate: true,
+        acknowledgeFirewallLockoutRisk: true,
+        allowInboundAzureResourceRuleUpdate: true,
+        allowInboundExternalDataSharePolicyUpdate: false,
+        allowInboundExternalDataSharePolicyRelaxation: true,
+        allowOutboundCloudConnectionRuleUpdate: false,
+        allowOutboundGatewayRuleUpdate: false,
+      }),
+    ).toThrow("allow-inbound-external-data-share-policy-update is false");
+  });
+
+  it("requires the independent relaxation safeguard in addition to the base safeguard when enabling the bypass", () => {
+    const plan = buildApprovedPlan({
+      desired: NO_INBOUND_CHANGE_WITH_EXTERNAL_DATA_SHARES_ENABLE_DESIRED,
+      observedInbound: "Allow",
+      observedOutbound: "Allow",
+      policyAction: "no-op",
+      externalDataSharesAction: "update",
+      externalDataSharesObservedDefaultAction: "Deny",
+    });
+
+    expect(() =>
+      preflightNetworkProtection({
+        approvedPlan: plan,
+        currentPlan: plan,
+        checkpoint: createCheckpoint(plan),
+        allowNetworkPolicyUpdate: true,
+        allowNetworkPolicyRelaxation: true,
+        allowInboundFirewallUpdate: true,
+        acknowledgeFirewallLockoutRisk: true,
+        allowInboundAzureResourceRuleUpdate: true,
+        allowInboundExternalDataSharePolicyUpdate: true,
+        allowInboundExternalDataSharePolicyRelaxation: false,
+        allowOutboundCloudConnectionRuleUpdate: false,
+        allowOutboundGatewayRuleUpdate: false,
+      }),
+    ).toThrow("allow-inbound-external-data-share-policy-relaxation is false");
+
+    expect(() =>
+      preflightNetworkProtection({
+        approvedPlan: plan,
+        currentPlan: plan,
+        checkpoint: createCheckpoint(plan),
+        allowNetworkPolicyUpdate: true,
+        allowNetworkPolicyRelaxation: true,
+        allowInboundFirewallUpdate: true,
+        acknowledgeFirewallLockoutRisk: true,
+        allowInboundAzureResourceRuleUpdate: true,
+        allowInboundExternalDataSharePolicyUpdate: true,
+        allowInboundExternalDataSharePolicyRelaxation: true,
+        allowOutboundCloudConnectionRuleUpdate: false,
+        allowOutboundGatewayRuleUpdate: false,
+      }),
+    ).not.toThrow();
+  });
+
+  it("does not require the relaxation safeguard when tightening (disabling) the External Data Shares bypass", () => {
+    const plan = buildApprovedPlan({
+      desired: {
+        communicationPolicy: {
+          inboundDefaultAction: "Allow",
+          outboundDefaultAction: "Allow",
+        },
+        inboundExternalDataSharesPolicy: { defaultAction: "Deny" },
+      },
+      observedInbound: "Allow",
+      observedOutbound: "Allow",
+      policyAction: "no-op",
+      externalDataSharesAction: "update",
+      externalDataSharesObservedDefaultAction: "Allow",
+    });
+
+    expect(() =>
+      preflightNetworkProtection({
+        approvedPlan: plan,
+        currentPlan: plan,
+        checkpoint: createCheckpoint(plan),
+        allowNetworkPolicyUpdate: true,
+        allowNetworkPolicyRelaxation: true,
+        allowInboundFirewallUpdate: true,
+        acknowledgeFirewallLockoutRisk: true,
+        allowInboundAzureResourceRuleUpdate: true,
+        allowInboundExternalDataSharePolicyUpdate: true,
+        allowInboundExternalDataSharePolicyRelaxation: false,
+        allowOutboundCloudConnectionRuleUpdate: false,
+        allowOutboundGatewayRuleUpdate: false,
+      }),
+    ).not.toThrow();
+  });
+
   it("skips re-authorization once a surface is checkpointed verified", () => {
     const plan = buildApprovedPlan({
       desired: ALLOW_DESIRED,
@@ -638,6 +855,33 @@ describe("preflightNetworkProtection", () => {
     ).toThrow("drifted after approval");
   });
 
+  it("rejects an approved plan that omits a configured External Data Shares policy surface", () => {
+    const current = buildApprovedPlan({
+      desired: NO_INBOUND_CHANGE_WITH_EXTERNAL_DATA_SHARES_ENABLE_DESIRED,
+      observedInbound: "Allow",
+      observedOutbound: "Allow",
+      policyAction: "no-op",
+      externalDataSharesAction: "update",
+      externalDataSharesObservedDefaultAction: "Deny",
+    });
+    const approved = structuredClone(current);
+    delete approved.networkProtection!.inboundExternalDataSharesPolicy;
+
+    expect(() =>
+      preflightNetworkProtection({
+        approvedPlan: approved,
+        currentPlan: current,
+        checkpoint: createCheckpoint(approved),
+        allowNetworkPolicyUpdate: false,
+        allowNetworkPolicyRelaxation: false,
+        allowInboundExternalDataSharePolicyUpdate: false,
+        allowInboundExternalDataSharePolicyRelaxation: false,
+        allowOutboundCloudConnectionRuleUpdate: false,
+        allowOutboundGatewayRuleUpdate: false,
+      }),
+    ).toThrow("omits inbound External Data Shares policy");
+  });
+
   it("rejects a current plan targeting a different network workspace", () => {
     const approved = buildApprovedPlan({
       desired: ALLOW_DESIRED,
@@ -681,6 +925,72 @@ describe("preflightNetworkProtection", () => {
         allowOutboundGatewayRuleUpdate: true,
       }),
     ).toThrow("transition metadata is inconsistent");
+  });
+
+  it("rejects a tampered External Data Shares plan that reclassifies an enabling transition as non-relaxing", () => {
+    const approved = buildApprovedPlan({
+      desired: NO_INBOUND_CHANGE_WITH_EXTERNAL_DATA_SHARES_ENABLE_DESIRED,
+      observedInbound: "Allow",
+      observedOutbound: "Allow",
+      policyAction: "no-op",
+      externalDataSharesAction: "update",
+      externalDataSharesObservedDefaultAction: "Deny",
+    });
+    // Tamper: the transition is really Deny -> Allow (a relaxation), but the
+    // plan artifact falsely claims it is not, which would otherwise let the
+    // update bypass the independent relaxation safeguard.
+    approved.networkProtection!.inboundExternalDataSharesPolicy!.isRelaxation =
+      false;
+
+    expect(() =>
+      preflightNetworkProtection({
+        approvedPlan: approved,
+        currentPlan: approved,
+        checkpoint: createCheckpoint(approved),
+        allowNetworkPolicyUpdate: true,
+        allowNetworkPolicyRelaxation: true,
+        allowInboundExternalDataSharePolicyUpdate: true,
+        allowInboundExternalDataSharePolicyRelaxation: false,
+        allowOutboundCloudConnectionRuleUpdate: true,
+        allowOutboundGatewayRuleUpdate: true,
+      }),
+    ).toThrow("transition metadata is inconsistent");
+  });
+
+  it("fails closed when a fresh External Data Shares plan drifts from the approved transition metadata", () => {
+    const approved = buildApprovedPlan({
+      desired: NO_INBOUND_CHANGE_WITH_EXTERNAL_DATA_SHARES_ENABLE_DESIRED,
+      observedInbound: "Allow",
+      observedOutbound: "Allow",
+      policyAction: "no-op",
+      externalDataSharesAction: "update",
+      externalDataSharesObservedDefaultAction: "Deny",
+    });
+    const fresh = buildApprovedPlan({
+      desired: NO_INBOUND_CHANGE_WITH_EXTERNAL_DATA_SHARES_ENABLE_DESIRED,
+      observedInbound: "Allow",
+      observedOutbound: "Allow",
+      policyAction: "no-op",
+      // Live state now shows the bypass already enabled (matching the
+      // desired Allow), so this surface is genuinely a no-op on the fresh
+      // plan even though the approved plan captured it as an update.
+      externalDataSharesAction: "no-op",
+      externalDataSharesObservedDefaultAction: "Allow",
+    });
+
+    expect(() =>
+      preflightNetworkProtection({
+        approvedPlan: approved,
+        currentPlan: fresh,
+        checkpoint: createCheckpoint(approved),
+        allowNetworkPolicyUpdate: true,
+        allowNetworkPolicyRelaxation: true,
+        allowInboundExternalDataSharePolicyUpdate: true,
+        allowInboundExternalDataSharePolicyRelaxation: true,
+        allowOutboundCloudConnectionRuleUpdate: true,
+        allowOutboundGatewayRuleUpdate: true,
+      }),
+    ).toThrow("Generate a new plan");
   });
 });
 
@@ -784,6 +1094,84 @@ describe("applyNetworkProtection ordering", () => {
         }),
       ),
     ).rejects.toThrow("allow-inbound-azure-resource-rule-update is false");
+  });
+
+  it("stages enabling the External Data Shares bypass before inbound Allow -> Deny, alongside firewall rules, exactly once each", async () => {
+    const plan = buildApprovedPlan({
+      desired: INBOUND_TIGHTENING_WITH_EXTERNAL_DATA_SHARES_ENABLE_DESIRED,
+      observedInbound: "Allow",
+      observedOutbound: "Allow",
+      policyAction: "update",
+      firewallAction: "update",
+      externalDataSharesAction: "update",
+      externalDataSharesObservedDefaultAction: "Deny",
+    });
+    const adapter = mockAdapter();
+    const calls: string[] = [];
+    adapter.plan.mockResolvedValue(plan.networkProtection);
+    mockSuccessfulNetworkSurfaces(
+      adapter,
+      INBOUND_TIGHTENING_WITH_EXTERNAL_DATA_SHARES_ENABLE_DESIRED,
+      calls,
+    );
+
+    const result = await applyNetworkProtection(
+      baseOptions(plan, adapter, checkpointFilePath(), {
+        desired: INBOUND_TIGHTENING_WITH_EXTERNAL_DATA_SHARES_ENABLE_DESIRED,
+        allowNetworkPolicyUpdate: true,
+        allowInboundFirewallUpdate: true,
+        allowInboundExternalDataSharePolicyUpdate: true,
+        allowInboundExternalDataSharePolicyRelaxation: true,
+        acknowledgeFirewallLockoutRisk: true,
+      }),
+    );
+
+    expect(calls).toEqual([
+      "put-firewall",
+      "put-external-data-shares",
+      "put-policy",
+    ]);
+    expect(adapter.putInboundExternalDataSharesPolicy).toHaveBeenCalledTimes(
+      1,
+    );
+    expect(adapter.putCommunicationPolicy).toHaveBeenCalledTimes(1);
+    expect(result?.inboundExternalDataSharesPolicy?.status).toBe("updated");
+  });
+
+  it("requires the External Data Shares relaxation safeguard independently even when the base update and firewall safeguards are granted", async () => {
+    const plan = buildApprovedPlan({
+      desired: INBOUND_TIGHTENING_WITH_EXTERNAL_DATA_SHARES_ENABLE_DESIRED,
+      observedInbound: "Allow",
+      observedOutbound: "Allow",
+      policyAction: "update",
+      firewallAction: "update",
+      externalDataSharesAction: "update",
+      externalDataSharesObservedDefaultAction: "Deny",
+    });
+    const adapter = mockAdapter();
+    const calls: string[] = [];
+    adapter.plan.mockResolvedValue(plan.networkProtection);
+    mockSuccessfulNetworkSurfaces(
+      adapter,
+      INBOUND_TIGHTENING_WITH_EXTERNAL_DATA_SHARES_ENABLE_DESIRED,
+      calls,
+    );
+
+    await expect(
+      applyNetworkProtection(
+        baseOptions(plan, adapter, checkpointFilePath(), {
+          desired: INBOUND_TIGHTENING_WITH_EXTERNAL_DATA_SHARES_ENABLE_DESIRED,
+          allowNetworkPolicyUpdate: true,
+          allowInboundFirewallUpdate: true,
+          allowInboundExternalDataSharePolicyUpdate: true,
+          allowInboundExternalDataSharePolicyRelaxation: false,
+          acknowledgeFirewallLockoutRisk: true,
+        }),
+      ),
+    ).rejects.toThrow(
+      "allow-inbound-external-data-share-policy-relaxation is false",
+    );
+    expect(adapter.putInboundExternalDataSharesPolicy).not.toHaveBeenCalled();
   });
 
   it("uses the freshly observed inbound firewall ETag rather than the approval-time value", async () => {
@@ -1039,6 +1427,50 @@ describe("applyNetworkProtection ordering", () => {
     expect(calls).toEqual(["put-policy", "put-firewall", "put-azure-resource"]);
     expect(adapter.putInboundFirewallRules).toHaveBeenCalledTimes(1);
     expect(adapter.putInboundAzureResourceRules).toHaveBeenCalledTimes(1);
+  });
+
+  it("disables the External Data Shares bypass only after inbound Deny -> Allow, exactly once", async () => {
+    const plan = buildApprovedPlan({
+      desired: INBOUND_RELAXING_WITH_EXTERNAL_DATA_SHARES_DISABLE_DESIRED,
+      observedInbound: "Deny",
+      observedOutbound: "Allow",
+      policyAction: "update",
+      firewallAction: "update",
+      externalDataSharesAction: "update",
+      externalDataSharesObservedDefaultAction: "Allow",
+    });
+    const adapter = mockAdapter();
+    const calls: string[] = [];
+    adapter.plan.mockResolvedValue(plan.networkProtection);
+    mockSuccessfulNetworkSurfaces(
+      adapter,
+      INBOUND_RELAXING_WITH_EXTERNAL_DATA_SHARES_DISABLE_DESIRED,
+      calls,
+    );
+
+    const result = await applyNetworkProtection(
+      baseOptions(plan, adapter, checkpointFilePath(), {
+        desired: INBOUND_RELAXING_WITH_EXTERNAL_DATA_SHARES_DISABLE_DESIRED,
+        allowNetworkPolicyUpdate: true,
+        allowNetworkPolicyRelaxation: true,
+        allowInboundFirewallUpdate: true,
+        // Tightening (disabling) the bypass must not require the relaxation
+        // safeguard, even though the master policy transition is itself a
+        // relaxation.
+        allowInboundExternalDataSharePolicyUpdate: true,
+        allowInboundExternalDataSharePolicyRelaxation: false,
+      }),
+    );
+
+    expect(calls).toEqual([
+      "put-policy",
+      "put-firewall",
+      "put-external-data-shares",
+    ]);
+    expect(adapter.putInboundExternalDataSharesPolicy).toHaveBeenCalledTimes(
+      1,
+    );
+    expect(result?.inboundExternalDataSharesPolicy?.status).toBe("updated");
   });
 
   it("orders combined inbound and outbound tightening firewall -> policy -> OAP rules", async () => {

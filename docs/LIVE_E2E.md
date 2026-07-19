@@ -42,16 +42,19 @@ with the workspace.
 
 [`live-fabric-plan.yml`](../.github/workflows/live-fabric-plan.yml) has an
 optional `probe_inbound_firewall` input. It runs an authenticated read-only
-plan against `examples/inbound-firewall-probe` and verifies that both preview
-inbound allow-list surfaces (IP firewall rules and Azure resource instance
-rules) are discoverable. The fixture keeps desired inbound public access at
-`Allow`; no GitHub-hosted workflow applies rules on either surface or enables
-inbound `Deny`. The preview firewall service can omit the ETag advertised by
-its REST reference, and the Azure resource rules reference does not document
-an ETag at all; the probe remains actionable for both by binding and
-rechecking each surface's complete observed body hash. Probe mode skips the
-unrelated Lakehouse planning check so an inactive capacity cannot prevent
-inbound surface API validation.
+plan against `examples/inbound-firewall-probe` and verifies that all three
+preview inbound surfaces (IP firewall rules, Azure resource instance rules,
+and the External Data Shares bypass policy) are discoverable. The fixture
+keeps desired inbound public access at `Allow` and the External Data Shares
+bypass at `Deny`; no GitHub-hosted workflow applies rules on any surface or
+enables inbound `Deny` or the bypass. The preview firewall service can omit
+the ETag advertised by its REST reference, the Azure resource rules reference
+does not document an ETag at all, and the External Data Shares policy
+reference documents one that a live response may still omit; the probe
+remains actionable for all three by binding and rechecking each surface's
+complete observed body hash. Probe mode skips the unrelated Lakehouse
+planning check so an inactive capacity cannot prevent inbound surface API
+validation.
 
 Future mutation validation must use a self-hosted runner with stable,
 allow-listed egress and an explicit recovery plan. Tenant-level Private Link
