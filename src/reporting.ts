@@ -146,7 +146,10 @@ function isFileSystemError(error: unknown, code: string): boolean {
 }
 
 function isContainedPath(parent: string, candidate: string): boolean {
-  const relativePath = path.relative(realpathSync(parent), candidate);
+  const relativePath = path.relative(
+    resolveFuturePath(path.resolve(parent)),
+    candidate,
+  );
   return (
     relativePath === "" ||
     (!path.isAbsolute(relativePath) &&
@@ -184,8 +187,48 @@ export async function writeJobSummary(plan: DeploymentPlan): Promise<void> {
         plan.workspace?.action ?? "target",
         plan.workspace?.reason ?? "Existing workspace ID target.",
       ],
-    ])
-    .addHeading("Deployment stages", 2);
+    ]);
+
+  if (plan.networkProtection) {
+    const networkProtection = plan.networkProtection;
+    const surfaceRows: Array<[string, string, string, string]> = [
+      [
+        "Communication policy",
+        networkProtection.communicationPolicy.action,
+        `inbound ${networkProtection.communicationPolicy.desiredInboundDefaultAction}, outbound ${networkProtection.communicationPolicy.desiredOutboundDefaultAction}${networkProtection.communicationPolicy.isRelaxation ? " (relaxation)" : ""}`,
+        networkProtection.communicationPolicy.reason,
+      ],
+    ];
+    if (networkProtection.outboundCloudConnectionRules) {
+      surfaceRows.push([
+        "Outbound cloud connection rules",
+        networkProtection.outboundCloudConnectionRules.action,
+        "-",
+        networkProtection.outboundCloudConnectionRules.reason,
+      ]);
+    }
+    if (networkProtection.outboundGatewayRules) {
+      surfaceRows.push([
+        "Outbound gateway rules",
+        networkProtection.outboundGatewayRules.action,
+        "-",
+        networkProtection.outboundGatewayRules.reason,
+      ]);
+    }
+    core.summary
+      .addHeading("Network protection", 2)
+      .addTable([
+        [
+          { data: "Surface", header: true },
+          { data: "Action", header: true },
+          { data: "Defaults", header: true },
+          { data: "Reason", header: true },
+        ],
+        ...surfaceRows,
+      ]);
+  }
+
+  core.summary.addHeading("Deployment stages", 2);
 
   plan.stages.forEach((stage, index) => {
     core.summary.addRaw(`${index + 1}. ${stage.join(", ")}\n`);

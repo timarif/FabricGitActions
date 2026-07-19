@@ -73,6 +73,17 @@ const examples: ExampleCase[] = [
     },
     itemCount: 2,
   },
+  {
+    name: "network protection",
+    manifestPath: "network-protection/fabric/deployment.yaml",
+    options: {
+      variables: {
+        FABRIC_WORKSPACE_ID: WORKSPACE_ID,
+        FABRIC_GATEWAY_ID: "00000000-0000-0000-0000-000000000003",
+      },
+    },
+    itemCount: 1,
+  },
 ];
 
 describe("maintained examples", () => {

@@ -49,3 +49,24 @@
 - [x] Live sandbox E2E suite
 - [x] Reusable dev/test/prod workflow
 - [x] Marketplace release automation, provenance, and support documentation
+
+## Phase 5: workspace network protection
+
+- [x] Expansion plan and remaining Fabric item inventory
+- [x] Outbound access protection communication policy
+- [x] Outbound cloud connection and gateway rules
+- [ ] Managed private endpoints
+- [ ] Inbound firewall, Azure resource, and External Data Shares policies
+- [ ] Network recovery and disposable live validation
+
+## Phase 6: Power BI
+
+- [ ] Semantic Model definition deployment
+- [ ] Power BI report deployment and Semantic Model binding
+- [ ] Guarded deletion and live validation
+
+## Later phases
+
+See [the Fabric platform expansion plan](PHASE5_PLAN.md) for the prioritized
+Real-Time Intelligence, warehouse/database, Data Factory, platform,
+application, additional Power BI, and service-principal-blocked item inventory.

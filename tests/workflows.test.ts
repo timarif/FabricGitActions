@@ -42,6 +42,132 @@ describe("deployment workflow metadata", () => {
     ).toBeDefined();
   });
 
+  it("exposes the four network protection safeguards, all defaulting to false", () => {
+    const action = loadYaml("action.yml");
+    const inputs = action.inputs as Record<
+      string,
+      Record<string, unknown>
+    >;
+    const networkInputNames = [
+      "allow-network-policy-update",
+      "allow-network-policy-relaxation",
+      "allow-outbound-cloud-connection-rule-update",
+      "allow-outbound-gateway-rule-update",
+    ];
+
+    for (const name of networkInputNames) {
+      expect(inputs[name]?.default).toBe("false");
+      expect(inputs[name]?.required).toBe(false);
+    }
+    expect(
+      (action.outputs as Record<string, unknown>)["network-protection-action"],
+    ).toBeDefined();
+  });
+
+  it("passes the network protection safeguards through the reusable workflow and promotion dispatcher", () => {
+    const reusable = loadYaml(
+      ".github/workflows/reusable-fabric-deploy.yml",
+    );
+    const call = (
+      reusable.on as {
+        workflow_call: { inputs: Record<string, unknown> };
+      }
+    ).workflow_call;
+    const applySteps = workflowSteps(reusable, "apply");
+    const applyStep = applySteps.find(
+      (step) => step.name === "Apply approved Fabric plan",
+    );
+    const applyWith = applyStep?.with as Record<string, string>;
+
+    expect(call.inputs).toMatchObject({
+      allow_network_policy_update: { default: false, type: "boolean" },
+      allow_network_policy_relaxation: { default: false, type: "boolean" },
+      allow_outbound_cloud_connection_rule_update: {
+        default: false,
+        type: "boolean",
+      },
+      allow_outbound_gateway_rule_update: {
+        default: false,
+        type: "boolean",
+      },
+    });
+    expect(applyWith["allow-network-policy-update"]).toBe(
+      "${{ inputs.allow_network_policy_update }}",
+    );
+    expect(applyWith["allow-network-policy-relaxation"]).toBe(
+      "${{ inputs.allow_network_policy_relaxation }}",
+    );
+    expect(applyWith["allow-outbound-cloud-connection-rule-update"]).toBe(
+      "${{ inputs.allow_outbound_cloud_connection_rule_update }}",
+    );
+    expect(applyWith["allow-outbound-gateway-rule-update"]).toBe(
+      "${{ inputs.allow_outbound_gateway_rule_update }}",
+    );
+
+    const promote = loadYaml(".github/workflows/promote-fabric.yml");
+    const promoteInputs = (
+      promote.on as { workflow_dispatch: { inputs: Record<string, unknown> } }
+    ).workflow_dispatch.inputs;
+    const jobs = promote.jobs as Record<string, Record<string, unknown>>;
+
+    expect(promoteInputs).toMatchObject({
+      allow_network_policy_update: { required: true, default: false },
+      allow_network_policy_relaxation: { required: true, default: false },
+      allow_outbound_cloud_connection_rule_update: {
+        required: true,
+        default: false,
+      },
+      allow_outbound_gateway_rule_update: {
+        required: true,
+        default: false,
+      },
+    });
+    for (const job of ["dev", "test", "prod"]) {
+      const jobWith = jobs[job]?.with as Record<string, string>;
+      expect(jobWith.allow_network_policy_update).toBe(
+        "${{ inputs.allow_network_policy_update }}",
+      );
+      expect(jobWith.allow_network_policy_relaxation).toBe(
+        "${{ inputs.allow_network_policy_relaxation }}",
+      );
+      expect(jobWith.allow_outbound_cloud_connection_rule_update).toBe(
+        "${{ inputs.allow_outbound_cloud_connection_rule_update }}",
+      );
+      expect(jobWith.allow_outbound_gateway_rule_update).toBe(
+        "${{ inputs.allow_outbound_gateway_rule_update }}",
+      );
+    }
+  });
+
+  it("allows only expected blocked child surfaces during managed workspace bootstrap", () => {
+    const reusable = loadYaml(
+      ".github/workflows/reusable-fabric-deploy.yml",
+    );
+    const planSteps = workflowSteps(reusable, "plan");
+    const inspectStep = planSteps.find(
+      (step) => step.name === "Inspect approved plan",
+    );
+
+    expect(inspectStep?.run).toContain(
+      ".networkProtection.communicationPolicy",
+    );
+    expect(inspectStep?.run).toContain(
+      ".networkProtection.outboundCloudConnectionRules",
+    );
+    expect(inspectStep?.run).toContain(
+      ".networkProtection.outboundGatewayRules",
+    );
+    expect(inspectStep?.run).toContain(
+      '.workspace.action == "create"',
+    );
+    expect(inspectStep?.run).toContain(
+      ".networkProtection.workspaceId == null",
+    );
+    expect(inspectStep?.run).toContain(
+      '.action == "blocked"',
+    );
+  });
+
   it("protects reusable apply behind a GitHub Environment", () => {
     const workflow = loadYaml(
       ".github/workflows/reusable-fabric-deploy.yml",
@@ -70,6 +196,25 @@ describe("deployment workflow metadata", () => {
       "${{ inputs.github_environment }}",
     );
     expect(jobs.apply?.needs).toBe("plan");
+  });
+
+  it("serializes all reusable apply mutation jobs across workspace targets", () => {
+    const workflow = loadYaml(
+      ".github/workflows/reusable-fabric-deploy.yml",
+    );
+    const jobs = workflow.jobs as Record<
+      string,
+      Record<string, unknown>
+    >;
+    const concurrency = jobs.apply?.concurrency as Record<
+      string,
+      unknown
+    >;
+
+    expect(workflow.concurrency).toBeUndefined();
+    expect(concurrency.group).toBe("fabric-deploy-apply");
+    expect(concurrency.queue).toBe("max");
+    expect(concurrency["cancel-in-progress"]).toBe(false);
   });
 
   it("promotes dev to test to production in order", () => {

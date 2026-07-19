@@ -1,12 +1,16 @@
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 
+import { hashCommunicationPolicy } from "./fabric/network-protection";
 import { rehashPlan } from "./planner";
 import {
   FABRIC_ITEM_TYPES,
   type DeploymentPlan,
+  type NetworkDefaultAction,
   type PlannedAction,
   type PlannedItem,
+  type PlannedNetworkProtection,
+  type PlannedNetworkSurface,
   type PlannedWorkspace,
 } from "./types";
 
@@ -18,6 +22,11 @@ const PLANNED_ACTIONS = new Set<PlannedAction>([
   "blocked",
   "unknown",
 ]);
+
+const NETWORK_SURFACE_ACTIONS = new Set(["update", "no-op", "blocked", "unknown"]);
+const NETWORK_DEFAULT_ACTIONS = new Set(["Allow", "Deny"]);
+const GUID_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export function loadApprovedPlan(planFile: string): DeploymentPlan {
   const absolutePath = path.resolve(planFile);
@@ -61,6 +70,8 @@ function isDeploymentPlan(value: unknown): value is DeploymentPlan {
     typeof plan.workspaceId === "string" &&
     (plan.workspace === undefined ||
       isPlannedWorkspace(plan.workspace)) &&
+    (plan.networkProtection === undefined ||
+      isPlannedNetworkProtection(plan.networkProtection)) &&
     typeof plan.sourceHash === "string" &&
     typeof plan.resolvedHash === "string" &&
     typeof plan.planHash === "string" &&
@@ -143,6 +154,126 @@ function isPlannedWorkspace(
     (workspace.capacityAssignmentRequired === undefined ||
       typeof workspace.capacityAssignmentRequired === "boolean")
   );
+}
+
+function isPlannedNetworkProtection(
+  value: unknown,
+): value is PlannedNetworkProtection {
+  if (value === null || typeof value !== "object") {
+    return false;
+  }
+  const plan = value as Partial<PlannedNetworkProtection>;
+  if (
+    (plan.workspaceId !== undefined &&
+      (typeof plan.workspaceId !== "string" ||
+        !GUID_PATTERN.test(plan.workspaceId))) ||
+    plan.communicationPolicy === null ||
+    typeof plan.communicationPolicy !== "object"
+  ) {
+    return false;
+  }
+  const policy = plan.communicationPolicy as unknown as Record<string, unknown>;
+  const policyAction = String(policy.action);
+  return (
+    isPlannedNetworkCommunicationPolicy(policy) &&
+    ((policyAction !== "update" && policyAction !== "no-op") ||
+      typeof plan.workspaceId === "string") &&
+    (plan.outboundCloudConnectionRules === undefined ||
+      isPlannedNetworkSurface(plan.outboundCloudConnectionRules)) &&
+    (plan.outboundGatewayRules === undefined ||
+      isPlannedNetworkSurface(plan.outboundGatewayRules))
+  );
+}
+
+function isPlannedNetworkCommunicationPolicy(
+  policy: Record<string, unknown>,
+): boolean {
+  const action = String(policy.action);
+  const desiredInbound = policy.desiredInboundDefaultAction;
+  const desiredOutbound = policy.desiredOutboundDefaultAction;
+  if (
+    !NETWORK_SURFACE_ACTIONS.has(action) ||
+    typeof policy.reason !== "string" ||
+    !isHash(policy.desiredHash) ||
+    (policy.observedStateHash !== undefined &&
+      !isHash(policy.observedStateHash)) ||
+    (policy.etag !== undefined && typeof policy.etag !== "string") ||
+    !isNetworkDefaultAction(desiredInbound) ||
+    !isNetworkDefaultAction(desiredOutbound)
+  ) {
+    return false;
+  }
+  if (
+    policy.desiredHash !==
+    hashCommunicationPolicy({
+      inbound: {
+        publicAccessRules: { defaultAction: desiredInbound },
+      },
+      outbound: {
+        publicAccessRules: { defaultAction: desiredOutbound },
+      },
+    })
+  ) {
+    return false;
+  }
+
+  if (action === "blocked" || action === "unknown") {
+    return (
+      policy.observedStateHash === undefined &&
+      policy.observedInboundDefaultAction === undefined &&
+      policy.observedOutboundDefaultAction === undefined &&
+      policy.isRelaxation === undefined
+    );
+  }
+
+  const observedInbound = policy.observedInboundDefaultAction;
+  const observedOutbound = policy.observedOutboundDefaultAction;
+  if (
+    !isNetworkDefaultAction(observedInbound) ||
+    !isNetworkDefaultAction(observedOutbound) ||
+    !isHash(policy.observedStateHash) ||
+    typeof policy.isRelaxation !== "boolean"
+  ) {
+    return false;
+  }
+  const observedHash = hashCommunicationPolicy({
+    inbound: {
+      publicAccessRules: { defaultAction: observedInbound },
+    },
+    outbound: {
+      publicAccessRules: { defaultAction: observedOutbound },
+    },
+  });
+  const isRelaxation =
+    (observedInbound === "Deny" && desiredInbound === "Allow") ||
+    (observedOutbound === "Deny" && desiredOutbound === "Allow");
+  return (
+    policy.observedStateHash === observedHash &&
+    policy.isRelaxation === isRelaxation &&
+    (action === "no-op") === (policy.desiredHash === observedHash)
+  );
+}
+
+function isPlannedNetworkSurface(
+  value: unknown,
+): value is PlannedNetworkSurface {
+  if (value === null || typeof value !== "object") {
+    return false;
+  }
+  const surface = value as Record<string, unknown>;
+  return (
+    NETWORK_SURFACE_ACTIONS.has(String(surface.action)) &&
+    typeof surface.reason === "string" &&
+    isHash(surface.desiredHash) &&
+    (surface.observedStateHash === undefined ||
+      isHash(surface.observedStateHash))
+  );
+}
+
+function isNetworkDefaultAction(
+  value: unknown,
+): value is NetworkDefaultAction {
+  return NETWORK_DEFAULT_ACTIONS.has(String(value)) && typeof value === "string";
 }
 
 function isPlannedItem(value: unknown): value is PlannedItem {

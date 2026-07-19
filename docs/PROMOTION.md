@@ -55,7 +55,9 @@ permissions and workspace roles required by the planned resource types.
 
 Every mutation input defaults to `false`. Enable only the operations expected
 for the promotion. Lakehouse deletion requires both `allow_delete` and
-`allow_lakehouse_data_loss`.
+`allow_lakehouse_data_loss`. Relaxing an inbound or outbound network
+communication policy default action from `Deny` to `Allow` requires both
+`allow_network_policy_update` and `allow_network_policy_relaxation`.
 
 Do not reuse a plan across environments. Plans bind the deployment
 environment, workspace, source commit, dependency graph, physical IDs, and

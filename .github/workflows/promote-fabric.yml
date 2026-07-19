@@ -65,6 +65,22 @@ on:
         required: true
         default: false
         type: boolean
+      allow_network_policy_update:
+        required: true
+        default: false
+        type: boolean
+      allow_network_policy_relaxation:
+        required: true
+        default: false
+        type: boolean
+      allow_outbound_cloud_connection_rule_update:
+        required: true
+        default: false
+        type: boolean
+      allow_outbound_gateway_rule_update:
+        required: true
+        default: false
+        type: boolean
 
 permissions:
   actions: read
@@ -94,6 +110,10 @@ jobs:
       allow_onelake_artifact_create: ${{ inputs.allow_onelake_artifact_create }}
       allow_tag_create: ${{ inputs.allow_tag_create }}
       allow_tag_assign: ${{ inputs.allow_tag_assign }}
+      allow_network_policy_update: ${{ inputs.allow_network_policy_update }}
+      allow_network_policy_relaxation: ${{ inputs.allow_network_policy_relaxation }}
+      allow_outbound_cloud_connection_rule_update: ${{ inputs.allow_outbound_cloud_connection_rule_update }}
+      allow_outbound_gateway_rule_update: ${{ inputs.allow_outbound_gateway_rule_update }}
 
   test:
     if: ${{ success() && (inputs.target == 'test' || inputs.target == 'prod') }}
@@ -119,6 +139,10 @@ jobs:
       allow_onelake_artifact_create: ${{ inputs.allow_onelake_artifact_create }}
       allow_tag_create: ${{ inputs.allow_tag_create }}
       allow_tag_assign: ${{ inputs.allow_tag_assign }}
+      allow_network_policy_update: ${{ inputs.allow_network_policy_update }}
+      allow_network_policy_relaxation: ${{ inputs.allow_network_policy_relaxation }}
+      allow_outbound_cloud_connection_rule_update: ${{ inputs.allow_outbound_cloud_connection_rule_update }}
+      allow_outbound_gateway_rule_update: ${{ inputs.allow_outbound_gateway_rule_update }}
 
   prod:
     if: ${{ success() && inputs.target == 'prod' }}
@@ -144,3 +168,7 @@ jobs:
       allow_onelake_artifact_create: ${{ inputs.allow_onelake_artifact_create }}
       allow_tag_create: ${{ inputs.allow_tag_create }}
       allow_tag_assign: ${{ inputs.allow_tag_assign }}
+      allow_network_policy_update: ${{ inputs.allow_network_policy_update }}
+      allow_network_policy_relaxation: ${{ inputs.allow_network_policy_relaxation }}
+      allow_outbound_cloud_connection_rule_update: ${{ inputs.allow_outbound_cloud_connection_rule_update }}
+      allow_outbound_gateway_rule_update: ${{ inputs.allow_outbound_gateway_rule_update }}

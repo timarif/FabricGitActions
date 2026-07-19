@@ -58,6 +58,49 @@ export interface WorkspaceDefinition {
   capacityId?: string;
 }
 
+export type NetworkDefaultAction = "Allow" | "Deny";
+
+export interface NetworkCommunicationPolicyManifest {
+  inboundDefaultAction: NetworkDefaultAction;
+  outboundDefaultAction: NetworkDefaultAction;
+}
+
+export interface OutboundConnectionEndpointRuleManifest {
+  hostnamePattern: string;
+}
+
+export interface OutboundConnectionWorkspaceRuleManifest {
+  workspaceId: string;
+}
+
+export interface OutboundCloudConnectionRuleManifest {
+  connectionType: string;
+  defaultAction: NetworkDefaultAction;
+  allowedEndpoints?: OutboundConnectionEndpointRuleManifest[];
+  allowedWorkspaces?: OutboundConnectionWorkspaceRuleManifest[];
+}
+
+export interface OutboundCloudConnectionRulesManifest {
+  defaultAction: NetworkDefaultAction;
+  rules: OutboundCloudConnectionRuleManifest[];
+}
+
+export interface OutboundGatewayRuleManifest {
+  id: string;
+}
+
+export interface OutboundGatewayRulesManifest {
+  defaultAction: NetworkDefaultAction;
+  allowedGateways: OutboundGatewayRuleManifest[];
+}
+
+export interface NetworkProtectionManifest {
+  workspaceId?: string;
+  communicationPolicy: NetworkCommunicationPolicyManifest;
+  outboundCloudConnectionRules?: OutboundCloudConnectionRulesManifest;
+  outboundGatewayRules?: OutboundGatewayRulesManifest;
+}
+
 export interface DeploymentManifest {
   apiVersion: "fabric.deploy/v1alpha1";
   kind: "FabricDeployment";
@@ -65,6 +108,7 @@ export interface DeploymentManifest {
     deploymentId: string;
   };
   workspace?: WorkspaceDefinition;
+  networkProtection?: NetworkProtectionManifest;
   items: DeploymentItem[];
 }
 
@@ -184,6 +228,34 @@ export interface PlannedWorkspace {
   reason: string;
 }
 
+export type NetworkSurfaceAction = Extract<
+  PlannedAction,
+  "update" | "no-op" | "blocked" | "unknown"
+>;
+
+export interface PlannedNetworkSurface {
+  action: NetworkSurfaceAction;
+  reason: string;
+  desiredHash: string;
+  observedStateHash?: string;
+}
+
+export interface PlannedNetworkCommunicationPolicy extends PlannedNetworkSurface {
+  etag?: string;
+  desiredInboundDefaultAction: NetworkDefaultAction;
+  desiredOutboundDefaultAction: NetworkDefaultAction;
+  observedInboundDefaultAction?: NetworkDefaultAction;
+  observedOutboundDefaultAction?: NetworkDefaultAction;
+  isRelaxation?: boolean;
+}
+
+export interface PlannedNetworkProtection {
+  workspaceId?: string;
+  communicationPolicy: PlannedNetworkCommunicationPolicy;
+  outboundCloudConnectionRules?: PlannedNetworkSurface;
+  outboundGatewayRules?: PlannedNetworkSurface;
+}
+
 export interface DeploymentPlan {
   schemaVersion: "1";
   mode: ActionMode;
@@ -191,6 +263,7 @@ export interface DeploymentPlan {
   environment: string;
   workspaceId: string;
   workspace?: PlannedWorkspace;
+  networkProtection?: PlannedNetworkProtection;
   sourceCommit?: string;
   sourceHash: string;
   resolvedHash: string;
@@ -241,6 +314,7 @@ export interface ApplyResult {
   workspace?: ApplyWorkspaceResult;
   requiresItemReplan?: boolean;
   items: ApplyItemResult[];
+  networkProtection?: ApplyNetworkProtectionResult;
 }
 
 export interface ApplyWorkspaceResult {
@@ -249,6 +323,21 @@ export interface ApplyWorkspaceResult {
   physicalId: string;
   durationMs: number;
   error?: string;
+}
+
+export type ApplyNetworkSurfaceStatus = "updated" | "verified" | "resumed";
+
+export interface ApplyNetworkSurfaceResult {
+  action: NetworkSurfaceAction;
+  status: ApplyNetworkSurfaceStatus;
+  durationMs: number;
+}
+
+export interface ApplyNetworkProtectionResult {
+  workspaceId: string;
+  communicationPolicy: ApplyNetworkSurfaceResult;
+  outboundCloudConnectionRules?: ApplyNetworkSurfaceResult;
+  outboundGatewayRules?: ApplyNetworkSurfaceResult;
 }
 
 export interface ApplyCheckpointItem {
@@ -327,6 +416,22 @@ export interface ApplyCheckpoint {
   lakehouseTables?: Record<string, ApplyCheckpointLakehouseTables>;
   oneLakeArtifacts?: Record<string, ApplyCheckpointOneLakeArtifacts>;
   tagAssignments?: Record<string, ApplyCheckpointTagAssignment>;
+  networkProtection?: ApplyCheckpointNetworkProtection;
+}
+
+export interface ApplyCheckpointNetworkSurface {
+  desiredHash: string;
+  phase: "submitting" | "verified";
+  updatedAt: string;
+}
+
+export interface ApplyCheckpointNetworkProtection {
+  workspaceId: string;
+  communicationPolicy?: ApplyCheckpointNetworkSurface;
+  outboundCloudConnectionRules?: ApplyCheckpointNetworkSurface;
+  outboundGatewayRules?: ApplyCheckpointNetworkSurface;
+  completedAt?: string;
+  updatedAt: string;
 }
 
 export interface ApplyCheckpointTagAssignment {

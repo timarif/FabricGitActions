@@ -8,6 +8,7 @@ import type {
   DeploymentPlan,
   LoadedManifest,
   PlannedItem,
+  PlannedNetworkProtection,
 } from "../types";
 import type { EnvironmentAdapter } from "./environment";
 import {
@@ -20,6 +21,10 @@ import {
   type LakehouseTablesAdapter,
 } from "./lakehouse-tables";
 import type { NotebookAdapter } from "./notebook";
+import {
+  buildBlockedNetworkProtectionPlan,
+  type NetworkProtectionAdapter,
+} from "./network-protection";
 import type { PipelineAdapter } from "./pipeline";
 import type { SparkCustomPoolAdapter } from "./spark-custom-pool";
 import type { SparkJobAdapter } from "./spark-job";
@@ -51,6 +56,7 @@ export interface FabricPlanAdapters {
   sparkCustomPool: Pick<SparkCustomPoolAdapter, "plan">;
   tags?: Pick<FabricTagAdapter, "plan" | "planItemAssignment">;
   lakehouseTables?: Pick<LakehouseTablesAdapter, "plan">;
+  networkProtection?: Pick<NetworkProtectionAdapter, "plan">;
   oneLakeArtifacts?: {
     dfsEndpoint: string;
     blobEndpoint: string;
@@ -110,10 +116,19 @@ export async function enrichPlanWithFabric(
       workspaceResult.action === "create" ||
       workspaceResult.action === "blocked"
     ) {
+      const networkProtection = await planNetworkProtectionIfConfigured(
+        loadedManifest,
+        workspaceId,
+        workspaceResult.action === "create"
+          ? "The managed workspace must be provisioned and approved in a separate apply before network protection can be planned."
+          : "The managed workspace plan is blocked.",
+        adapters.networkProtection,
+      );
       return rehashPlan({
         ...plan,
         workspaceId,
         workspace: plannedWorkspace,
+        ...(networkProtection ? { networkProtection } : {}),
         items: plan.items.map((item) =>
           blockItemUntilWorkspaceExists(
             item,
@@ -556,12 +571,40 @@ export async function enrichPlanWithFabric(
     loadedManifest,
     adapters.tags,
   );
+  const networkProtection = await planNetworkProtectionIfConfigured(
+    loadedManifest,
+    workspaceId,
+    undefined,
+    adapters.networkProtection,
+  );
   return rehashPlan({
     ...plan,
     workspaceId,
     ...(plannedWorkspace ? { workspace: plannedWorkspace } : {}),
+    ...(networkProtection ? { networkProtection } : {}),
     items: taggedItems,
   });
+}
+
+async function planNetworkProtectionIfConfigured(
+  loadedManifest: LoadedManifest,
+  resolvedWorkspaceId: string,
+  pendingReason: string | undefined,
+  adapter: Pick<NetworkProtectionAdapter, "plan"> | undefined,
+): Promise<PlannedNetworkProtection | undefined> {
+  const desired = loadedManifest.manifest.networkProtection;
+  if (!desired) {
+    return undefined;
+  }
+  if (pendingReason !== undefined && desired.workspaceId === undefined) {
+    return buildBlockedNetworkProtectionPlan(desired, pendingReason);
+  }
+  if (!adapter) {
+    throw new Error(
+      "Online network protection planning requires a network protection adapter.",
+    );
+  }
+  return adapter.plan(resolvedWorkspaceId, desired);
 }
 
 async function enrichTagAssignments(

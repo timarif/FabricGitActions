@@ -20,6 +20,7 @@ import { LakehouseAdapter } from "./fabric/lakehouse";
 import { LakehouseTablesAdapter } from "./fabric/lakehouse-tables";
 import { buildLakehouseLivyApiEndpoints } from "./fabric/livy";
 import { enrichPlanWithFabric } from "./fabric/live-planner";
+import { NetworkProtectionAdapter } from "./fabric/network-protection";
 import { NotebookAdapter } from "./fabric/notebook";
 import { OneLakeArtifactStager } from "./fabric/onelake-artifacts";
 import { PipelineAdapter } from "./fabric/pipeline";
@@ -28,16 +29,25 @@ import { assertSparkJobArtifactEndpoints } from "./fabric/spark-job-artifacts";
 import { SparkJobAdapter } from "./fabric/spark-job";
 import { FabricTagAdapter } from "./fabric/tags";
 import { WorkspaceAdapter } from "./fabric/workspace";
-import { loadManifest } from "./manifest";
+import {
+  loadManifest,
+  loadManifestItemDirectoriesForSafety,
+  loadNetworkProtectionManifest,
+} from "./manifest";
 import { loadApprovedPlan } from "./plan-artifact";
 import { buildPlan } from "./planner";
+import { recoverInterruptedNetworkProtection } from "./network-apply";
 import {
   assertDistinctFilePaths,
   assertOutputPathOutsideItems,
   writeJobSummary,
   writePlan,
 } from "./reporting";
-import type { ActionMode, DeploymentPlan } from "./types";
+import type {
+  ActionMode,
+  ApplyCheckpoint,
+  DeploymentPlan,
+} from "./types";
 
 export async function run(): Promise<void> {
   let initializedApply:
@@ -66,23 +76,33 @@ export async function run(): Promise<void> {
     const returnLivyApiEndpoint = readBooleanInput(
       "return-livy-api-endpoint",
     );
+    const allowNetworkPolicyUpdate =
+      mode === "apply"
+        ? readBooleanInput("allow-network-policy-update")
+        : false;
+    const allowNetworkPolicyRelaxation =
+      mode === "apply"
+        ? readBooleanInput("allow-network-policy-relaxation")
+        : false;
+    const allowOutboundCloudConnectionRuleUpdate =
+      mode === "apply"
+        ? readBooleanInput(
+            "allow-outbound-cloud-connection-rule-update",
+          )
+        : false;
+    const allowOutboundGatewayRuleUpdate =
+      mode === "apply"
+        ? readBooleanInput("allow-outbound-gateway-rule-update")
+        : false;
     if (returnLivyApiEndpoint && mode !== "apply") {
       throw new Error(
         "return-livy-api-endpoint is supported only when mode is apply.",
       );
     }
 
-    const loadedManifest = loadManifest(manifestPath, {
-      variables,
-      workspaceIdOverride: workspaceId,
-    });
-    let plan = buildPlan(loadedManifest, {
-      mode: mode === "apply" ? "plan" : mode,
-      environment,
-      workspaceId,
-      sourceCommit,
-    });
+    let plan: DeploymentPlan;
     let approvedPlan: DeploymentPlan | undefined;
+    let applyCheckpoint: ApplyCheckpoint | undefined;
     let checkpointFile: string | undefined;
     let resultFile: string | undefined;
     if (mode === "apply") {
@@ -96,7 +116,7 @@ export async function run(): Promise<void> {
       assertDistinctFilePaths([
         {
           label: "Deployment manifest",
-          filePath: loadedManifest.manifestPath,
+          filePath: manifestPath,
         },
         { label: "Approved plan file", filePath: approvedPlanFile },
         { label: "Current plan file", filePath: planFile },
@@ -104,28 +124,23 @@ export async function run(): Promise<void> {
         { label: "Result file", filePath: resultFile },
       ]);
       approvedPlan = loadApprovedPlan(approvedPlanFile);
-      for (const item of approvedPlan.items) {
-        if (item.sparkJobArtifacts) {
-          assertSparkJobArtifactEndpoints(
-            item.sparkJobArtifacts,
-            endpoints.oneLakeEndpoint,
-            endpoints.oneLakeBlobEndpoint,
-          );
-        }
-      }
-      const itemDirectories = Object.values(loadedManifest.itemDirectories);
+      const declaredItemDirectories =
+        loadManifestItemDirectoriesForSafety(manifestPath, {
+          variables,
+          workspaceIdOverride: workspaceId,
+        });
       assertOutputPathOutsideItems(
         checkpointFile,
-        itemDirectories,
+        declaredItemDirectories,
         "Checkpoint file",
       );
       assertOutputPathOutsideItems(
         resultFile,
-        itemDirectories,
+        declaredItemDirectories,
         "Result file",
       );
       const applyStartedAt = Date.now();
-      initializeApplyArtifacts(
+      applyCheckpoint = initializeApplyArtifacts(
         approvedPlan,
         checkpointFile,
         resultFile,
@@ -142,7 +157,7 @@ export async function run(): Promise<void> {
       assertDistinctFilePaths([
         {
           label: "Deployment manifest",
-          filePath: loadedManifest.manifestPath,
+          filePath: manifestPath,
         },
         { label: "Plan file", filePath: planFile },
       ]);
@@ -157,6 +172,7 @@ export async function run(): Promise<void> {
     let tagAdapter: FabricTagAdapter | undefined;
     let workspaceAdapter: WorkspaceAdapter | undefined;
     let lakehouseTablesAdapter: LakehouseTablesAdapter | undefined;
+    let networkProtectionAdapter: NetworkProtectionAdapter | undefined;
     let oneLakeArtifactStager: OneLakeArtifactStager | undefined;
     if ((mode === "plan" || mode === "apply") && authMode !== "none") {
       const clientSecret = core.getInput("client-secret") || undefined;
@@ -192,11 +208,109 @@ export async function run(): Promise<void> {
       sparkCustomPoolAdapter = new SparkCustomPoolAdapter(client);
       tagAdapter = new FabricTagAdapter(client);
       workspaceAdapter = new WorkspaceAdapter(client);
+      networkProtectionAdapter = new NetworkProtectionAdapter(client);
       oneLakeArtifactStager = new OneLakeArtifactStager({
         dfsEndpoint: endpoints.oneLakeEndpoint,
         blobEndpoint: endpoints.oneLakeBlobEndpoint,
         tokenProvider,
       });
+    } else if (mode === "apply") {
+      throw new Error("apply mode requires Fabric authentication.");
+    }
+
+    if (mode === "apply") {
+      if (
+        !approvedPlan ||
+        !applyCheckpoint ||
+        !checkpointFile ||
+        !networkProtectionAdapter
+      ) {
+        throw new Error(
+          "Network protection recovery was not initialized for apply mode.",
+        );
+      }
+      // Load only the security declaration first so unrelated item paths or
+      // definitions cannot prevent completion of an already-started unit.
+      const desiredNetworkProtection = loadNetworkProtectionManifest(
+        manifestPath,
+        {
+          variables,
+          workspaceIdOverride: workspaceId,
+        },
+      );
+      await recoverInterruptedNetworkProtection({
+        approvedPlan,
+        currentPlan: approvedPlan,
+        desired: desiredNetworkProtection,
+        adapter: networkProtectionAdapter,
+        checkpoint: applyCheckpoint,
+        checkpointFile,
+        allowNetworkPolicyUpdate,
+        allowNetworkPolicyRelaxation,
+        allowOutboundCloudConnectionRuleUpdate,
+        allowOutboundGatewayRuleUpdate,
+      });
+    }
+
+    const loadedManifest = loadManifest(manifestPath, {
+      variables,
+      workspaceIdOverride: workspaceId,
+    });
+    if (mode === "apply") {
+      if (!checkpointFile || !resultFile || !approvedPlan) {
+        throw new Error(
+          "Apply artifacts were not initialized before manifest validation.",
+        );
+      }
+      const itemDirectories = Object.values(
+        loadedManifest.itemDirectories,
+      );
+      assertOutputPathOutsideItems(
+        checkpointFile,
+        itemDirectories,
+        "Checkpoint file",
+      );
+      assertOutputPathOutsideItems(
+        resultFile,
+        itemDirectories,
+        "Result file",
+      );
+      for (const item of approvedPlan.items) {
+        if (item.sparkJobArtifacts) {
+          assertSparkJobArtifactEndpoints(
+            item.sparkJobArtifacts,
+            endpoints.oneLakeEndpoint,
+            endpoints.oneLakeBlobEndpoint,
+          );
+        }
+      }
+    }
+
+    plan = buildPlan(loadedManifest, {
+      mode: mode === "apply" ? "plan" : mode,
+      environment,
+      workspaceId,
+      sourceCommit,
+    });
+    if ((mode === "plan" || mode === "apply") && authMode !== "none") {
+      if (
+        !workspaceAdapter ||
+        !itemDeletionAdapter ||
+        !lakehouseAdapter ||
+        !environmentAdapter ||
+        !notebookAdapter ||
+        !sparkJobAdapter ||
+        !pipelineAdapter ||
+        !sparkCustomPoolAdapter ||
+        !tagAdapter ||
+        !lakehouseTablesAdapter ||
+        !networkProtectionAdapter ||
+        !oneLakeArtifactStager
+      ) {
+        throw new Error(
+          "Fabric adapters were not initialized for authenticated planning.",
+        );
+      }
       plan = await enrichPlanWithFabric(plan, loadedManifest, {
         workspace: workspaceAdapter,
         deletion: itemDeletionAdapter,
@@ -208,14 +322,13 @@ export async function run(): Promise<void> {
         sparkCustomPool: sparkCustomPoolAdapter,
         tags: tagAdapter,
         lakehouseTables: lakehouseTablesAdapter,
+        networkProtection: networkProtectionAdapter,
         oneLakeArtifacts: {
           dfsEndpoint: endpoints.oneLakeEndpoint,
           blobEndpoint: endpoints.oneLakeBlobEndpoint,
           stager: oneLakeArtifactStager,
         },
       });
-    } else if (mode === "apply") {
-      throw new Error("apply mode requires Fabric authentication.");
     }
     const writtenPlanFile = writePlan(
       plan,
@@ -255,6 +368,10 @@ export async function run(): Promise<void> {
       "workspace-action",
       plan.workspace?.action ?? "target",
     );
+    core.setOutput(
+      "network-protection-action",
+      plan.networkProtection?.communicationPolicy.action ?? "not-configured",
+    );
     core.setOutput("requires-item-replan", "false");
     await writeJobSummary(plan);
 
@@ -273,6 +390,7 @@ export async function run(): Promise<void> {
         !tagAdapter ||
         !workspaceAdapter
         || !lakehouseTablesAdapter ||
+        !networkProtectionAdapter ||
         !oneLakeArtifactStager
       ) {
         throw new Error("Fabric adapters were not initialized for apply mode.");
@@ -291,6 +409,7 @@ export async function run(): Promise<void> {
         tagAdapter,
         workspaceAdapter,
         lakehouseTablesAdapter,
+        networkProtectionAdapter,
         oneLakeArtifactStager,
         oneLakeDfsEndpoint: endpoints.oneLakeEndpoint,
         oneLakeBlobEndpoint: endpoints.oneLakeBlobEndpoint,
@@ -320,6 +439,10 @@ export async function run(): Promise<void> {
         ),
         allowTagCreate: readBooleanInput("allow-tag-create"),
         allowTagAssign: readBooleanInput("allow-tag-assign"),
+        allowNetworkPolicyUpdate,
+        allowNetworkPolicyRelaxation,
+        allowOutboundCloudConnectionRuleUpdate,
+        allowOutboundGatewayRuleUpdate,
         checkpointFile,
         resultFile,
         itemDirectories: Object.values(loadedManifest.itemDirectories),
@@ -330,6 +453,11 @@ export async function run(): Promise<void> {
       core.setOutput(
         "workspace-action",
         approvedPlan.workspace?.action ?? "target",
+      );
+      core.setOutput(
+        "network-protection-action",
+        approvedPlan.networkProtection?.communicationPolicy.action ??
+          "not-configured",
       );
       core.setOutput(
         "requires-item-replan",

@@ -1,5 +1,13 @@
 import { FABRIC_ITEM_TYPES } from "./types";
 
+const GUID_PATTERN =
+  "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$";
+
+const networkDefaultActionSchema = {
+  type: "string",
+  enum: ["Allow", "Deny"],
+} as const;
+
 export const deploymentSchema = {
   $id: "https://github.com/fabric-deploy/schemas/deployment-v1alpha1.json",
   type: "object",
@@ -19,6 +27,9 @@ export const deploymentSchema = {
               required: ["displayName"],
             },
           },
+        },
+        {
+          required: ["networkProtection"],
         },
       ],
     },
@@ -73,6 +84,90 @@ export const deploymentSchema = {
         capacityId: {
           type: "string",
           minLength: 1,
+        },
+      },
+    },
+    networkProtection: {
+      type: "object",
+      additionalProperties: false,
+      required: ["communicationPolicy"],
+      properties: {
+        workspaceId: {
+          type: "string",
+          pattern: GUID_PATTERN,
+        },
+        communicationPolicy: {
+          type: "object",
+          additionalProperties: false,
+          required: ["inboundDefaultAction", "outboundDefaultAction"],
+          properties: {
+            inboundDefaultAction: networkDefaultActionSchema,
+            outboundDefaultAction: networkDefaultActionSchema,
+          },
+        },
+        outboundCloudConnectionRules: {
+          type: "object",
+          additionalProperties: false,
+          required: ["defaultAction", "rules"],
+          properties: {
+            defaultAction: networkDefaultActionSchema,
+            rules: {
+              type: "array",
+              items: {
+                type: "object",
+                additionalProperties: false,
+                required: ["connectionType", "defaultAction"],
+                properties: {
+                  connectionType: { type: "string", minLength: 1 },
+                  defaultAction: networkDefaultActionSchema,
+                  allowedEndpoints: {
+                    type: "array",
+                    items: {
+                      type: "object",
+                      additionalProperties: false,
+                      required: ["hostnamePattern"],
+                      properties: {
+                        hostnamePattern: { type: "string", minLength: 1 },
+                      },
+                    },
+                  },
+                  allowedWorkspaces: {
+                    type: "array",
+                    items: {
+                      type: "object",
+                      additionalProperties: false,
+                      required: ["workspaceId"],
+                      properties: {
+                        workspaceId: {
+                          type: "string",
+                          pattern: GUID_PATTERN,
+                        },
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+        outboundGatewayRules: {
+          type: "object",
+          additionalProperties: false,
+          required: ["defaultAction", "allowedGateways"],
+          properties: {
+            defaultAction: networkDefaultActionSchema,
+            allowedGateways: {
+              type: "array",
+              items: {
+                type: "object",
+                additionalProperties: false,
+                required: ["id"],
+                properties: {
+                  id: { type: "string", pattern: GUID_PATTERN },
+                },
+              },
+            },
+          },
         },
       },
     },

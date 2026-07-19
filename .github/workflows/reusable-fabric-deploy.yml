@@ -97,6 +97,22 @@ on:
         required: false
         default: false
         type: boolean
+      allow_network_policy_update:
+        required: false
+        default: false
+        type: boolean
+      allow_network_policy_relaxation:
+        required: false
+        default: false
+        type: boolean
+      allow_outbound_cloud_connection_rule_update:
+        required: false
+        default: false
+        type: boolean
+      allow_outbound_gateway_rule_update:
+        required: false
+        default: false
+        type: boolean
       artifact_retention_days:
         description: Retention for approved plan, checkpoint, and result artifacts.
         required: false
@@ -120,10 +136,6 @@ permissions:
   actions: read
   contents: read
   id-token: write
-
-concurrency:
-  group: fabric-deploy-${{ inputs.deployment_environment }}-${{ inputs.workspace_id || 'managed' }}
-  cancel-in-progress: false
 
 jobs:
   plan:
@@ -235,10 +247,46 @@ jobs:
                 and .workspace.action != "unknown"
               )
             )
-            and all(
-              .items[];
-              .action != "blocked"
-              and .action != "unknown"
+            and (
+              .networkProtection == null
+              or if (
+                .workspace.action == "create"
+                and .networkProtection.workspaceId == null
+              ) then (
+                all(
+                  [
+                    .networkProtection.communicationPolicy,
+                    .networkProtection.outboundCloudConnectionRules,
+                    .networkProtection.outboundGatewayRules
+                  ][];
+                  . == null or .action == "blocked"
+                )
+              ) else (
+                all(
+                  [
+                    .networkProtection.communicationPolicy,
+                    .networkProtection.outboundCloudConnectionRules,
+                    .networkProtection.outboundGatewayRules
+                  ][];
+                  . == null
+                  or (
+                    .action != "blocked"
+                    and .action != "unknown"
+                  )
+                )
+              )
+              end
+            )
+            and (
+              if .workspace.action == "create" then
+                all(.items[]; .action == "blocked")
+              else
+                all(
+                  .items[];
+                  .action != "blocked"
+                  and .action != "unknown"
+                )
+              end
             )
           ' approved-plan/fabric-plan.json
           echo "plan-hash=$(jq -r '.planHash' approved-plan/fabric-plan.json)" \
@@ -265,6 +313,13 @@ jobs:
     needs: plan
     runs-on: ubuntu-latest
     environment: ${{ inputs.github_environment }}
+    concurrency:
+      # One apply can mutate both the deployment workspace and a separate
+      # networkProtection.workspaceId, so serialize all mutation jobs in this
+      # repository rather than locking only the primary workspace input.
+      group: fabric-deploy-apply
+      queue: max
+      cancel-in-progress: false
     outputs:
       result-artifact: ${{ steps.artifact-name.outputs.value }}
       workspace-id: ${{ steps.fabric-apply.outputs.workspace-id }}
@@ -364,6 +419,10 @@ jobs:
           allow-onelake-artifact-create: ${{ inputs.allow_onelake_artifact_create }}
           allow-tag-create: ${{ inputs.allow_tag_create }}
           allow-tag-assign: ${{ inputs.allow_tag_assign }}
+          allow-network-policy-update: ${{ inputs.allow_network_policy_update }}
+          allow-network-policy-relaxation: ${{ inputs.allow_network_policy_relaxation }}
+          allow-outbound-cloud-connection-rule-update: ${{ inputs.allow_outbound_cloud_connection_rule_update }}
+          allow-outbound-gateway-rule-update: ${{ inputs.allow_outbound_gateway_rule_update }}
           plan-file: apply-output/current-plan.json
           checkpoint-file: apply-output/checkpoint.json
           result-file: apply-output/result.json

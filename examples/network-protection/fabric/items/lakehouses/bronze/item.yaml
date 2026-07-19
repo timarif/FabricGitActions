@@ -1,0 +1,2 @@
+displayName: FabricDeploy_NetworkProtection_Bronze
+description: Minimal Lakehouse used to demonstrate that item stages complete before network protection changes are applied

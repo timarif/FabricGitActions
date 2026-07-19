@@ -1,0 +1,36 @@
+apiVersion: fabric.deploy/v1alpha1
+kind: FabricDeployment
+
+metadata:
+  deploymentId: fabric-network-protection-example
+
+workspace:
+  id: ${var.FABRIC_WORKSPACE_ID}
+
+# Tightens outbound access protection (OAP) for the target workspace. Inbound
+# stays Allow because Phase 5A does not manage inbound firewall policy yet.
+# Outbound cloud connection and gateway rules may only be declared while
+# outboundDefaultAction is Deny; apply lands the master policy switch and the
+# configured allow lists together as one approved mutation.
+networkProtection:
+  communicationPolicy:
+    inboundDefaultAction: Allow
+    outboundDefaultAction: Deny
+  outboundCloudConnectionRules:
+    defaultAction: Deny
+    rules:
+      - connectionType: Web
+        defaultAction: Allow
+      - connectionType: Sql
+        defaultAction: Deny
+        allowedEndpoints:
+          - hostnamePattern: "*.database.windows.net"
+  outboundGatewayRules:
+    defaultAction: Deny
+    allowedGateways:
+      - id: ${var.FABRIC_GATEWAY_ID}
+
+items:
+  - logicalId: bronze
+    type: Lakehouse
+    path: items/lakehouses/bronze

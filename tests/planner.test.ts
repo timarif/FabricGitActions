@@ -115,4 +115,72 @@ describe("deployment planner", () => {
     expect(plan.stages).toEqual([]);
     expect(plan.items).toEqual([]);
   });
+
+  it("builds an unknown-action network protection skeleton when configured offline", () => {
+    const withNetworkProtection: LoadedManifest = {
+      ...loadedManifest,
+      manifest: {
+        ...loadedManifest.manifest,
+        networkProtection: {
+          communicationPolicy: {
+            inboundDefaultAction: "Allow",
+            outboundDefaultAction: "Deny",
+          },
+          outboundGatewayRules: {
+            defaultAction: "Deny",
+            allowedGateways: [
+              { id: "33333333-3333-4333-8333-333333333333" },
+            ],
+          },
+        },
+      },
+    };
+
+    const plan = buildPlan(withNetworkProtection, {
+      mode: "plan",
+      environment: "dev",
+    });
+
+    expect(plan.networkProtection?.communicationPolicy).toMatchObject({
+      action: "unknown",
+      desiredInboundDefaultAction: "Allow",
+      desiredOutboundDefaultAction: "Deny",
+    });
+    expect(plan.networkProtection?.outboundGatewayRules).toMatchObject({
+      action: "unknown",
+    });
+    expect(plan.networkProtection?.outboundCloudConnectionRules).toBeUndefined();
+  });
+
+  it("changes the plan hash when the networkProtection configuration changes", () => {
+    const base: LoadedManifest = {
+      ...loadedManifest,
+      manifest: {
+        ...loadedManifest.manifest,
+        networkProtection: {
+          communicationPolicy: {
+            inboundDefaultAction: "Allow",
+            outboundDefaultAction: "Allow",
+          },
+        },
+      },
+    };
+    const changed: LoadedManifest = {
+      ...base,
+      manifest: {
+        ...base.manifest,
+        networkProtection: {
+          communicationPolicy: {
+            inboundDefaultAction: "Allow",
+            outboundDefaultAction: "Deny",
+          },
+        },
+      },
+    };
+
+    const firstPlan = buildPlan(base, { mode: "plan", environment: "dev" });
+    const secondPlan = buildPlan(changed, { mode: "plan", environment: "dev" });
+
+    expect(firstPlan.planHash).not.toBe(secondPlan.planHash);
+  });
 });

@@ -41,6 +41,113 @@ describe("Fabric API client", () => {
     expect(sleeps).toEqual([2000]);
   });
 
+  it("records an ambiguous earlier retry on a final HTTP rejection", async () => {
+    const client = new FabricClient({
+      endpoint: "https://api.fabric.microsoft.com",
+      scope: "scope",
+      tokenProvider,
+      fetchImpl: vi
+        .fn()
+        .mockResolvedValueOnce(
+          new Response("unavailable", { status: 503 }),
+        )
+        .mockResolvedValueOnce(
+          new Response("throttled", { status: 429 }),
+        ),
+      sleep: async () => undefined,
+      maxRetries: 1,
+    });
+
+    await expect(
+      client.request("PUT", "/v1/test", {
+        body: { value: 1 },
+        retryable: true,
+      }),
+    ).rejects.toMatchObject({
+      status: 429,
+      priorAttemptAmbiguous: true,
+    });
+  });
+
+  it("keeps definitive retry history when prior attempts were only throttled", async () => {
+    const client = new FabricClient({
+      endpoint: "https://api.fabric.microsoft.com",
+      scope: "scope",
+      tokenProvider,
+      fetchImpl: vi
+        .fn()
+        .mockResolvedValueOnce(
+          new Response("throttled", { status: 429 }),
+        )
+        .mockResolvedValueOnce(
+          new Response("invalid", { status: 400 }),
+        ),
+      sleep: async () => undefined,
+      maxRetries: 1,
+    });
+
+    await expect(
+      client.request("PUT", "/v1/test", {
+        body: { value: 1 },
+        retryable: true,
+      }),
+    ).rejects.toMatchObject({
+      status: 400,
+      priorAttemptAmbiguous: false,
+    });
+  });
+
+  it("preserves a throttling response when Retry-After exceeds the deadline", async () => {
+    const sleep = vi.fn(async () => undefined);
+    const client = new FabricClient({
+      endpoint: "https://api.fabric.microsoft.com",
+      scope: "scope",
+      tokenProvider,
+      fetchImpl: vi.fn(
+        async () =>
+          new Response("throttled", {
+            status: 429,
+            headers: { "retry-after": "120" },
+          }),
+      ),
+      sleep,
+      requestTimeoutMs: 30_000,
+    });
+
+    await expect(
+      client.request("PUT", "/v1/test", {
+        body: { value: 1 },
+        retryable: true,
+      }),
+    ).rejects.toMatchObject({
+      status: 429,
+      priorAttemptAmbiguous: false,
+    });
+    expect(sleep).not.toHaveBeenCalled();
+  });
+
+  it("does not retry ambiguous failures in throttling-only mode", async () => {
+    const fetchImpl = vi.fn(
+      async () => new Response("unavailable", { status: 503 }),
+    );
+    const client = new FabricClient({
+      endpoint: "https://api.fabric.microsoft.com",
+      scope: "scope",
+      tokenProvider,
+      fetchImpl,
+      sleep: async () => undefined,
+    });
+
+    await expect(
+      client.request("PUT", "/v1/test", {
+        body: { value: 1 },
+        retryable: true,
+        retryMode: "throttling-only",
+      }),
+    ).rejects.toMatchObject({ status: 503 });
+    expect(fetchImpl).toHaveBeenCalledOnce();
+  });
+
   it("does not retry a failed POST automatically", async () => {
     const fetchImpl = vi.fn(async () => new Response("unavailable", { status: 503 }));
     const client = new FabricClient({
@@ -99,6 +206,32 @@ describe("Fabric API client", () => {
     });
 
     expect(lifecycle).toEqual(["DISPATCH", "FETCH"]);
+  });
+
+  it("forwards caller-supplied headers without overriding authorization or content-type", async () => {
+    let capturedHeaders: Headers | undefined;
+    const client = new FabricClient({
+      endpoint: "https://api.fabric.microsoft.com",
+      scope: "scope",
+      tokenProvider,
+      fetchImpl: vi.fn(async (_input, init?: RequestInit) => {
+        capturedHeaders = new Headers(init?.headers);
+        return new Response(JSON.stringify({ ok: true }), { status: 200 });
+      }),
+    });
+
+    await client.request("PUT", "/v1/test", {
+      body: { value: 1 },
+      headers: {
+        "if-match": '"etag-1"',
+        authorization: "attacker-supplied",
+        "content-type": "text/plain",
+      },
+    });
+
+    expect(capturedHeaders?.get("if-match")).toBe('"etag-1"');
+    expect(capturedHeaders?.get("authorization")).toBe("Bearer token");
+    expect(capturedHeaders?.get("content-type")).toBe("application/json");
   });
 
   it("follows same-origin pagination", async () => {

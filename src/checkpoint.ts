@@ -163,6 +163,51 @@ function assertCheckpointMatchesPlan(
       );
     }
   }
+  if (checkpoint.networkProtection) {
+    const planned = plan.networkProtection;
+    if (!planned || !planned.workspaceId) {
+      throw new Error(
+        "Checkpoint network protection does not match the approved deployment plan.",
+      );
+    }
+    if (checkpoint.networkProtection.workspaceId !== planned.workspaceId) {
+      throw new Error(
+        "Checkpoint network protection workspace ID does not match the approved deployment plan.",
+      );
+    }
+    assertCheckpointNetworkSurfaceMatchesPlan(
+      "communicationPolicy",
+      checkpoint.networkProtection.communicationPolicy,
+      planned.communicationPolicy,
+    );
+    assertCheckpointNetworkSurfaceMatchesPlan(
+      "outboundCloudConnectionRules",
+      checkpoint.networkProtection.outboundCloudConnectionRules,
+      planned.outboundCloudConnectionRules,
+    );
+    assertCheckpointNetworkSurfaceMatchesPlan(
+      "outboundGatewayRules",
+      checkpoint.networkProtection.outboundGatewayRules,
+      planned.outboundGatewayRules,
+    );
+    if (checkpoint.networkProtection.completedAt) {
+      assertCompletedNetworkSurface(
+        "communicationPolicy",
+        checkpoint.networkProtection.communicationPolicy,
+        planned.communicationPolicy,
+      );
+      assertCompletedNetworkSurface(
+        "outboundCloudConnectionRules",
+        checkpoint.networkProtection.outboundCloudConnectionRules,
+        planned.outboundCloudConnectionRules,
+      );
+      assertCompletedNetworkSurface(
+        "outboundGatewayRules",
+        checkpoint.networkProtection.outboundGatewayRules,
+        planned.outboundGatewayRules,
+      );
+    }
+  }
   const plannedItems = new Map(
     plan.items.map((item) => [item.logicalId, item]),
   );
@@ -442,6 +487,33 @@ function checkpointProofMatchesPlan(
   );
 }
 
+function assertCheckpointNetworkSurfaceMatchesPlan(
+  label: string,
+  surfaceState: { desiredHash: string } | undefined,
+  plannedSurface: { desiredHash: string } | undefined,
+): void {
+  if (!surfaceState) {
+    return;
+  }
+  if (!plannedSurface || surfaceState.desiredHash !== plannedSurface.desiredHash) {
+    throw new Error(
+      `Checkpoint network protection '${label}' does not match the approved deployment plan.`,
+    );
+  }
+}
+
+function assertCompletedNetworkSurface(
+  label: string,
+  surfaceState: { phase: "submitting" | "verified" } | undefined,
+  plannedSurface: { desiredHash: string } | undefined,
+): void {
+  if (plannedSurface && surfaceState?.phase !== "verified") {
+    throw new Error(
+      `Checkpoint network protection is marked complete, but '${label}' is not verified.`,
+    );
+  }
+}
+
 function isCheckpoint(value: unknown): value is ApplyCheckpoint {
   if (value === null || typeof value !== "object") {
     return false;
@@ -486,6 +558,8 @@ function isCheckpoint(value: unknown): value is ApplyCheckpoint {
         !Array.isArray(checkpoint.tagAssignments))) &&
     (checkpoint.workspace === undefined ||
       isCheckpointWorkspace(checkpoint.workspace)) &&
+    (checkpoint.networkProtection === undefined ||
+      isCheckpointNetworkProtection(checkpoint.networkProtection)) &&
     (checkpoint.sourceCommit === undefined ||
       typeof checkpoint.sourceCommit === "string")
   ) {
@@ -890,6 +964,51 @@ function isCheckpointWorkspace(value: unknown): boolean {
       typeof workspace.physicalId === "string") &&
     typeof workspace.updatedAt === "string" &&
     !Number.isNaN(Date.parse(workspace.updatedAt))
+  );
+}
+
+function isCheckpointNetworkProtection(value: unknown): boolean {
+  if (value === null || typeof value !== "object") {
+    return false;
+  }
+  const state = value as Partial<
+    NonNullable<ApplyCheckpoint["networkProtection"]>
+  >;
+  const surfaces = [
+    state.communicationPolicy,
+    state.outboundCloudConnectionRules,
+    state.outboundGatewayRules,
+  ];
+  return (
+    typeof state.workspaceId === "string" &&
+    state.workspaceId.length > 0 &&
+    (state.communicationPolicy === undefined ||
+      isCheckpointNetworkSurface(state.communicationPolicy)) &&
+    (state.outboundCloudConnectionRules === undefined ||
+      isCheckpointNetworkSurface(state.outboundCloudConnectionRules)) &&
+    (state.outboundGatewayRules === undefined ||
+      isCheckpointNetworkSurface(state.outboundGatewayRules)) &&
+    (state.completedAt === undefined ||
+      (typeof state.completedAt === "string" &&
+        !Number.isNaN(Date.parse(state.completedAt)) &&
+        surfaces.every(
+          (surface) => surface === undefined || surface.phase === "verified",
+        ))) &&
+    typeof state.updatedAt === "string" &&
+    !Number.isNaN(Date.parse(state.updatedAt))
+  );
+}
+
+function isCheckpointNetworkSurface(value: unknown): boolean {
+  if (value === null || typeof value !== "object") {
+    return false;
+  }
+  const surface = value as Record<string, unknown>;
+  return (
+    /^[a-f0-9]{64}$/.test(String(surface.desiredHash)) &&
+    (surface.phase === "submitting" || surface.phase === "verified") &&
+    typeof surface.updatedAt === "string" &&
+    !Number.isNaN(Date.parse(surface.updatedAt as string))
   );
 }
 

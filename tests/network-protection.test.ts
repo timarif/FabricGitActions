@@ -1,0 +1,751 @@
+import { describe, expect, it, vi } from "vitest";
+
+import type { FetchLike } from "../src/fabric/auth";
+import { FabricClient } from "../src/fabric/client";
+import {
+  hashCommunicationPolicy,
+  hashOutboundCloudConnectionRules,
+  hashOutboundGatewayRules,
+  NetworkProtectionAdapter,
+  normalizeNetworkProtection,
+  quoteEtag,
+} from "../src/fabric/network-protection";
+import type { NetworkProtectionManifest } from "../src/types";
+
+const tokenProvider = {
+  getToken: async () => "token",
+};
+
+const WORKSPACE_ID = "11111111-1111-4111-8111-111111111111";
+const OTHER_WORKSPACE_ID = "22222222-2222-4222-8222-222222222222";
+const GATEWAY_ID_A = "33333333-3333-4333-8333-333333333333";
+const GATEWAY_ID_B = "44444444-4444-4444-8444-444444444444";
+
+function createAdapter(fetchImpl: FetchLike): NetworkProtectionAdapter {
+  return new NetworkProtectionAdapter(
+    new FabricClient({
+      endpoint: "https://api.fabric.microsoft.com",
+      scope: "scope",
+      tokenProvider,
+      fetchImpl,
+      sleep: async () => undefined,
+    }),
+  );
+}
+
+function jsonResponse(
+  body: unknown,
+  status = 200,
+  headers: Record<string, string> = {},
+): Response {
+  return new Response(JSON.stringify(body), { status, headers });
+}
+
+function desiredAllowOutbound(): NetworkProtectionManifest {
+  return {
+    communicationPolicy: {
+      inboundDefaultAction: "Allow",
+      outboundDefaultAction: "Allow",
+    },
+  };
+}
+
+function desiredDenyOutboundWithRules(): NetworkProtectionManifest {
+  return {
+    communicationPolicy: {
+      inboundDefaultAction: "Allow",
+      outboundDefaultAction: "Deny",
+    },
+    outboundCloudConnectionRules: {
+      defaultAction: "Deny",
+      rules: [
+        {
+          connectionType: "SQL",
+          defaultAction: "Deny",
+          allowedEndpoints: [{ hostnamePattern: "*.database.windows.net" }],
+        },
+        {
+          connectionType: "Web",
+          defaultAction: "Allow",
+        },
+      ],
+    },
+    outboundGatewayRules: {
+      defaultAction: "Deny",
+      allowedGateways: [{ id: GATEWAY_ID_B }, { id: GATEWAY_ID_A }],
+    },
+  };
+}
+
+describe("normalizeNetworkProtection", () => {
+  it("sorts rules, endpoints, workspaces, and gateway IDs deterministically", () => {
+    const desired: NetworkProtectionManifest = {
+      communicationPolicy: {
+        inboundDefaultAction: "Allow",
+        outboundDefaultAction: "Deny",
+      },
+      outboundCloudConnectionRules: {
+        defaultAction: "Deny",
+        rules: [
+          {
+            connectionType: "Web",
+            defaultAction: "Allow",
+          },
+          {
+            connectionType: "LakeHouse",
+            defaultAction: "Deny",
+            allowedWorkspaces: [
+              { workspaceId: OTHER_WORKSPACE_ID.toUpperCase() },
+              { workspaceId: WORKSPACE_ID },
+            ],
+          },
+          {
+            connectionType: "SQL",
+            defaultAction: "Deny",
+            allowedEndpoints: [
+              { hostnamePattern: "*.contoso.com" },
+              { hostnamePattern: "*.database.windows.net" },
+            ],
+          },
+        ],
+      },
+      outboundGatewayRules: {
+        defaultAction: "Deny",
+        allowedGateways: [
+          { id: GATEWAY_ID_B },
+          { id: GATEWAY_ID_A.toUpperCase() },
+        ],
+      },
+    };
+
+    const canonical = normalizeNetworkProtection(desired);
+
+    expect(canonical.outboundCloudConnectionRules?.rules.map((rule) => rule.connectionType)).toEqual([
+      "LakeHouse",
+      "SQL",
+      "Web",
+    ]);
+    expect(
+      canonical.outboundCloudConnectionRules?.rules[0]?.allowedWorkspaces?.map(
+        (workspace) => workspace.workspaceId,
+      ),
+    ).toEqual([WORKSPACE_ID.toLowerCase(), OTHER_WORKSPACE_ID.toLowerCase()]);
+    expect(
+      canonical.outboundCloudConnectionRules?.rules[1]?.allowedEndpoints?.map(
+        (endpoint) => endpoint.hostnamePattern,
+      ),
+    ).toEqual(["*.contoso.com", "*.database.windows.net"]);
+    expect(canonical.outboundGatewayRules?.allowedGateways.map((gateway) => gateway.id)).toEqual(
+      [GATEWAY_ID_A.toLowerCase(), GATEWAY_ID_B.toLowerCase()],
+    );
+  });
+
+  it("canonicalizes empty optional allowlists to omission", () => {
+    const omitted = normalizeNetworkProtection({
+      communicationPolicy: {
+        inboundDefaultAction: "Allow",
+        outboundDefaultAction: "Deny",
+      },
+      outboundCloudConnectionRules: {
+        defaultAction: "Deny",
+        rules: [
+          {
+            connectionType: "Web",
+            defaultAction: "Allow",
+          },
+        ],
+      },
+    });
+    const explicitEmpty = normalizeNetworkProtection({
+      communicationPolicy: {
+        inboundDefaultAction: "Allow",
+        outboundDefaultAction: "Deny",
+      },
+      outboundCloudConnectionRules: {
+        defaultAction: "Deny",
+        rules: [
+          {
+            connectionType: "Web",
+            defaultAction: "Allow",
+            allowedEndpoints: [],
+            allowedWorkspaces: [],
+          },
+        ],
+      },
+    });
+
+    expect(explicitEmpty).toEqual(omitted);
+    expect(
+      hashOutboundCloudConnectionRules(
+        explicitEmpty.outboundCloudConnectionRules!,
+      ),
+    ).toBe(
+      hashOutboundCloudConnectionRules(
+        omitted.outboundCloudConnectionRules!,
+      ),
+    );
+  });
+
+  it("rejects duplicate connection types, hostnames, workspace IDs, and gateway IDs", () => {
+    expect(() =>
+      normalizeNetworkProtection({
+        communicationPolicy: {
+          inboundDefaultAction: "Allow",
+          outboundDefaultAction: "Deny",
+        },
+        outboundCloudConnectionRules: {
+          defaultAction: "Deny",
+          rules: [
+            { connectionType: "SQL", defaultAction: "Deny" },
+            { connectionType: "SQL", defaultAction: "Allow" },
+          ],
+        },
+      }),
+    ).toThrow("duplicate connectionType 'SQL'");
+
+    expect(() =>
+      normalizeNetworkProtection({
+        communicationPolicy: {
+          inboundDefaultAction: "Allow",
+          outboundDefaultAction: "Deny",
+        },
+        outboundCloudConnectionRules: {
+          defaultAction: "Deny",
+          rules: [
+            {
+              connectionType: "SQL",
+              defaultAction: "Deny",
+              allowedEndpoints: [
+                { hostnamePattern: "*.contoso.com" },
+                { hostnamePattern: "*.contoso.com" },
+              ],
+            },
+          ],
+        },
+      }),
+    ).toThrow("duplicate hostnamePattern");
+
+    expect(() =>
+      normalizeNetworkProtection({
+        communicationPolicy: {
+          inboundDefaultAction: "Allow",
+          outboundDefaultAction: "Deny",
+        },
+        outboundCloudConnectionRules: {
+          defaultAction: "Deny",
+          rules: [
+            {
+              connectionType: "LakeHouse",
+              defaultAction: "Deny",
+              allowedWorkspaces: [
+                { workspaceId: WORKSPACE_ID },
+                { workspaceId: WORKSPACE_ID.toUpperCase() },
+              ],
+            },
+          ],
+        },
+      }),
+    ).toThrow("duplicate workspaceId");
+
+    expect(() =>
+      normalizeNetworkProtection({
+        communicationPolicy: {
+          inboundDefaultAction: "Allow",
+          outboundDefaultAction: "Deny",
+        },
+        outboundGatewayRules: {
+          defaultAction: "Deny",
+          allowedGateways: [{ id: GATEWAY_ID_A }, { id: GATEWAY_ID_A }],
+        },
+      }),
+    ).toThrow("duplicate gateway id");
+  });
+
+  it("rejects blank connection types and hostname patterns", () => {
+    expect(() =>
+      normalizeNetworkProtection({
+        communicationPolicy: {
+          inboundDefaultAction: "Allow",
+          outboundDefaultAction: "Deny",
+        },
+        outboundCloudConnectionRules: {
+          defaultAction: "Deny",
+          rules: [{ connectionType: "   ", defaultAction: "Deny" }],
+        },
+      }),
+    ).toThrow("non-blank string");
+
+    expect(() =>
+      normalizeNetworkProtection({
+        communicationPolicy: {
+          inboundDefaultAction: "Allow",
+          outboundDefaultAction: "Deny",
+        },
+        outboundCloudConnectionRules: {
+          defaultAction: "Deny",
+          rules: [
+            {
+              connectionType: "Web",
+              defaultAction: "Deny",
+              allowedEndpoints: [{ hostnamePattern: "  " }],
+            },
+          ],
+        },
+      }),
+    ).toThrow("non-blank string");
+  });
+
+  it("rejects non-GUID workspace, gateway, and top-level workspace IDs", () => {
+    expect(() =>
+      normalizeNetworkProtection({
+        workspaceId: "not-a-guid",
+        communicationPolicy: {
+          inboundDefaultAction: "Allow",
+          outboundDefaultAction: "Allow",
+        },
+      }),
+    ).toThrow("must be a GUID");
+
+    expect(() =>
+      normalizeNetworkProtection({
+        communicationPolicy: {
+          inboundDefaultAction: "Allow",
+          outboundDefaultAction: "Deny",
+        },
+        outboundGatewayRules: {
+          defaultAction: "Deny",
+          allowedGateways: [{ id: "not-a-guid" }],
+        },
+      }),
+    ).toThrow("must be a GUID");
+
+    expect(() =>
+      normalizeNetworkProtection({
+        communicationPolicy: {
+          inboundDefaultAction: "Allow",
+          outboundDefaultAction: "Deny",
+        },
+        outboundCloudConnectionRules: {
+          defaultAction: "Deny",
+          rules: [
+            {
+              connectionType: "LakeHouse",
+              defaultAction: "Deny",
+              allowedWorkspaces: [{ workspaceId: "not-a-guid" }],
+            },
+          ],
+        },
+      }),
+    ).toThrow("must be a GUID");
+  });
+
+  it("rejects inbound Deny with a clear Phase 5B message", () => {
+    expect(() =>
+      normalizeNetworkProtection({
+        communicationPolicy: {
+          inboundDefaultAction: "Deny",
+          outboundDefaultAction: "Allow",
+        },
+      }),
+    ).toThrow("Phase 5B");
+  });
+
+  it("rejects outbound rules declared while outboundDefaultAction is Allow", () => {
+    expect(() =>
+      normalizeNetworkProtection({
+        communicationPolicy: {
+          inboundDefaultAction: "Allow",
+          outboundDefaultAction: "Allow",
+        },
+        outboundCloudConnectionRules: {
+          defaultAction: "Deny",
+          rules: [],
+        },
+      }),
+    ).toThrow("may only be declared when communicationPolicy.outboundDefaultAction is 'Deny'");
+
+    expect(() =>
+      normalizeNetworkProtection({
+        communicationPolicy: {
+          inboundDefaultAction: "Allow",
+          outboundDefaultAction: "Allow",
+        },
+        outboundGatewayRules: {
+          defaultAction: "Deny",
+          allowedGateways: [],
+        },
+      }),
+    ).toThrow("may only be declared when communicationPolicy.outboundDefaultAction is 'Deny'");
+  });
+
+  it("requires explicit defaultAction fields", () => {
+    expect(() =>
+      normalizeNetworkProtection({
+        communicationPolicy: {
+          outboundDefaultAction: "Allow",
+        } as never,
+      }),
+    ).toThrow("must be either 'Allow' or 'Deny'");
+  });
+});
+
+describe("quoteEtag", () => {
+  it("wraps a bare etag in quotes", () => {
+    expect(quoteEtag("abc123")).toBe('"abc123"');
+  });
+
+  it("leaves an already-quoted etag unchanged", () => {
+    expect(quoteEtag('"abc123"')).toBe('"abc123"');
+  });
+});
+
+describe("NetworkProtectionAdapter GET/PUT", () => {
+  it("captures the ETag on GET and parses the nested communication policy body", async () => {
+    const adapter = createAdapter(
+      vi.fn(async () =>
+        jsonResponse(
+          {
+            inbound: { publicAccessRules: { defaultAction: "Allow" } },
+            outbound: { publicAccessRules: { defaultAction: "Deny" } },
+          },
+          200,
+          { etag: '"policy-etag"' },
+        ),
+      ),
+    );
+
+    const result = await adapter.getCommunicationPolicy(WORKSPACE_ID);
+
+    expect(result.etag).toBe('"policy-etag"');
+    expect(result.policy.inbound.publicAccessRules.defaultAction).toBe("Allow");
+    expect(result.policy.outbound.publicAccessRules.defaultAction).toBe("Deny");
+  });
+
+  it("sends a quoted If-Match header on PUT only when an ETag is available", async () => {
+    const requests: Array<{ url: string; headers: Headers; body: unknown }> = [];
+    const adapter = createAdapter(
+      vi.fn(async (input: string | URL, init?: RequestInit) => {
+        requests.push({
+          url: String(input),
+          headers: new Headers(init?.headers),
+          body: init?.body ? JSON.parse(String(init.body)) : undefined,
+        });
+        return jsonResponse(
+          {
+            inbound: { publicAccessRules: { defaultAction: "Allow" } },
+            outbound: { publicAccessRules: { defaultAction: "Deny" } },
+          },
+          200,
+          { etag: '"new-etag"' },
+        );
+      }),
+    );
+
+    await adapter.putCommunicationPolicy(WORKSPACE_ID, {
+      inbound: { publicAccessRules: { defaultAction: "Allow" } },
+      outbound: { publicAccessRules: { defaultAction: "Deny" } },
+    });
+    await adapter.putCommunicationPolicy(
+      WORKSPACE_ID,
+      {
+        inbound: { publicAccessRules: { defaultAction: "Allow" } },
+        outbound: { publicAccessRules: { defaultAction: "Deny" } },
+      },
+      { ifMatchEtag: "bare-etag" },
+    );
+
+    expect(requests[0]?.url).toMatch(
+      /\/v1\/workspaces\/.+\/networking\/communicationPolicy$/,
+    );
+    expect(requests[0]?.headers.get("if-match")).toBeNull();
+    expect(requests[1]?.headers.get("if-match")).toBe('"bare-etag"');
+  });
+
+  it("retries a throttled communication-policy PUT with the same body", async () => {
+    const desired = normalizeNetworkProtection(
+      desiredAllowOutbound(),
+    ).communicationPolicy;
+    const onDispatch = vi.fn();
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(
+        jsonResponse({ errorCode: "TooManyRequests" }, 429, {
+          "retry-after": "0",
+        }),
+      )
+      .mockResolvedValueOnce(jsonResponse(desired));
+    const adapter = createAdapter(fetchImpl);
+
+    await expect(
+      adapter.putCommunicationPolicy(WORKSPACE_ID, desired, {
+        onDispatch,
+      }),
+    ).resolves.toMatchObject({ policy: desired });
+
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(onDispatch).toHaveBeenCalledTimes(2);
+    expect(fetchImpl.mock.calls[0]?.[1]?.body).toBe(
+      fetchImpl.mock.calls[1]?.[1]?.body,
+    );
+  });
+
+  it("does not retry an ambiguous outbound-rule PUT failure", async () => {
+    const fetchImpl = vi.fn(async () => {
+      throw new Error("connection reset");
+    });
+    const adapter = createAdapter(fetchImpl);
+
+    await expect(
+      adapter.putOutboundCloudConnectionRules(WORKSPACE_ID, {
+        defaultAction: "Deny",
+        rules: [],
+      }),
+    ).rejects.toThrow("connection reset");
+    expect(fetchImpl).toHaveBeenCalledOnce();
+  });
+
+  it("round-trips outbound cloud connection rules through GET and PUT", async () => {
+    const requests: Array<{ url: string; method: string }> = [];
+    const adapter = createAdapter(
+      vi.fn(async (input: string | URL, init?: RequestInit) => {
+        requests.push({ url: String(input), method: init?.method ?? "GET" });
+        return jsonResponse({
+          defaultAction: "Deny",
+          rules: [{ connectionType: "Web", defaultAction: "Allow" }],
+        });
+      }),
+    );
+
+    const observed = await adapter.getOutboundCloudConnectionRules(WORKSPACE_ID);
+    expect(observed.rules).toEqual([{ connectionType: "Web", defaultAction: "Allow" }]);
+
+    const applied = await adapter.putOutboundCloudConnectionRules(WORKSPACE_ID, {
+      defaultAction: "Deny",
+      rules: [],
+    });
+    expect(applied.defaultAction).toBe("Deny");
+
+    expect(requests[0]?.url).toMatch(
+      /\/v1\/workspaces\/.+\/networking\/communicationPolicy\/outbound\/connections$/,
+    );
+    expect(requests[1]?.method).toBe("PUT");
+  });
+
+  it("round-trips outbound gateway rules through GET and PUT", async () => {
+    const adapter = createAdapter(
+      vi.fn(async (_input: string | URL, init?: RequestInit) => {
+        if (init?.method === "PUT") {
+          return jsonResponse(JSON.parse(String(init.body)));
+        }
+        return jsonResponse({
+          defaultAction: "Deny",
+          allowedGateways: [{ id: GATEWAY_ID_A }],
+        });
+      }),
+    );
+
+    await expect(
+      adapter.getOutboundGatewayRules(WORKSPACE_ID),
+    ).resolves.toEqual({
+      defaultAction: "Deny",
+      allowedGateways: [{ id: GATEWAY_ID_A }],
+    });
+    await expect(
+      adapter.putOutboundGatewayRules(WORKSPACE_ID, {
+        defaultAction: "Deny",
+        allowedGateways: [{ id: GATEWAY_ID_B }],
+      }),
+    ).resolves.toEqual({
+      defaultAction: "Deny",
+      allowedGateways: [{ id: GATEWAY_ID_B }],
+    });
+  });
+});
+
+describe("NetworkProtectionAdapter plan", () => {
+  it("reports no-op when the observed policy already matches the desired configuration", async () => {
+    const adapter = createAdapter(
+      vi.fn(async () =>
+        jsonResponse({
+          inbound: { publicAccessRules: { defaultAction: "Allow" } },
+          outbound: { publicAccessRules: { defaultAction: "Allow" } },
+        }),
+      ),
+    );
+
+    const result = await adapter.plan(WORKSPACE_ID, desiredAllowOutbound());
+
+    expect(result.communicationPolicy).toMatchObject({
+      action: "no-op",
+      observedInboundDefaultAction: "Allow",
+      observedOutboundDefaultAction: "Allow",
+      desiredInboundDefaultAction: "Allow",
+      desiredOutboundDefaultAction: "Allow",
+      isRelaxation: false,
+    });
+    expect(result.outboundCloudConnectionRules).toBeUndefined();
+    expect(result.outboundGatewayRules).toBeUndefined();
+  });
+
+  it("reports update and isRelaxation for an outbound Deny -> Allow transition", async () => {
+    const adapter = createAdapter(
+      vi.fn(async () =>
+        jsonResponse({
+          inbound: { publicAccessRules: { defaultAction: "Allow" } },
+          outbound: { publicAccessRules: { defaultAction: "Deny" } },
+        }),
+      ),
+    );
+
+    const result = await adapter.plan(WORKSPACE_ID, desiredAllowOutbound());
+
+    expect(result.communicationPolicy).toMatchObject({
+      action: "update",
+      isRelaxation: true,
+    });
+  });
+
+  it("reports isRelaxation when inbound is observed Deny even though it is forced back to Allow", async () => {
+    const adapter = createAdapter(
+      vi.fn(async () =>
+        jsonResponse({
+          inbound: { publicAccessRules: { defaultAction: "Deny" } },
+          outbound: { publicAccessRules: { defaultAction: "Allow" } },
+        }),
+      ),
+    );
+
+    const result = await adapter.plan(WORKSPACE_ID, desiredAllowOutbound());
+
+    expect(result.communicationPolicy).toMatchObject({
+      action: "update",
+      isRelaxation: true,
+    });
+  });
+
+  it("uses the OAP-not-enabled sentinel and skips reading rules when outbound is still Allow", async () => {
+    const requestedPaths: string[] = [];
+    const adapter = createAdapter(
+      vi.fn(async (input: string | URL) => {
+        requestedPaths.push(String(input));
+        return jsonResponse({
+          inbound: { publicAccessRules: { defaultAction: "Allow" } },
+          outbound: { publicAccessRules: { defaultAction: "Allow" } },
+        });
+      }),
+    );
+
+    const result = await adapter.plan(WORKSPACE_ID, desiredDenyOutboundWithRules());
+
+    expect(result.communicationPolicy.action).toBe("update");
+    expect(result.outboundCloudConnectionRules).toMatchObject({ action: "update" });
+    expect(result.outboundGatewayRules).toMatchObject({ action: "update" });
+    expect(
+      requestedPaths.some((path) => path.includes("/outbound/connections")),
+    ).toBe(false);
+    expect(
+      requestedPaths.some((path) => path.includes("/outbound/gateways")),
+    ).toBe(false);
+  });
+
+  it("reads and compares outbound rules once OAP is already enabled", async () => {
+    const adapter = createAdapter(
+      vi.fn(async (input: string | URL) => {
+        const url = String(input);
+        if (url.includes("/outbound/connections")) {
+          return jsonResponse({
+            defaultAction: "Deny",
+            rules: [
+              {
+                connectionType: "SQL",
+                defaultAction: "Deny",
+                allowedEndpoints: [{ hostnamePattern: "*.database.windows.net" }],
+              },
+              { connectionType: "Web", defaultAction: "Allow" },
+            ],
+          });
+        }
+        if (url.includes("/outbound/gateways")) {
+          return jsonResponse({
+            defaultAction: "Deny",
+            allowedGateways: [{ id: GATEWAY_ID_A }, { id: GATEWAY_ID_B }],
+          });
+        }
+        return jsonResponse({
+          inbound: { publicAccessRules: { defaultAction: "Allow" } },
+          outbound: { publicAccessRules: { defaultAction: "Deny" } },
+        });
+      }),
+    );
+
+    const result = await adapter.plan(WORKSPACE_ID, desiredDenyOutboundWithRules());
+
+    expect(result.communicationPolicy.action).toBe("no-op");
+    expect(result.outboundCloudConnectionRules).toMatchObject({ action: "no-op" });
+    expect(result.outboundGatewayRules).toMatchObject({ action: "no-op" });
+  });
+
+  it("reports update when the observed outbound rules differ", async () => {
+    const adapter = createAdapter(
+      vi.fn(async (input: string | URL) => {
+        const url = String(input);
+        if (url.includes("/outbound/connections")) {
+          return jsonResponse({ defaultAction: "Allow", rules: [] });
+        }
+        if (url.includes("/outbound/gateways")) {
+          return jsonResponse({ defaultAction: "Deny", allowedGateways: [] });
+        }
+        return jsonResponse({
+          inbound: { publicAccessRules: { defaultAction: "Allow" } },
+          outbound: { publicAccessRules: { defaultAction: "Deny" } },
+        });
+      }),
+    );
+
+    const result = await adapter.plan(WORKSPACE_ID, desiredDenyOutboundWithRules());
+
+    expect(result.outboundCloudConnectionRules).toMatchObject({ action: "update" });
+    expect(result.outboundGatewayRules).toMatchObject({ action: "update" });
+  });
+
+  it("blocks planning when an explicit target workspace is not found", async () => {
+    const adapter = createAdapter(
+      vi.fn(async () =>
+        jsonResponse({ errorCode: "WorkspaceNotFound" }, 404),
+      ),
+    );
+
+    const result = await adapter.plan(WORKSPACE_ID, {
+      workspaceId: OTHER_WORKSPACE_ID,
+      communicationPolicy: {
+        inboundDefaultAction: "Allow",
+        outboundDefaultAction: "Allow",
+      },
+    });
+
+    expect(result.communicationPolicy.action).toBe("blocked");
+    expect(result.workspaceId).toBe(OTHER_WORKSPACE_ID.toLowerCase());
+  });
+});
+
+describe("network protection hashing", () => {
+  it("produces stable hashes independent of input key order", () => {
+    const canonical = normalizeNetworkProtection(desiredDenyOutboundWithRules());
+    const hashA = hashCommunicationPolicy(canonical.communicationPolicy);
+    const hashB = hashCommunicationPolicy({
+      outbound: canonical.communicationPolicy.outbound,
+      inbound: canonical.communicationPolicy.inbound,
+    });
+    expect(hashA).toBe(hashB);
+    expect(canonical.outboundCloudConnectionRules).toBeDefined();
+    expect(canonical.outboundGatewayRules).toBeDefined();
+    if (canonical.outboundCloudConnectionRules) {
+      expect(typeof hashOutboundCloudConnectionRules(canonical.outboundCloudConnectionRules)).toBe(
+        "string",
+      );
+    }
+    if (canonical.outboundGatewayRules) {
+      expect(typeof hashOutboundGatewayRules(canonical.outboundGatewayRules)).toBe("string");
+    }
+  });
+});

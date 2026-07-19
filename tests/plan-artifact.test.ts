@@ -4,6 +4,7 @@ import path from "node:path";
 
 import { describe, expect, it } from "vitest";
 
+import { hashCommunicationPolicy } from "../src/fabric/network-protection";
 import { loadApprovedPlan } from "../src/plan-artifact";
 import { buildPlan, rehashPlan } from "../src/planner";
 import type { LoadedManifest } from "../src/types";
@@ -289,6 +290,149 @@ describe("approved plan loading", () => {
     );
     expect(() => loadApprovedPlan(planPath)).toThrow(
       "invalid structure",
+    );
+  });
+
+  it("round-trips a plan with configured network protection surfaces", () => {
+    const root = mkdtempSync(path.join(tmpdir(), "fabric-plan-"));
+    const planPath = path.join(root, "plan.json");
+    const plan = createPlan();
+    const desiredPolicyHash = hashCommunicationPolicy({
+      inbound: { publicAccessRules: { defaultAction: "Allow" } },
+      outbound: { publicAccessRules: { defaultAction: "Deny" } },
+    });
+    const observedPolicyHash = hashCommunicationPolicy({
+      inbound: { publicAccessRules: { defaultAction: "Allow" } },
+      outbound: { publicAccessRules: { defaultAction: "Allow" } },
+    });
+    plan.networkProtection = {
+      workspaceId: "11111111-1111-4111-8111-111111111111",
+      communicationPolicy: {
+        action: "update",
+        reason: "Outbound default action differs.",
+        desiredHash: desiredPolicyHash,
+        observedStateHash: observedPolicyHash,
+        etag: '"etag-1"',
+        desiredInboundDefaultAction: "Allow",
+        desiredOutboundDefaultAction: "Deny",
+        observedInboundDefaultAction: "Allow",
+        observedOutboundDefaultAction: "Allow",
+        isRelaxation: false,
+      },
+      outboundGatewayRules: {
+        action: "no-op",
+        reason: "Matches.",
+        desiredHash: "c".repeat(64),
+        observedStateHash: "c".repeat(64),
+      },
+    };
+    const approved = rehashPlan(plan);
+    writeFileSync(planPath, JSON.stringify(approved), "utf8");
+
+    expect(
+      loadApprovedPlan(planPath).networkProtection?.communicationPolicy,
+    ).toMatchObject({ action: "update", isRelaxation: false });
+  });
+
+  it("rejects inconsistent network policy relaxation metadata", () => {
+    const root = mkdtempSync(path.join(tmpdir(), "fabric-plan-"));
+    const planPath = path.join(root, "plan.json");
+    const plan = createPlan();
+    plan.networkProtection = {
+      workspaceId: "11111111-1111-4111-8111-111111111111",
+      communicationPolicy: {
+        action: "update",
+        reason: "Outbound policy is being relaxed.",
+        desiredHash: hashCommunicationPolicy({
+          inbound: { publicAccessRules: { defaultAction: "Allow" } },
+          outbound: { publicAccessRules: { defaultAction: "Allow" } },
+        }),
+        observedStateHash: hashCommunicationPolicy({
+          inbound: { publicAccessRules: { defaultAction: "Allow" } },
+          outbound: { publicAccessRules: { defaultAction: "Deny" } },
+        }),
+        desiredInboundDefaultAction: "Allow",
+        desiredOutboundDefaultAction: "Allow",
+        observedInboundDefaultAction: "Allow",
+        observedOutboundDefaultAction: "Deny",
+        isRelaxation: false,
+      },
+    };
+    writeFileSync(
+      planPath,
+      JSON.stringify(rehashPlan(plan)),
+      "utf8",
+    );
+
+    expect(() => loadApprovedPlan(planPath)).toThrow("invalid structure");
+  });
+
+  it("rejects a network protection surface with an invalid action", () => {
+    const root = mkdtempSync(path.join(tmpdir(), "fabric-plan-"));
+    const planPath = path.join(root, "plan.json");
+    const plan = createPlan();
+    plan.networkProtection = {
+      communicationPolicy: {
+        action: "create" as never,
+        reason: "invalid",
+        desiredHash: "a".repeat(64),
+        desiredInboundDefaultAction: "Allow",
+        desiredOutboundDefaultAction: "Allow",
+      },
+    };
+    const approved = rehashPlan(plan);
+    writeFileSync(planPath, JSON.stringify(approved), "utf8");
+
+    expect(() => loadApprovedPlan(planPath)).toThrow("invalid structure");
+  });
+
+  it("rejects a network protection surface with a malformed desired hash", () => {
+    const root = mkdtempSync(path.join(tmpdir(), "fabric-plan-"));
+    const planPath = path.join(root, "plan.json");
+    const plan = createPlan();
+    plan.networkProtection = {
+      communicationPolicy: {
+        action: "no-op",
+        reason: "matches",
+        desiredHash: "not-a-hash",
+        desiredInboundDefaultAction: "Allow",
+        desiredOutboundDefaultAction: "Allow",
+      },
+    };
+    const approved = rehashPlan(plan);
+    writeFileSync(planPath, JSON.stringify(approved), "utf8");
+
+    expect(() => loadApprovedPlan(planPath)).toThrow("invalid structure");
+  });
+
+  it("rejects tampering with an approved network protection surface", () => {
+    const root = mkdtempSync(path.join(tmpdir(), "fabric-plan-"));
+    const planPath = path.join(root, "plan.json");
+    const plan = createPlan();
+    const policyHash = hashCommunicationPolicy({
+      inbound: { publicAccessRules: { defaultAction: "Allow" } },
+      outbound: { publicAccessRules: { defaultAction: "Allow" } },
+    });
+    plan.networkProtection = {
+      workspaceId: "11111111-1111-4111-8111-111111111111",
+      communicationPolicy: {
+        action: "no-op",
+        reason: "matches",
+        desiredHash: policyHash,
+        observedStateHash: policyHash,
+        desiredInboundDefaultAction: "Allow",
+        desiredOutboundDefaultAction: "Allow",
+        observedInboundDefaultAction: "Allow",
+        observedOutboundDefaultAction: "Allow",
+        isRelaxation: false,
+      },
+    };
+    const approved = rehashPlan(plan);
+    approved.networkProtection!.communicationPolicy.reason = "tampered";
+    writeFileSync(planPath, JSON.stringify(approved), "utf8");
+
+    expect(() => loadApprovedPlan(planPath)).toThrow(
+      "Approved plan hash is invalid",
     );
   });
 });

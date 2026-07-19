@@ -1,5 +1,6 @@
 import { sha256, stableJson } from "./hash";
 import { buildOfflineTagAssignment } from "./fabric/tag-assignment";
+import { buildUnknownNetworkProtectionPlan } from "./fabric/network-protection";
 import { buildDeploymentStages } from "./graph";
 import type {
   ActionMode,
@@ -67,6 +68,13 @@ export function buildPlan(
           ),
         }
       : {}),
+    ...(loadedManifest.manifest.networkProtection
+      ? {
+          networkProtection: buildUnknownNetworkProtectionPlan(
+            loadedManifest.manifest.networkProtection,
+          ),
+        }
+      : {}),
     ...(options.sourceCommit ? { sourceCommit: options.sourceCommit } : {}),
     sourceHash: loadedManifest.sourceHash,
     resolvedHash: loadedManifest.resolvedHash,
@@ -87,6 +95,7 @@ export function rehashPlan(plan: DeploymentPlan): DeploymentPlan {
     environment: plan.environment,
     workspaceId: plan.workspaceId,
     workspace: plan.workspace,
+    networkProtection: plan.networkProtection,
     sourceCommit: plan.sourceCommit,
     sourceHash: plan.sourceHash,
     resolvedHash: plan.resolvedHash,

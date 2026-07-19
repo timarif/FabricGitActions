@@ -117,6 +117,22 @@ inputs:
     description: Allow apply mode to assign the managed workspace to a Fabric capacity.
     required: false
     default: "false"
+  allow-network-policy-update:
+    description: Allow apply mode to update the workspace network communication policy.
+    required: false
+    default: "false"
+  allow-network-policy-relaxation:
+    description: Allow apply mode to relax an inbound or outbound Deny communication policy default action to Allow. Required in addition to allow-network-policy-update.
+    required: false
+    default: "false"
+  allow-outbound-cloud-connection-rule-update:
+    description: Allow apply mode to update outbound access protection cloud connection rules.
+    required: false
+    default: "false"
+  allow-outbound-gateway-rule-update:
+    description: Allow apply mode to update outbound access protection gateway rules.
+    required: false
+    default: "false"
   return-livy-api-endpoint:
     description: Return deployed Lakehouse Livy API endpoints during apply.
     required: false
@@ -149,6 +165,8 @@ outputs:
     description: Physical ID of the resolved or provisioned Fabric workspace.
   workspace-action:
     description: Planned action for the managed workspace.
+  network-protection-action:
+    description: Planned or applied action for the workspace network communication policy, or not-configured when networkProtection is absent from the manifest.
   requires-item-replan:
     description: True when a new workspace was provisioned and child items require a fresh approved plan.
   result-file:

@@ -10,13 +10,17 @@ an initial focus on Data Engineering workloads.
 > selected workspace items, disposable live E2E validation, reusable
 > promotion, and provenance-attested releases. Deployments support authenticated planning and
 > guarded create/update/delete/no-op apply with approved-plan binding, drift
-> detection, checkpoints, and result artifacts. See
+> detection, checkpoints, and result artifacts. Phase 5A adds the workspace
+> network communication policy plus outbound cloud connection and gateway
+> rules. See
 > [the roadmap](docs/ROADMAP.md).
 
 For sequential environment deployment, see the
 [dev/test/prod promotion guide](docs/PROMOTION.md).
 The [live sandbox E2E guide](docs/LIVE_E2E.md) describes disposable
 workspace validation and cleanup.
+The [Fabric platform expansion plan](docs/PHASE5_PLAN.md) defines the network
+protection, Semantic Model, Power BI report, and remaining item roadmap.
 For operational help and release verification, see
 [`SUPPORT.md`](SUPPORT.md), [`SECURITY.md`](SECURITY.md), and the
 [release guide](docs/RELEASING.md).
@@ -112,6 +116,59 @@ LakehouseTables bundles, Fabric tags, Spark Job Definitions, Data Pipelines,
 and workspace custom Spark pools are
 classified as `create`, `update`, `delete`, `no-op`, or `blocked`; later workload
 adapters remain `unknown`.
+
+## Network protection
+
+An optional top-level `networkProtection` manifest section manages the GA
+workspace network communication policy plus outbound cloud connection and
+gateway rules, either for the manifest's own managed/target workspace or an
+independent explicit `workspaceId`:
+
+```yaml
+networkProtection:
+  communicationPolicy:
+    inboundDefaultAction: Allow
+    outboundDefaultAction: Deny
+  outboundCloudConnectionRules:
+    defaultAction: Deny
+    rules:
+      - connectionType: Web
+        defaultAction: Allow
+      - connectionType: Sql
+        defaultAction: Deny
+        allowedEndpoints:
+          - hostnamePattern: "*.database.windows.net"
+  outboundGatewayRules:
+    defaultAction: Deny
+    allowedGateways:
+      - id: ${var.FABRIC_GATEWAY_ID}
+```
+
+`communicationPolicy` is required whenever `networkProtection` is present, and
+every `defaultAction` field must be explicit so nothing silently defaults to
+`Allow`. Only inbound `Allow` is accepted in this increment; inbound `Deny`
+raises a validation error until Phase 5B adds inbound firewall support.
+`outboundCloudConnectionRules` and `outboundGatewayRules` are optional and may
+only be declared while `outboundDefaultAction` is `Deny`, matching the Fabric
+API's own requirement that outbound access protection (OAP) be enabled before
+its allow lists can be read or written.
+
+Network safeguards are independent and default to `false`:
+
+- `allow-network-policy-update`
+- `allow-network-policy-relaxation` (required in addition to
+  `allow-network-policy-update` for either an inbound or outbound
+  Deny -> Allow transition)
+- `allow-outbound-cloud-connection-rule-update`
+- `allow-outbound-gateway-rule-update`
+
+Every configured surface is preflighted before any Fabric item is mutated.
+Network changes are applied only after the workspace and all item stages
+complete, except that an interrupted network mutation from a prior attempt is
+always recovered immediately once the workspace is resolved. Tightening
+outbound `Allow` -> `Deny` writes the complete communication policy first and
+then applies the configured outbound rules; relaxing `Deny` -> `Allow` applies
+any configured rule bodies first and writes the communication policy last.
 
 ## Authenticated Fabric plan with GitHub OIDC
 

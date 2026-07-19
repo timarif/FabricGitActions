@@ -23,10 +23,17 @@ export interface FabricResponse<T> {
 export interface FabricRequestOptions {
   body?: unknown;
   retryable?: boolean;
+  retryMode?: "transient" | "throttling-only";
   acceptedStatuses?: number[];
   deadlineMs?: number;
   allowOperationOrigin?: boolean;
   onDispatch?: () => void;
+  /**
+   * Additional request headers. These are merged before the fixed
+   * `authorization`, `accept`, and `content-type` headers are applied, so
+   * callers can never override authentication or payload framing.
+   */
+  headers?: Record<string, string>;
 }
 
 interface FabricErrorBody {
@@ -55,18 +62,21 @@ export class FabricApiError extends Error {
   readonly status: number;
   readonly code?: string;
   readonly requestId?: string;
+  readonly priorAttemptAmbiguous: boolean;
 
   constructor(
     message: string,
     status: number,
     code?: string,
     requestId?: string,
+    priorAttemptAmbiguous = false,
   ) {
     super(message);
     this.name = "FabricApiError";
     this.status = status;
     this.code = code;
     this.requestId = requestId;
+    this.priorAttemptAmbiguous = priorAttemptAmbiguous;
   }
 }
 
@@ -123,11 +133,20 @@ export class FabricClient {
     );
     const retryable =
       requestOptions.retryable ?? ["GET", "HEAD"].includes(method.toUpperCase());
+    const retryMode = requestOptions.retryMode ?? "transient";
+    const shouldRetryStatus = (status: number): boolean =>
+      retryable &&
+      (retryMode === "throttling-only"
+        ? status === 429
+        : isTransientStatus(status));
+    const retryTransportErrors =
+      retryable && retryMode === "transient";
     const requestDeadline = Math.min(
       requestOptions.deadlineMs ?? Number.POSITIVE_INFINITY,
       this.options.now() + this.options.requestTimeoutMs,
     );
     let attempt = 0;
+    let priorAttemptAmbiguous = false;
 
     while (true) {
       const token = await withTimeout(
@@ -155,6 +174,7 @@ export class FabricClient {
         response = await (this.options.fetchImpl ?? fetch)(url, {
           method,
           headers: {
+            ...requestOptions.headers,
             authorization: `Bearer ${token}`,
             accept: "application/json",
             ...(requestOptions.body === undefined
@@ -191,18 +211,29 @@ export class FabricClient {
             requestOptions.acceptedStatuses?.includes(response.status) ??
             response.ok
           )
-            ? createFabricApiError(response, undefined)
+            ? createFabricApiError(
+                response,
+                undefined,
+                priorAttemptAmbiguous,
+              )
             : error;
-        if (
-          !retryable ||
-          attempt >= this.options.maxRetries ||
-          (response !== undefined && !isTransientStatus(response.status))
-        ) {
+        const retryableFailure =
+          response === undefined
+            ? retryTransportErrors
+            : shouldRetryStatus(response.status);
+        if (!retryableFailure || attempt >= this.options.maxRetries) {
           throw requestError;
         }
-        await this.sleepWithinDeadline(
+        if (
+          response === undefined ||
+          isAmbiguousTransientStatus(response.status)
+        ) {
+          priorAttemptAmbiguous = true;
+        }
+        await this.sleepForRetryOrThrow(
           this.backoffDelay(attempt),
           requestDeadline,
+          requestError,
         );
         attempt += 1;
         continue;
@@ -214,15 +245,25 @@ export class FabricClient {
         throw new Error("Fabric API request completed without a response.");
       }
       if (
-        retryable &&
-        isTransientStatus(response.status) &&
+        shouldRetryStatus(response.status) &&
         attempt < this.options.maxRetries
       ) {
-        await cancelResponseBody(response);
-        await this.sleepWithinDeadline(
+        if (isAmbiguousTransientStatus(response.status)) {
+          priorAttemptAmbiguous = true;
+        }
+        const retryError = createFabricApiError(
+          response,
+          undefined,
+          priorAttemptAmbiguous,
+        );
+        const retryDelay =
           retryAfterMilliseconds(response.headers, this.options.now()) ??
-            this.backoffDelay(attempt),
+          this.backoffDelay(attempt);
+        await cancelResponseBody(response);
+        await this.sleepForRetryOrThrow(
+          retryDelay,
           requestDeadline,
+          retryError,
         );
         attempt += 1;
         continue;
@@ -231,7 +272,11 @@ export class FabricClient {
       const accepted =
         requestOptions.acceptedStatuses?.includes(response.status) ?? response.ok;
       if (!accepted) {
-        throw createFabricApiError(response, body);
+        throw createFabricApiError(
+          response,
+          body,
+          priorAttemptAmbiguous,
+        );
       }
 
       return {
@@ -424,10 +469,30 @@ export class FabricClient {
     );
     await this.options.sleep(Math.min(requestedDelay, remaining));
   }
+
+  private async sleepForRetryOrThrow(
+    requestedDelay: number,
+    deadline: number,
+    error: unknown,
+  ): Promise<void> {
+    const remaining = remainingTime(
+      deadline,
+      this.options.now(),
+      "Fabric API request timed out.",
+    );
+    if (requestedDelay >= remaining) {
+      throw error;
+    }
+    await this.options.sleep(requestedDelay);
+  }
 }
 
 function isTransientStatus(status: number): boolean {
   return [408, 429, 500, 502, 503, 504].includes(status);
+}
+
+function isAmbiguousTransientStatus(status: number): boolean {
+  return status === 408 || status >= 500;
 }
 
 function retryAfterMilliseconds(
@@ -502,6 +567,7 @@ async function parseResponseBody(response: Response): Promise<unknown> {
 function createFabricApiError(
   response: Response,
   body: unknown,
+  priorAttemptAmbiguous = false,
 ): FabricApiError {
   const errorBody =
     body !== null && typeof body === "object"
@@ -525,6 +591,7 @@ function createFabricApiError(
     response.status,
     code,
     requestId,
+    priorAttemptAmbiguous,
   );
 }
 

@@ -59,6 +59,7 @@ import {
 } from "./fabric/spark-job-artifacts";
 import type { OneLakeArtifactStager } from "./fabric/onelake-artifacts";
 import type { WorkspaceAdapter } from "./fabric/workspace";
+import type { NetworkProtectionAdapter } from "./fabric/network-protection";
 import type { FabricTagAdapter } from "./fabric/tags";
 import {
   hashSparkJobDefinition,
@@ -77,9 +78,15 @@ import {
   writeCheckpoint,
 } from "./checkpoint";
 import { applyManagedWorkspace } from "./workspace-apply";
+import {
+  applyNetworkProtection,
+  preflightNetworkProtection,
+  recoverInterruptedNetworkProtection,
+} from "./network-apply";
 import type {
   ApplyCheckpoint,
   ApplyItemResult,
+  ApplyNetworkProtectionResult,
   ApplyResult,
   ApplyWorkspaceResult,
   DefinitionItemUpdateRecoveryState,
@@ -145,6 +152,16 @@ export interface ApplyPlanOptions {
     | "resumeAcceptedStatement"
     | "deleteSessionById"
   >;
+  networkProtectionAdapter?: Pick<
+    NetworkProtectionAdapter,
+    | "plan"
+    | "getCommunicationPolicy"
+    | "putCommunicationPolicy"
+    | "getOutboundCloudConnectionRules"
+    | "putOutboundCloudConnectionRules"
+    | "getOutboundGatewayRules"
+    | "putOutboundGatewayRules"
+  >;
   oneLakeArtifactStager?: Pick<
     OneLakeArtifactStager,
     "uploadImmutable" | "verify" | "getEndpointIdentity"
@@ -163,6 +180,10 @@ export interface ApplyPlanOptions {
   allowOneLakeArtifactCreate?: boolean;
   allowTagCreate?: boolean;
   allowTagAssign?: boolean;
+  allowNetworkPolicyUpdate?: boolean;
+  allowNetworkPolicyRelaxation?: boolean;
+  allowOutboundCloudConnectionRuleUpdate?: boolean;
+  allowOutboundGatewayRuleUpdate?: boolean;
   checkpointFile: string;
   resultFile: string;
   itemDirectories?: string[];
@@ -199,6 +220,7 @@ export async function applyApprovedPlan(
   );
   let resultWritable = false;
   let workspaceResult: ApplyWorkspaceResult | undefined;
+  let networkProtectionResult: ApplyNetworkProtectionResult | undefined;
   let runtimeWorkspaceId = options.approvedPlan.workspaceId;
   let requiresItemReplan = false;
 
@@ -220,6 +242,29 @@ export async function applyApprovedPlan(
       createCheckpoint(options.approvedPlan);
     writeCheckpoint(options.checkpointFile, checkpoint);
     assertApprovedOneLakeEndpointConfiguration(options);
+    const preWorkspaceRuntimeOptions: ApplyPlanOptions = {
+      ...options,
+      checkpoint,
+    };
+    const canAddressNetworkBeforeWorkspace =
+      options.approvedPlan.workspace?.action !== "create" ||
+      options.loadedManifest.manifest.networkProtection?.workspaceId !==
+        undefined;
+    if (canAddressNetworkBeforeWorkspace) {
+      // Security recovery takes precedence over unrelated item or workspace
+      // preflight failures once a network mutation unit has started.
+      preflightRuntimeNetworkProtection(
+        preWorkspaceRuntimeOptions,
+        checkpoint,
+      );
+      await recoverInterruptedNetworkProtection(
+        networkProtectionApplyOptions(
+          preWorkspaceRuntimeOptions,
+          checkpoint,
+          now,
+        ),
+      );
+    }
     if (options.approvedPlan.workspace?.action !== "create") {
       preflightBeforeRecovery(
         options,
@@ -247,20 +292,6 @@ export async function applyApprovedPlan(
     workspaceResult = workspaceOutcome.result;
     requiresItemReplan =
       workspaceOutcome.requiresItemReplan;
-    if (requiresItemReplan) {
-      const result = buildResult(
-        options.approvedPlan,
-        "succeeded",
-        startedAt,
-        now(),
-        [],
-        runtimeWorkspaceId,
-        workspaceResult,
-        true,
-      );
-      writeApplyResult(options.resultFile, result);
-      return result;
-    }
     const runtimeOptions: ApplyPlanOptions = {
       ...options,
       approvedPlan: {
@@ -273,6 +304,44 @@ export async function applyApprovedPlan(
       },
       checkpoint,
     };
+    if (requiresItemReplan) {
+      // An explicit network target is independent of the newly provisioned
+      // deployment workspace and remains safe to apply before child items are
+      // replanned against the new workspace ID.
+      if (
+        runtimeOptions.loadedManifest.manifest.networkProtection
+          ?.workspaceId !== undefined
+      ) {
+        preflightRuntimeNetworkProtection(runtimeOptions, checkpoint);
+        await recoverInterruptedNetworkProtection(
+          networkProtectionApplyOptions(runtimeOptions, checkpoint, now),
+        );
+        networkProtectionResult = await applyNetworkProtection(
+          networkProtectionApplyOptions(runtimeOptions, checkpoint, now),
+        );
+      }
+      const result = buildResult(
+        options.approvedPlan,
+        "succeeded",
+        startedAt,
+        now(),
+        [],
+        runtimeWorkspaceId,
+        workspaceResult,
+        true,
+        networkProtectionResult,
+      );
+      writeApplyResult(options.resultFile, result);
+      return result;
+    }
+    // Validate every configured network surface before any recovery path can
+    // dispatch a network or item mutation.
+    preflightRuntimeNetworkProtection(runtimeOptions, checkpoint);
+    // A started network protection mutation unit is completed immediately
+    // after workspace resolution, ahead of any item reconciliation.
+    await recoverInterruptedNetworkProtection(
+      networkProtectionApplyOptions(runtimeOptions, checkpoint, now),
+    );
     const preverifiedDurations =
       await verifyCheckpointedOneLakeArtifactTargets(
         runtimeOptions,
@@ -539,6 +608,12 @@ export async function applyApprovedPlan(
 
     }
 
+    // Network protection changes are applied only after the workspace and
+    // every item stage have completed.
+    networkProtectionResult = await applyNetworkProtection(
+      networkProtectionApplyOptions(runtimeOptions, checkpoint, now),
+    );
+
     const result = buildResult(
       options.approvedPlan,
       "succeeded",
@@ -548,6 +623,7 @@ export async function applyApprovedPlan(
       runtimeWorkspaceId,
       workspaceResult,
       false,
+      networkProtectionResult,
     );
     writeApplyResult(options.resultFile, result);
     return result;
@@ -570,6 +646,7 @@ export async function applyApprovedPlan(
       runtimeWorkspaceId,
       workspaceResult,
       requiresItemReplan,
+      networkProtectionResult,
     );
     if (resultWritable) {
       try {
@@ -810,6 +887,49 @@ async function planFreshTagAssignment(
     observedStateHash: live.observedStateHash,
     reason: live.reason,
   };
+}
+
+function networkProtectionApplyOptions(
+  runtimeOptions: ApplyPlanOptions,
+  checkpoint: ApplyCheckpoint,
+  now: () => number,
+): Parameters<typeof applyNetworkProtection>[0] {
+  return {
+    approvedPlan: runtimeOptions.approvedPlan,
+    currentPlan: runtimeOptions.currentPlan,
+    desired: runtimeOptions.loadedManifest.manifest.networkProtection,
+    adapter: runtimeOptions.networkProtectionAdapter,
+    checkpoint,
+    checkpointFile: runtimeOptions.checkpointFile,
+    allowNetworkPolicyUpdate:
+      runtimeOptions.allowNetworkPolicyUpdate ?? false,
+    allowNetworkPolicyRelaxation:
+      runtimeOptions.allowNetworkPolicyRelaxation ?? false,
+    allowOutboundCloudConnectionRuleUpdate:
+      runtimeOptions.allowOutboundCloudConnectionRuleUpdate ?? false,
+    allowOutboundGatewayRuleUpdate:
+      runtimeOptions.allowOutboundGatewayRuleUpdate ?? false,
+    now,
+  };
+}
+
+function preflightRuntimeNetworkProtection(
+  runtimeOptions: ApplyPlanOptions,
+  checkpoint: ApplyCheckpoint,
+): void {
+  preflightNetworkProtection({
+    approvedPlan: runtimeOptions.approvedPlan,
+    currentPlan: runtimeOptions.currentPlan,
+    checkpoint,
+    allowNetworkPolicyUpdate:
+      runtimeOptions.allowNetworkPolicyUpdate ?? false,
+    allowNetworkPolicyRelaxation:
+      runtimeOptions.allowNetworkPolicyRelaxation ?? false,
+    allowOutboundCloudConnectionRuleUpdate:
+      runtimeOptions.allowOutboundCloudConnectionRuleUpdate ?? false,
+    allowOutboundGatewayRuleUpdate:
+      runtimeOptions.allowOutboundGatewayRuleUpdate ?? false,
+  });
 }
 
 function assertPlanIdentity(
@@ -4962,6 +5082,7 @@ function buildResult(
   workspaceId: string = plan.workspaceId,
   workspace?: ApplyWorkspaceResult,
   requiresItemReplan = false,
+  networkProtection?: ApplyNetworkProtectionResult,
 ): ApplyResult {
   return {
     schemaVersion: "1",
@@ -4978,5 +5099,6 @@ function buildResult(
       ? { requiresItemReplan: true }
       : {}),
     items,
+    ...(networkProtection ? { networkProtection } : {}),
   };
 }

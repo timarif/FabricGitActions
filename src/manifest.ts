@@ -18,6 +18,7 @@ import { loadNotebookDefinition } from "./fabric/notebook-definition";
 import { loadPipelineDefinition } from "./fabric/pipeline-definition";
 import { loadLakehouseTablesDefinition } from "./fabric/lakehouse-tables-definition";
 import { loadSparkCustomPoolDefinition } from "./fabric/spark-custom-pool-definition";
+import { normalizeNetworkProtection } from "./fabric/network-protection";
 import { requireSparkJobArtifactTarget } from "./fabric/spark-job-artifacts";
 import { loadSparkJobDefinitionBundle } from "./fabric/spark-job-definition";
 import { validateLogicalReferenceDeclarations } from "./fabric/logical-references";
@@ -28,11 +29,103 @@ import type {
   DeploymentManifest,
   ItemDefinition,
   LoadedManifest,
+  NetworkProtectionManifest,
 } from "./types";
 
 export interface LoadManifestOptions {
   variables?: Record<string, string>;
   workspaceIdOverride?: string;
+}
+
+/**
+ * Loads only the top-level network protection declaration for urgent
+ * checkpoint recovery. This deliberately avoids traversing unrelated item
+ * paths and definitions; the full manifest is still loaded before planning.
+ */
+export function loadNetworkProtectionManifest(
+  manifestPath: string,
+  options: LoadManifestOptions = {},
+): NetworkProtectionManifest | undefined {
+  const absoluteManifestPath = path.resolve(manifestPath);
+  if (!existsSync(absoluteManifestPath)) {
+    throw new Error(`Deployment manifest not found: ${absoluteManifestPath}`);
+  }
+  const parsed = parse(
+    readFileSync(absoluteManifestPath, "utf8"),
+  ) as unknown;
+  if (
+    parsed === null ||
+    typeof parsed !== "object" ||
+    Array.isArray(parsed)
+  ) {
+    throw new Error("Deployment manifest must be a YAML object.");
+  }
+  const networkProtection = (
+    parsed as Record<string, unknown>
+  ).networkProtection;
+  if (networkProtection === undefined) {
+    return undefined;
+  }
+  const resolved = substituteVariables(
+    networkProtection,
+    options.variables ?? {},
+  ) as NetworkProtectionManifest;
+  normalizeNetworkProtection(resolved);
+  return resolved;
+}
+
+/**
+ * Resolves declared item directories without opening them, for output-path
+ * containment checks that must run before checkpoint/result files are written.
+ */
+export function loadManifestItemDirectoriesForSafety(
+  manifestPath: string,
+  options: LoadManifestOptions = {},
+): string[] {
+  const absoluteManifestPath = path.resolve(manifestPath);
+  if (!existsSync(absoluteManifestPath)) {
+    throw new Error(`Deployment manifest not found: ${absoluteManifestPath}`);
+  }
+  const parsed = parse(
+    readFileSync(absoluteManifestPath, "utf8"),
+  ) as unknown;
+  if (
+    parsed === null ||
+    typeof parsed !== "object" ||
+    Array.isArray(parsed)
+  ) {
+    throw new Error("Deployment manifest must be a YAML object.");
+  }
+  const items = (parsed as Record<string, unknown>).items;
+  if (!Array.isArray(items)) {
+    return [];
+  }
+  const manifestDirectory = path.dirname(absoluteManifestPath);
+  const directories = new Set<string>();
+  for (const item of items) {
+    if (item === null || typeof item !== "object" || Array.isArray(item)) {
+      continue;
+    }
+    const declaredPath = (item as Record<string, unknown>).path;
+    if (typeof declaredPath !== "string") {
+      continue;
+    }
+    let resolvedPath: unknown;
+    try {
+      resolvedPath = substituteVariables(
+        declaredPath,
+        options.variables ?? {},
+      );
+    } catch {
+      // Full manifest validation will report unresolved item variables after
+      // urgent network recovery; they cannot identify a current item path.
+      continue;
+    }
+    if (typeof resolvedPath === "string" && resolvedPath.length > 0) {
+      directories.add(path.resolve(manifestDirectory, resolvedPath));
+    }
+  }
+  return [...directories];
 }
 
 function formatValidationErrors(errors: ErrorObject[] | null | undefined): string {
@@ -63,6 +156,7 @@ export function loadManifest(
 
   const manifest = resolved as DeploymentManifest;
   validateWorkspaceDefinition(manifest);
+  validateNetworkProtectionDefinition(manifest);
   validateLogicalIds(manifest);
   validateDependencies(manifest);
 
@@ -325,6 +419,18 @@ function validateWorkspaceDefinition(
       "Managed workspace displayName cannot use the reserved name 'Admin monitoring'.",
     );
   }
+}
+
+function validateNetworkProtectionDefinition(
+  manifest: DeploymentManifest,
+): void {
+  if (!manifest.networkProtection) {
+    return;
+  }
+  // Reuses the same strict validation and canonical normalization applied
+  // during planning and apply so manifest-load-time errors are surfaced as
+  // early as possible with the same messages.
+  normalizeNetworkProtection(manifest.networkProtection);
 }
 
 function validatePipelinePlatformMetadata(
