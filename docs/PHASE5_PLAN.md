@@ -55,6 +55,52 @@ Managed private endpoints use exact-name discovery, immutable target identity,
 provisioning-state polling, and separate create/delete safeguards. Deletion
 must verify the approved physical ID and target resource before dispatch.
 
+The tested increment uses a top-level array:
+
+```yaml
+networkProtection:
+  communicationPolicy:
+    inboundDefaultAction: Allow
+    outboundDefaultAction: Deny
+  managedPrivateEndpoints:
+    - name: storage-blob
+      targetPrivateLinkResourceId: ${var.PRIVATE_LINK_RESOURCE_ID}
+      targetSubresourceType: blob
+      requestMessage: Approve Fabric workspace access
+    - name: retired-endpoint
+      desiredState: absent
+      targetPrivateLinkResourceId: ${var.RETIRED_PRIVATE_LINK_RESOURCE_ID}
+```
+
+`desiredState` defaults to `present`. Present entries require a write-only
+`requestMessage`; absent entries forbid it and still require the target ARM
+identity. Names are unique without case sensitivity, ARM IDs are canonicalized
+for case-insensitive comparison, and target identity mismatches are blocked.
+There is intentionally no update/replace path and no `targetFQDNs` support in
+this increment.
+
+Create uses `POST` with an expected `201`, then polls `GET` until provisioning
+is `Succeeded`. Connection `Pending` is successful but reports
+`approvalRequired`; `Rejected`, `Disconnected`, failed/deleting, duplicate,
+collision, and unknown states fail closed. Delete is bound to the exact
+approved physical ID and observed identity hash, accepts `200` or already-gone
+`404`, verifies absence, detects replacement IDs, and records a 15-minute
+`recreateNotBefore` window.
+
+Checkpoints are written before both `POST` and `DELETE`. An ambiguous create
+adopts only one exact live name/identity match and never blindly resubmits. An
+ambiguous delete is not redispatched while the approved ID remains. Early
+recovery resumes only endpoint operations already present in the checkpoint;
+normal apply order is present endpoints after item reconciliation, OAP next,
+and absent endpoint deletion last.
+
+Outbound `Allow` -> `Deny` is a two-plan rollout whenever any declared present
+endpoint is missing, provisioning, pending approval, rejected, disconnected,
+or unknown. The first apply creates/verifies endpoints and defers the policy.
+After approval, a fresh authenticated plan may tighten OAP. Same-workspace
+endpoints are blocked during managed-workspace bootstrap until replan, while
+an explicit independent `networkProtection.workspaceId` remains actionable.
+
 ### Phase 5B: inbound access protection
 
 Add the preview workspace APIs only after outbound recovery is proven:

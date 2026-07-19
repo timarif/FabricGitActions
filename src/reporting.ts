@@ -226,6 +226,41 @@ export async function writeJobSummary(plan: DeploymentPlan): Promise<void> {
         ],
         ...surfaceRows,
       ]);
+    if (
+      (networkProtection.managedPrivateEndpoints?.length ?? 0) > 0
+    ) {
+      core.summary
+        .addHeading("Managed private endpoints", 3)
+        .addTable([
+          [
+            { data: "Name", header: true },
+            { data: "Desired state", header: true },
+            { data: "Action", header: true },
+            { data: "Observed state", header: true },
+            { data: "Approval", header: true },
+            { data: "Reason", header: true },
+          ],
+          ...networkProtection.managedPrivateEndpoints!.map(
+            (endpoint) => [
+              endpoint.name,
+              endpoint.desiredState,
+              endpoint.action,
+              [
+                endpoint.observedProvisioningState,
+                endpoint.observedConnectionStatus,
+              ]
+                .filter(Boolean)
+                .join(" / ") || "-",
+              endpoint.approvalRequired
+                ? "Required"
+                : endpoint.observedConnectionStatus === "Approved"
+                  ? "Approved"
+                  : "-",
+              endpoint.reason,
+            ],
+          ),
+        ]);
+    }
   }
 
   core.summary.addHeading("Deployment stages", 2);

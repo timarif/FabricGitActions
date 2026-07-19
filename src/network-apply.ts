@@ -1,5 +1,6 @@
 import { writeCheckpoint } from "./checkpoint";
 import { FabricApiError } from "./fabric/client";
+import { stableJson } from "./hash";
 import {
   hashCommunicationPolicy,
   hashOutboundCloudConnectionRules,
@@ -8,8 +9,19 @@ import {
   OAP_NOT_ENABLED_SENTINEL_HASH,
   type NetworkProtectionAdapter,
 } from "./fabric/network-protection";
+import {
+  managedPrivateEndpointCheckpointKey,
+  type ManagedPrivateEndpointAdapter,
+} from "./fabric/managed-private-endpoints";
+import {
+  assertManagedPrivateEndpointDesiredConfigurationMatchesPlan,
+  managedPrivateEndpointsRequireRecovery,
+  preflightManagedPrivateEndpoints,
+  recoverInterruptedManagedPrivateEndpoints,
+} from "./managed-private-endpoint-apply";
 import type {
   ApplyCheckpoint,
+  ApplyCheckpointManagedPrivateEndpoint,
   ApplyCheckpointNetworkProtection,
   ApplyCheckpointNetworkSurface,
   ApplyNetworkProtectionResult,
@@ -17,6 +29,7 @@ import type {
   DeploymentPlan,
   NetworkProtectionManifest,
   PlannedNetworkCommunicationPolicy,
+  PlannedManagedPrivateEndpoint,
   PlannedNetworkProtection,
   PlannedNetworkSurface,
 } from "./types";
@@ -35,12 +48,22 @@ export interface ApplyNetworkProtectionOptions {
     | "getOutboundGatewayRules"
     | "putOutboundGatewayRules"
   >;
+  managedPrivateEndpointAdapter?: Pick<
+    ManagedPrivateEndpointAdapter,
+    | "listManagedPrivateEndpoints"
+    | "getManagedPrivateEndpoint"
+    | "createManagedPrivateEndpoint"
+    | "deleteManagedPrivateEndpoint"
+    | "waitForProvisioningSucceeded"
+  >;
   checkpoint: ApplyCheckpoint;
   checkpointFile: string;
   allowNetworkPolicyUpdate: boolean;
   allowNetworkPolicyRelaxation: boolean;
   allowOutboundCloudConnectionRuleUpdate: boolean;
   allowOutboundGatewayRuleUpdate: boolean;
+  allowManagedPrivateEndpointCreate?: boolean;
+  allowManagedPrivateEndpointDelete?: boolean;
   now?: () => number;
 }
 
@@ -63,6 +86,8 @@ export function preflightNetworkProtection(options: {
   allowNetworkPolicyRelaxation: boolean;
   allowOutboundCloudConnectionRuleUpdate: boolean;
   allowOutboundGatewayRuleUpdate: boolean;
+  allowManagedPrivateEndpointCreate?: boolean;
+  allowManagedPrivateEndpointDelete?: boolean;
 }): void {
   const planned = options.approvedPlan.networkProtection;
   const checkpointState = options.checkpoint.networkProtection;
@@ -82,6 +107,15 @@ export function preflightNetworkProtection(options: {
     );
   }
   assertPlanIsApplicable(current);
+  preflightManagedPrivateEndpoints({
+    approvedPlan: options.approvedPlan,
+    currentPlan: options.currentPlan,
+    checkpoint: options.checkpoint,
+    allowManagedPrivateEndpointCreate:
+      options.allowManagedPrivateEndpointCreate ?? false,
+    allowManagedPrivateEndpointDelete:
+      options.allowManagedPrivateEndpointDelete ?? false,
+  });
   assertNoUnexpectedDrift(planned, current, checkpointState);
 
   assertPreflightSurfaceAuthorized(
@@ -139,12 +173,15 @@ export function preflightNetworkProtection(options: {
 export async function recoverInterruptedNetworkProtection(
   options: ApplyNetworkProtectionOptions,
 ): Promise<void> {
-  if (
-    !networkProtectionRequiresRecovery(
-      options.approvedPlan.networkProtection,
+  const managedPrivateEndpointRecovery =
+    managedPrivateEndpointsRequireRecovery(
       options.checkpoint.networkProtection,
-    )
-  ) {
+    );
+  const oapRecovery = networkProtectionRequiresRecovery(
+    options.approvedPlan.networkProtection,
+    options.checkpoint.networkProtection,
+  );
+  if (!managedPrivateEndpointRecovery && !oapRecovery) {
     return;
   }
   if (!options.desired) {
@@ -174,7 +211,29 @@ export async function recoverInterruptedNetworkProtection(
       options.allowOutboundCloudConnectionRuleUpdate,
     allowOutboundGatewayRuleUpdate:
       options.allowOutboundGatewayRuleUpdate,
+    allowManagedPrivateEndpointCreate:
+      options.allowManagedPrivateEndpointCreate ?? false,
+    allowManagedPrivateEndpointDelete:
+      options.allowManagedPrivateEndpointDelete ?? false,
   });
+  if (managedPrivateEndpointRecovery) {
+    await recoverInterruptedManagedPrivateEndpoints({
+      approvedPlan: options.approvedPlan,
+      currentPlan,
+      desired: options.desired,
+      adapter: options.managedPrivateEndpointAdapter,
+      checkpoint: options.checkpoint,
+      checkpointFile: options.checkpointFile,
+      allowManagedPrivateEndpointCreate:
+        options.allowManagedPrivateEndpointCreate ?? false,
+      allowManagedPrivateEndpointDelete:
+        options.allowManagedPrivateEndpointDelete ?? false,
+      now: options.now,
+    });
+  }
+  if (!oapRecovery) {
+    return;
+  }
   await applyNetworkProtection({
     ...options,
     currentPlan,
@@ -219,6 +278,49 @@ export async function applyNetworkProtection(
     "manifest",
   );
   assertDesiredConfigurationMatchesPlan(planned, canonical);
+  if (
+    isManagedPrivateEndpointPolicyBlock(
+      planned.communicationPolicy,
+    )
+  ) {
+    if (
+      options.checkpoint.networkProtection?.communicationPolicy ||
+      options.checkpoint.networkProtection
+        ?.outboundCloudConnectionRules ||
+      options.checkpoint.networkProtection?.outboundGatewayRules
+    ) {
+      throw new Error(
+        "The approved plan defers outbound access protection for managed private endpoint approval, but the checkpoint already contains an OAP mutation.",
+      );
+    }
+    return {
+      workspaceId,
+      communicationPolicy: {
+        action: planned.communicationPolicy.action,
+        status: "deferred",
+        durationMs: 0,
+      },
+      ...(planned.outboundCloudConnectionRules
+        ? {
+            outboundCloudConnectionRules: {
+              action:
+                planned.outboundCloudConnectionRules.action,
+              status: "deferred" as const,
+              durationMs: 0,
+            },
+          }
+        : {}),
+      ...(planned.outboundGatewayRules
+        ? {
+            outboundGatewayRules: {
+              action: planned.outboundGatewayRules.action,
+              status: "deferred" as const,
+              durationMs: 0,
+            },
+          }
+        : {}),
+    };
+  }
   const fresh = await options.adapter.plan(
     options.approvedPlan.workspaceId,
     options.desired,
@@ -306,6 +408,12 @@ export async function applyNetworkProtection(
       ? { outboundGatewayRules: outboundGatewayRulesResult }
       : {}),
   };
+}
+
+export function finalizeNetworkProtectionCheckpoint(
+  options: ApplyNetworkProtectionOptions,
+): void {
+  markNetworkProtectionCompleted(options, options.now ?? Date.now);
 }
 
 async function applyCommunicationPolicySurface(
@@ -595,17 +703,95 @@ async function applySurface(params: {
 
 function assertPlanIsApplicable(planned: PlannedNetworkProtection): void {
   const actions = [
-    planned.communicationPolicy.action,
     planned.outboundCloudConnectionRules?.action,
     planned.outboundGatewayRules?.action,
   ];
+  if (
+    planned.communicationPolicy.action === "blocked" &&
+    !isManagedPrivateEndpointPolicyBlock(
+      planned.communicationPolicy,
+    )
+  ) {
+    actions.push(planned.communicationPolicy.action);
+  } else if (planned.communicationPolicy.action === "unknown") {
+    actions.push(planned.communicationPolicy.action);
+  }
   if (actions.some((action) => action === "blocked" || action === "unknown")) {
     throw new Error(
       "Network protection cannot be applied while a configured surface action is 'blocked' or 'unknown'.",
     );
   }
+  if (
+    planned.managedPrivateEndpoints?.some(
+      (endpoint) =>
+        endpoint.action === "blocked" ||
+        endpoint.action === "unknown",
+    )
+  ) {
+    throw new Error(
+      "Managed private endpoints cannot be applied while an endpoint action is 'blocked' or 'unknown'.",
+    );
+  }
   requirePlannedWorkspaceId(planned);
   assertCommunicationPolicyMetadata(planned.communicationPolicy);
+}
+
+function isManagedPrivateEndpointPolicyBlock(
+  policy: PlannedNetworkCommunicationPolicy,
+): boolean {
+  return (
+    policy.action === "blocked" &&
+    (policy.blockedByManagedPrivateEndpoints?.length ?? 0) > 0 &&
+    policy.observedOutboundDefaultAction === "Allow" &&
+    policy.desiredOutboundDefaultAction === "Deny"
+  );
+}
+
+function assertManagedPrivateEndpointPlansNotDriftedForNetwork(
+  planned: PlannedManagedPrivateEndpoint[] | undefined,
+  fresh: PlannedManagedPrivateEndpoint[] | undefined,
+  checkpoint:
+    | Record<string, ApplyCheckpointManagedPrivateEndpoint>
+    | undefined,
+): void {
+  if (!planned && !fresh) {
+    return;
+  }
+  if (!planned || !fresh || planned.length !== fresh.length) {
+    throw new Error(
+      "Managed private endpoint plan shape drifted after approval. Generate a new plan.",
+    );
+  }
+  const freshByName = new Map(
+    fresh.map((endpoint) => [
+      endpoint.name.toLowerCase(),
+      endpoint,
+    ]),
+  );
+  for (const endpoint of planned) {
+    const nameKey = endpoint.name.toLowerCase();
+    const current = freshByName.get(nameKey);
+    if (
+      !current ||
+      current.operationHash !== endpoint.operationHash ||
+      current.desiredIdentityHash !== endpoint.desiredIdentityHash
+    ) {
+      throw new Error(
+        `Managed private endpoint '${endpoint.name}' desired configuration drifted after approval. Generate a new plan.`,
+      );
+    }
+    if (
+      !getManagedPrivateEndpointCheckpointState(
+        checkpoint,
+        endpoint.name,
+      ) &&
+      stableJson(current) !== stableJson(endpoint)
+    ) {
+      throw new Error(
+        `Managed private endpoint '${endpoint.name}' observed state drifted after approval. Generate a new plan.`,
+      );
+    }
+  }
 }
 
 function assertPreflightSurfaceAuthorized(
@@ -657,6 +843,11 @@ function assertNoUnexpectedDrift(
       true,
     );
   }
+  assertManagedPrivateEndpointPlansNotDriftedForNetwork(
+    planned.managedPrivateEndpoints,
+    fresh.managedPrivateEndpoints,
+    checkpoint?.managedPrivateEndpoints,
+  );
 }
 
 function assertCommunicationPolicyNotDrifted(
@@ -672,6 +863,17 @@ function assertCommunicationPolicyNotDrifted(
   ) {
     throw new Error(
       "Network protection communication policy desired transition changed since the plan was approved. Generate a new plan.",
+    );
+  }
+  if (
+    !checkpointState &&
+    !isManagedPrivateEndpointPolicyBlock(planned) &&
+    (planned.action !== fresh.action ||
+      stableJson(planned.blockedByManagedPrivateEndpoints) !==
+        stableJson(fresh.blockedByManagedPrivateEndpoints))
+  ) {
+    throw new Error(
+      "Network protection communication policy applicability drifted after approval. Generate a new plan.",
     );
   }
   assertSurfaceNotDrifted(
@@ -794,6 +996,10 @@ function assertDesiredConfigurationMatchesPlan(
     canonical.outboundGatewayRules
       ? hashOutboundGatewayRules(canonical.outboundGatewayRules)
       : undefined,
+  );
+  assertManagedPrivateEndpointDesiredConfigurationMatchesPlan(
+    planned.managedPrivateEndpoints,
+    canonical.managedPrivateEndpoints,
   );
 }
 
@@ -971,7 +1177,41 @@ function markNetworkProtectionCompleted(
     throw new Error("Network protection checkpoint is not initialized.");
   }
   const timestamp = new Date(now()).toISOString();
-  checkpoint.completedAt = timestamp;
+  const managedPrivateEndpoints =
+    options.approvedPlan.networkProtection?.managedPrivateEndpoints ?? [];
+  const managedStates = checkpoint.managedPrivateEndpoints ?? {};
+  const managedPrivateEndpointsComplete =
+    managedPrivateEndpoints.every((endpoint) => {
+      const phase =
+        getManagedPrivateEndpointCheckpointState(
+          managedStates,
+          endpoint.name,
+        )?.phase;
+      return (
+        (endpoint.desiredState === "present" &&
+          phase === "present-verified") ||
+        (endpoint.desiredState === "absent" &&
+          phase === "absent-verified")
+      );
+    });
+  if (managedPrivateEndpointsComplete) {
+    checkpoint.completedAt = timestamp;
+  } else {
+    delete checkpoint.completedAt;
+  }
   checkpoint.updatedAt = timestamp;
   writeCheckpoint(options.checkpointFile, options.checkpoint);
+}
+
+function getManagedPrivateEndpointCheckpointState(
+  states:
+    | Record<string, ApplyCheckpointManagedPrivateEndpoint>
+    | undefined,
+  name: string,
+): ApplyCheckpointManagedPrivateEndpoint | undefined {
+  const key = managedPrivateEndpointCheckpointKey(name);
+  return states &&
+    Object.prototype.hasOwnProperty.call(states, key)
+    ? states[key]
+    : undefined;
 }

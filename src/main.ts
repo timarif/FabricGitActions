@@ -20,6 +20,11 @@ import { LakehouseAdapter } from "./fabric/lakehouse";
 import { LakehouseTablesAdapter } from "./fabric/lakehouse-tables";
 import { buildLakehouseLivyApiEndpoints } from "./fabric/livy";
 import { enrichPlanWithFabric } from "./fabric/live-planner";
+import {
+  managedPrivateEndpointRequestMessages,
+  ManagedPrivateEndpointAdapter,
+  redactManagedPrivateEndpointError,
+} from "./fabric/managed-private-endpoints";
 import { NetworkProtectionAdapter } from "./fabric/network-protection";
 import { NotebookAdapter } from "./fabric/notebook";
 import { OneLakeArtifactStager } from "./fabric/onelake-artifacts";
@@ -50,6 +55,7 @@ import type {
 } from "./types";
 
 export async function run(): Promise<void> {
+  let requestMessagesToRedact: string[] = [];
   let initializedApply:
     | {
         plan: DeploymentPlan;
@@ -93,6 +99,18 @@ export async function run(): Promise<void> {
     const allowOutboundGatewayRuleUpdate =
       mode === "apply"
         ? readBooleanInput("allow-outbound-gateway-rule-update")
+        : false;
+    const allowManagedPrivateEndpointCreate =
+      mode === "apply"
+        ? readBooleanInput(
+            "allow-managed-private-endpoint-create",
+          )
+        : false;
+    const allowManagedPrivateEndpointDelete =
+      mode === "apply"
+        ? readBooleanInput(
+            "allow-managed-private-endpoint-delete",
+          )
         : false;
     if (returnLivyApiEndpoint && mode !== "apply") {
       throw new Error(
@@ -173,6 +191,9 @@ export async function run(): Promise<void> {
     let workspaceAdapter: WorkspaceAdapter | undefined;
     let lakehouseTablesAdapter: LakehouseTablesAdapter | undefined;
     let networkProtectionAdapter: NetworkProtectionAdapter | undefined;
+    let managedPrivateEndpointAdapter:
+      | ManagedPrivateEndpointAdapter
+      | undefined;
     let oneLakeArtifactStager: OneLakeArtifactStager | undefined;
     if ((mode === "plan" || mode === "apply") && authMode !== "none") {
       const clientSecret = core.getInput("client-secret") || undefined;
@@ -208,7 +229,12 @@ export async function run(): Promise<void> {
       sparkCustomPoolAdapter = new SparkCustomPoolAdapter(client);
       tagAdapter = new FabricTagAdapter(client);
       workspaceAdapter = new WorkspaceAdapter(client);
-      networkProtectionAdapter = new NetworkProtectionAdapter(client);
+      managedPrivateEndpointAdapter =
+        new ManagedPrivateEndpointAdapter(client);
+      networkProtectionAdapter = new NetworkProtectionAdapter(
+        client,
+        managedPrivateEndpointAdapter,
+      );
       oneLakeArtifactStager = new OneLakeArtifactStager({
         dfsEndpoint: endpoints.oneLakeEndpoint,
         blobEndpoint: endpoints.oneLakeBlobEndpoint,
@@ -238,17 +264,24 @@ export async function run(): Promise<void> {
           workspaceIdOverride: workspaceId,
         },
       );
+      requestMessagesToRedact =
+        managedPrivateEndpointRequestMessages(
+          desiredNetworkProtection,
+        );
       await recoverInterruptedNetworkProtection({
         approvedPlan,
         currentPlan: approvedPlan,
         desired: desiredNetworkProtection,
         adapter: networkProtectionAdapter,
+        managedPrivateEndpointAdapter,
         checkpoint: applyCheckpoint,
         checkpointFile,
         allowNetworkPolicyUpdate,
         allowNetworkPolicyRelaxation,
         allowOutboundCloudConnectionRuleUpdate,
         allowOutboundGatewayRuleUpdate,
+        allowManagedPrivateEndpointCreate,
+        allowManagedPrivateEndpointDelete,
       });
     }
 
@@ -256,6 +289,10 @@ export async function run(): Promise<void> {
       variables,
       workspaceIdOverride: workspaceId,
     });
+    requestMessagesToRedact =
+      managedPrivateEndpointRequestMessages(
+        loadedManifest.manifest.networkProtection,
+      );
     if (mode === "apply") {
       if (!checkpointFile || !resultFile || !approvedPlan) {
         throw new Error(
@@ -372,6 +409,28 @@ export async function run(): Promise<void> {
       "network-protection-action",
       plan.networkProtection?.communicationPolicy.action ?? "not-configured",
     );
+    const managedPrivateEndpoints =
+      plan.networkProtection?.managedPrivateEndpoints ?? [];
+    core.setOutput(
+      "managed-private-endpoint-count",
+      String(managedPrivateEndpoints.length),
+    );
+    for (const action of [
+      "create",
+      "delete",
+      "no-op",
+      "blocked",
+      "unknown",
+    ] as const) {
+      core.setOutput(
+        `managed-private-endpoint-${action === "no-op" ? "noop" : action}-count`,
+        String(
+          managedPrivateEndpoints.filter(
+            (endpoint) => endpoint.action === action,
+          ).length,
+        ),
+      );
+    }
     core.setOutput("requires-item-replan", "false");
     await writeJobSummary(plan);
 
@@ -391,6 +450,7 @@ export async function run(): Promise<void> {
         !workspaceAdapter
         || !lakehouseTablesAdapter ||
         !networkProtectionAdapter ||
+        !managedPrivateEndpointAdapter ||
         !oneLakeArtifactStager
       ) {
         throw new Error("Fabric adapters were not initialized for apply mode.");
@@ -410,6 +470,7 @@ export async function run(): Promise<void> {
         workspaceAdapter,
         lakehouseTablesAdapter,
         networkProtectionAdapter,
+        managedPrivateEndpointAdapter,
         oneLakeArtifactStager,
         oneLakeDfsEndpoint: endpoints.oneLakeEndpoint,
         oneLakeBlobEndpoint: endpoints.oneLakeBlobEndpoint,
@@ -443,6 +504,8 @@ export async function run(): Promise<void> {
         allowNetworkPolicyRelaxation,
         allowOutboundCloudConnectionRuleUpdate,
         allowOutboundGatewayRuleUpdate,
+        allowManagedPrivateEndpointCreate,
+        allowManagedPrivateEndpointDelete,
         checkpointFile,
         resultFile,
         itemDirectories: Object.values(loadedManifest.itemDirectories),
@@ -471,6 +534,24 @@ export async function run(): Promise<void> {
         "resumed-count",
         String(result.items.filter((item) => item.status === "resumed").length),
       );
+      const managedPrivateEndpointResults =
+        result.networkProtection?.managedPrivateEndpoints ?? [];
+      core.setOutput(
+        "managed-private-endpoint-applied-count",
+        String(
+          managedPrivateEndpointResults.filter(
+            (endpoint) => endpoint.status !== "resumed",
+          ).length,
+        ),
+      );
+      core.setOutput(
+        "managed-private-endpoint-resumed-count",
+        String(
+          managedPrivateEndpointResults.filter(
+            (endpoint) => endpoint.status === "resumed",
+          ).length,
+        ),
+      );
       if (returnLivyApiEndpoint) {
         const livyApiEndpoints = buildLakehouseLivyApiEndpoints(
           endpoints.fabricApiEndpoint,
@@ -489,7 +570,14 @@ export async function run(): Promise<void> {
       core.setOutput("status", mode === "validate" ? "validated" : "planned");
     }
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
+    const redactedError = redactManagedPrivateEndpointError(
+      error,
+      requestMessagesToRedact,
+    );
+    const message =
+      redactedError instanceof Error
+        ? redactedError.message
+        : String(redactedError);
     if (
       initializedApply &&
       isInProgressResult(initializedApply.resultFile)

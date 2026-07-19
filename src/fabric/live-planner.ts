@@ -597,7 +597,11 @@ async function planNetworkProtectionIfConfigured(
     return undefined;
   }
   if (pendingReason !== undefined && desired.workspaceId === undefined) {
-    return buildBlockedNetworkProtectionPlan(desired, pendingReason);
+    return buildBlockedNetworkProtectionPlan(
+      desired,
+      pendingReason,
+      true,
+    );
   }
   if (!adapter) {
     throw new Error(

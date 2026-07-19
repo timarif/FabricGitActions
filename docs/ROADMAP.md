@@ -55,9 +55,10 @@
 - [x] Expansion plan and remaining Fabric item inventory
 - [x] Outbound access protection communication policy
 - [x] Outbound cloud connection and gateway rules
-- [ ] Managed private endpoints
+- [x] Guarded managed private endpoint create/delete, checkpoint, and recovery
 - [ ] Inbound firewall, Azure resource, and External Data Shares policies
-- [ ] Network recovery and disposable live validation
+- [x] Network recovery
+- [ ] Disposable managed private endpoint live validation
 
 ## Phase 6: Power BI
 

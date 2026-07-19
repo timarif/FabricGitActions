@@ -4,7 +4,11 @@ import path from "node:path";
 
 import { describe, expect, it } from "vitest";
 
-import { loadManifest } from "../src/manifest";
+import {
+  loadManifest,
+  loadManifestItemDirectoriesForSafety,
+  loadNetworkProtectionManifest,
+} from "../src/manifest";
 import { substituteVariables } from "../src/substitution";
 import { createFixture } from "./test-helpers";
 
@@ -22,6 +26,53 @@ items:
 `;
 
 describe("manifest loading", () => {
+  it("does not include malformed requestMessage source text in YAML diagnostics", () => {
+    const root = mkdtempSync(path.join(tmpdir(), "fabric-deploy-"));
+    const manifestPath = path.join(root, "deployment.yaml");
+    const requestMessage = "do-not-print-this";
+    writeFileSync(
+      manifestPath,
+      `
+apiVersion: fabric.deploy/v1alpha1
+kind: FabricDeployment
+metadata:
+  deploymentId: malformed-request-message
+workspace:
+  id: 11111111-1111-4111-8111-111111111111
+networkProtection:
+  communicationPolicy:
+    inboundDefaultAction: Allow
+    outboundDefaultAction: Allow
+  managedPrivateEndpoints:
+    - name: storage
+      targetPrivateLinkResourceId: /subscriptions/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/resourceGroups/data/providers/Microsoft.Storage/storageAccounts/storage
+      requestMessage: "${requestMessage}\\q"
+items: []
+`,
+      "utf8",
+    );
+
+    for (const load of [
+      () => loadManifestItemDirectoriesForSafety(manifestPath),
+      () => loadNetworkProtectionManifest(manifestPath),
+      () => loadManifest(manifestPath),
+    ]) {
+      let error: unknown;
+      try {
+        load();
+      } catch (caught) {
+        error = caught;
+      }
+      expect(error).toBeInstanceOf(Error);
+      expect((error as Error).message).not.toContain(
+        requestMessage,
+      );
+      expect((error as Error).message).toContain(
+        "Invalid escape sequence",
+      );
+    }
+  });
+
   it("supports a workspace-only managed manifest", () => {
     const root = mkdtempSync(path.join(tmpdir(), "fabric-deploy-"));
     const manifestPath = path.join(root, "deployment.yaml");

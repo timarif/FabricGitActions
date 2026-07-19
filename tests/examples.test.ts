@@ -80,6 +80,8 @@ const examples: ExampleCase[] = [
       variables: {
         FABRIC_WORKSPACE_ID: WORKSPACE_ID,
         FABRIC_GATEWAY_ID: "00000000-0000-0000-0000-000000000003",
+        PRIVATE_LINK_RESOURCE_ID:
+          "/subscriptions/00000000-0000-4000-8000-000000000004/resourceGroups/example/providers/Microsoft.Storage/storageAccounts/example",
       },
     },
     itemCount: 1,

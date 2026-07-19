@@ -42,7 +42,7 @@ describe("deployment workflow metadata", () => {
     ).toBeDefined();
   });
 
-  it("exposes the four network protection safeguards, all defaulting to false", () => {
+  it("exposes the network protection safeguards, all defaulting to false", () => {
     const action = loadYaml("action.yml");
     const inputs = action.inputs as Record<
       string,
@@ -53,6 +53,8 @@ describe("deployment workflow metadata", () => {
       "allow-network-policy-relaxation",
       "allow-outbound-cloud-connection-rule-update",
       "allow-outbound-gateway-rule-update",
+      "allow-managed-private-endpoint-create",
+      "allow-managed-private-endpoint-delete",
     ];
 
     for (const name of networkInputNames) {
@@ -61,6 +63,21 @@ describe("deployment workflow metadata", () => {
     }
     expect(
       (action.outputs as Record<string, unknown>)["network-protection-action"],
+    ).toBeDefined();
+    expect(
+      (action.outputs as Record<string, unknown>)[
+        "managed-private-endpoint-create-count"
+      ],
+    ).toBeDefined();
+    expect(
+      (action.outputs as Record<string, unknown>)[
+        "managed-private-endpoint-applied-count"
+      ],
+    ).toBeDefined();
+    expect(
+      (action.outputs as Record<string, unknown>)[
+        "managed-private-endpoint-resumed-count"
+      ],
     ).toBeDefined();
   });
 
@@ -90,6 +107,14 @@ describe("deployment workflow metadata", () => {
         default: false,
         type: "boolean",
       },
+      allow_managed_private_endpoint_create: {
+        default: false,
+        type: "boolean",
+      },
+      allow_managed_private_endpoint_delete: {
+        default: false,
+        type: "boolean",
+      },
     });
     expect(applyWith["allow-network-policy-update"]).toBe(
       "${{ inputs.allow_network_policy_update }}",
@@ -102,6 +127,12 @@ describe("deployment workflow metadata", () => {
     );
     expect(applyWith["allow-outbound-gateway-rule-update"]).toBe(
       "${{ inputs.allow_outbound_gateway_rule_update }}",
+    );
+    expect(applyWith["allow-managed-private-endpoint-create"]).toBe(
+      "${{ inputs.allow_managed_private_endpoint_create }}",
+    );
+    expect(applyWith["allow-managed-private-endpoint-delete"]).toBe(
+      "${{ inputs.allow_managed_private_endpoint_delete }}",
     );
 
     const promote = loadYaml(".github/workflows/promote-fabric.yml");
@@ -121,6 +152,14 @@ describe("deployment workflow metadata", () => {
         required: true,
         default: false,
       },
+      allow_managed_private_endpoint_create: {
+        required: true,
+        default: false,
+      },
+      allow_managed_private_endpoint_delete: {
+        required: true,
+        default: false,
+      },
     });
     for (const job of ["dev", "test", "prod"]) {
       const jobWith = jobs[job]?.with as Record<string, string>;
@@ -135,6 +174,12 @@ describe("deployment workflow metadata", () => {
       );
       expect(jobWith.allow_outbound_gateway_rule_update).toBe(
         "${{ inputs.allow_outbound_gateway_rule_update }}",
+      );
+      expect(jobWith.allow_managed_private_endpoint_create).toBe(
+        "${{ inputs.allow_managed_private_endpoint_create }}",
+      );
+      expect(jobWith.allow_managed_private_endpoint_delete).toBe(
+        "${{ inputs.allow_managed_private_endpoint_delete }}",
       );
     }
   });
@@ -158,6 +203,12 @@ describe("deployment workflow metadata", () => {
       ".networkProtection.outboundGatewayRules",
     );
     expect(inspectStep?.run).toContain(
+      ".networkProtection.managedPrivateEndpoints",
+    );
+    expect(inspectStep?.run).toContain(
+      ".bootstrapBlocked == true",
+    );
+    expect(inspectStep?.run).toContain(
       '.workspace.action == "create"',
     );
     expect(inspectStep?.run).toContain(
@@ -165,6 +216,12 @@ describe("deployment workflow metadata", () => {
     );
     expect(inspectStep?.run).toContain(
       '.action == "blocked"',
+    );
+    expect(inspectStep?.run).toContain(
+      ".blockedByManagedPrivateEndpoints",
+    );
+    expect(inspectStep?.run).toContain(
+      '.action != "unknown"',
     );
   });
 

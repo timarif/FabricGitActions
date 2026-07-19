@@ -11,6 +11,8 @@ import {
 } from "../src/manifest";
 
 const GATEWAY_ID = "33333333-3333-4333-8333-333333333333";
+const TARGET_ID =
+  "/subscriptions/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/resourceGroups/data/providers/Microsoft.Storage/storageAccounts/storage";
 
 function writeManifest(
   networkProtectionYaml: string,
@@ -169,6 +171,82 @@ items:
 
     expect(loadManifest(manifestPath).manifest.networkProtection?.workspaceId).toBe(
       "44444444-4444-4444-8444-444444444444",
+    );
+  });
+
+  it("loads guarded managed private endpoint present and absent declarations", () => {
+    const manifestPath = writeManifest(
+      `  communicationPolicy:
+    inboundDefaultAction: Allow
+    outboundDefaultAction: Allow
+  managedPrivateEndpoints:
+    - name: storage-blob
+      targetPrivateLinkResourceId: ${TARGET_ID}
+      targetSubresourceType: blob
+      requestMessage: Approve the Fabric endpoint
+    - name: old-endpoint
+      desiredState: absent
+      targetPrivateLinkResourceId: ${TARGET_ID}`,
+    );
+
+    expect(
+      loadManifest(manifestPath).manifest.networkProtection
+        ?.managedPrivateEndpoints,
+    ).toEqual([
+      {
+        name: "storage-blob",
+        targetPrivateLinkResourceId: TARGET_ID,
+        targetSubresourceType: "blob",
+        requestMessage: "Approve the Fabric endpoint",
+      },
+      {
+        name: "old-endpoint",
+        desiredState: "absent",
+        targetPrivateLinkResourceId: TARGET_ID,
+      },
+    ]);
+  });
+
+  it("enforces requestMessage state rules and rejects targetFQDNs", () => {
+    const missingMessage = writeManifest(
+      `  communicationPolicy:
+    inboundDefaultAction: Allow
+    outboundDefaultAction: Allow
+  managedPrivateEndpoints:
+    - name: storage-blob
+      targetPrivateLinkResourceId: ${TARGET_ID}`,
+    );
+    expect(() => loadManifest(missingMessage)).toThrow(
+      "Invalid deployment manifest",
+    );
+
+    const absentMessage = writeManifest(
+      `  communicationPolicy:
+    inboundDefaultAction: Allow
+    outboundDefaultAction: Allow
+  managedPrivateEndpoints:
+    - name: storage-blob
+      desiredState: absent
+      targetPrivateLinkResourceId: ${TARGET_ID}
+      requestMessage: forbidden`,
+    );
+    expect(() => loadManifest(absentMessage)).toThrow(
+      "Invalid deployment manifest",
+    );
+
+    const targetFqdns = writeManifest(
+      `  communicationPolicy:
+    inboundDefaultAction: Allow
+    outboundDefaultAction: Allow
+  managedPrivateEndpoints:
+    - name: storage-blob
+      targetPrivateLinkResourceId: ${TARGET_ID}
+      requestMessage: Approve
+      targetFQDNs:
+        - storage.example`,
+    );
+    expect(() => loadNetworkProtectionManifest(targetFqdns)).toThrow(
+      "targetFQDNs",
     );
   });
 

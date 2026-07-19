@@ -127,6 +127,19 @@ describe("plan reporting", () => {
             reason: "Outbound access protection is not yet enabled.",
             desiredHash: "c".repeat(64),
           },
+          managedPrivateEndpoints: [
+            {
+              name: "storage-blob",
+              desiredState: "present",
+              targetPrivateLinkResourceId:
+                "/subscriptions/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/resourcegroups/data/providers/microsoft.storage/storageaccounts/storage",
+              action: "create",
+              reason: "missing",
+              operationHash: "d".repeat(64),
+              desiredIdentityHash: "e".repeat(64),
+              requestMessageHash: "f".repeat(64),
+            },
+          ],
         },
       });
     } finally {
@@ -142,5 +155,8 @@ describe("plan reporting", () => {
     expect(content).toContain("Communication policy");
     expect(content).toContain("inbound Allow, outbound Deny");
     expect(content).toContain("Outbound cloud connection rules");
+    expect(content).toContain("Managed private endpoints");
+    expect(content).toContain("storage-blob");
+    expect(content).not.toContain("requestMessage");
   });
 });

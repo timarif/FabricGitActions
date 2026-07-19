@@ -10,9 +10,9 @@ an initial focus on Data Engineering workloads.
 > selected workspace items, disposable live E2E validation, reusable
 > promotion, and provenance-attested releases. Deployments support authenticated planning and
 > guarded create/update/delete/no-op apply with approved-plan binding, drift
-> detection, checkpoints, and result artifacts. Phase 5A adds the workspace
-> network communication policy plus outbound cloud connection and gateway
-> rules. See
+> detection, checkpoints, and result artifacts. Phase 5 adds the workspace
+> network communication policy, outbound cloud connection and gateway rules,
+> and guarded managed private endpoint lifecycle support. See
 > [the roadmap](docs/ROADMAP.md).
 
 For sequential environment deployment, see the
@@ -120,9 +120,9 @@ adapters remain `unknown`.
 ## Network protection
 
 An optional top-level `networkProtection` manifest section manages the GA
-workspace network communication policy plus outbound cloud connection and
-gateway rules, either for the manifest's own managed/target workspace or an
-independent explicit `workspaceId`:
+workspace network communication policy, outbound cloud connection and gateway
+rules, and managed private endpoints, either for the manifest's own
+managed/target workspace or an independent explicit `workspaceId`:
 
 ```yaml
 networkProtection:
@@ -142,6 +142,14 @@ networkProtection:
     defaultAction: Deny
     allowedGateways:
       - id: ${var.FABRIC_GATEWAY_ID}
+  managedPrivateEndpoints:
+    - name: storage-blob
+      targetPrivateLinkResourceId: ${var.PRIVATE_LINK_RESOURCE_ID}
+      targetSubresourceType: blob
+      requestMessage: Approve Fabric workspace access
+    - name: retired-endpoint
+      desiredState: absent
+      targetPrivateLinkResourceId: ${var.RETIRED_PRIVATE_LINK_RESOURCE_ID}
 ```
 
 `communicationPolicy` is required whenever `networkProtection` is present, and
@@ -153,6 +161,15 @@ only be declared while `outboundDefaultAction` is `Deny`, matching the Fabric
 API's own requirement that outbound access protection (OAP) be enabled before
 its allow lists can be read or written.
 
+Managed private endpoint `desiredState` defaults to `present`. Present entries
+require `requestMessage`; absent entries forbid it and must still declare the
+target ARM resource identity. Names are case-insensitively unique, ARM IDs are
+compared canonically without case sensitivity, and target identity is
+immutable: mismatches are blocked rather than updated or replaced.
+`targetFQDNs` is not supported yet. Request messages are sent only in the
+create request and are never written to plans, checkpoints, results, or job
+summaries.
+
 Network safeguards are independent and default to `false`:
 
 - `allow-network-policy-update`
@@ -161,14 +178,26 @@ Network safeguards are independent and default to `false`:
   Deny -> Allow transition)
 - `allow-outbound-cloud-connection-rule-update`
 - `allow-outbound-gateway-rule-update`
+- `allow-managed-private-endpoint-create`
+- `allow-managed-private-endpoint-delete`
 
 Every configured surface is preflighted before any Fabric item is mutated.
-Network changes are applied only after the workspace and all item stages
-complete, except that an interrupted network mutation from a prior attempt is
-always recovered immediately once the workspace is resolved. Tightening
+Present managed private endpoints are verified or created after item
+reconciliation, OAP policy/rules run next, and absent endpoint deletions run
+last. An interrupted endpoint operation is recovered early, but untouched
+endpoints are never started during early recovery. Tightening
 outbound `Allow` -> `Deny` writes the complete communication policy first and
 then applies the configured outbound rules; relaxing `Deny` -> `Allow` applies
 any configured rule bodies first and writes the communication policy last.
+
+Outbound `Allow` -> `Deny` is intentionally deferred when a declared present
+endpoint is missing, provisioning, awaiting approval, or otherwise not safely
+approved. Apply creates and polls the endpoint first; `Succeeded` plus
+connection `Pending` is a successful apply with `approvalRequired: true`.
+Approve the private-link request and generate a fresh plan before OAP can
+tighten. A managed workspace bootstrap likewise requires a replan before
+same-workspace endpoints can run; an explicit independent
+`networkProtection.workspaceId` remains actionable.
 
 ## Authenticated Fabric plan with GitHub OIDC
 

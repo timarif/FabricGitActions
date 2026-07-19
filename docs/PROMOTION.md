@@ -58,6 +58,11 @@ for the promotion. Lakehouse deletion requires both `allow_delete` and
 `allow_lakehouse_data_loss`. Relaxing an inbound or outbound network
 communication policy default action from `Deny` to `Allow` requires both
 `allow_network_policy_update` and `allow_network_policy_relaxation`.
+Managed private endpoint creation and deletion use independent
+`allow_managed_private_endpoint_create` and
+`allow_managed_private_endpoint_delete` approvals. Endpoint creation may
+complete with external private-link approval still pending; approve it and
+generate a new plan before promoting an outbound `Allow` -> `Deny` policy.
 
 Do not reuse a plan across environments. Plans bind the deployment
 environment, workspace, source commit, dependency graph, physical IDs, and

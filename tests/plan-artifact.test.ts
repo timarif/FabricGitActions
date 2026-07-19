@@ -4,10 +4,17 @@ import path from "node:path";
 
 import { describe, expect, it } from "vitest";
 
+import {
+  normalizeManagedPrivateEndpoints,
+  planManagedPrivateEndpoints,
+} from "../src/fabric/managed-private-endpoints";
 import { hashCommunicationPolicy } from "../src/fabric/network-protection";
 import { loadApprovedPlan } from "../src/plan-artifact";
 import { buildPlan, rehashPlan } from "../src/planner";
 import type { LoadedManifest } from "../src/types";
+
+const TARGET_ID =
+  "/subscriptions/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/resourceGroups/data/providers/Microsoft.Storage/storageAccounts/storage";
 
 function createPlan() {
   const loaded: LoadedManifest = {
@@ -301,6 +308,7 @@ describe("approved plan loading", () => {
       inbound: { publicAccessRules: { defaultAction: "Allow" } },
       outbound: { publicAccessRules: { defaultAction: "Deny" } },
     });
+
     const observedPolicyHash = hashCommunicationPolicy({
       inbound: { publicAccessRules: { defaultAction: "Allow" } },
       outbound: { publicAccessRules: { defaultAction: "Allow" } },
@@ -332,6 +340,175 @@ describe("approved plan loading", () => {
     expect(
       loadApprovedPlan(planPath).networkProtection?.communicationPolicy,
     ).toMatchObject({ action: "update", isRelaxation: false });
+  });
+
+  it("round-trips a guarded managed private endpoint plan without exposing requestMessage", () => {
+    const root = mkdtempSync(path.join(tmpdir(), "fabric-plan-"));
+    const planPath = path.join(root, "plan.json");
+    const plan = createPlan();
+    const desiredPolicyHash = hashCommunicationPolicy({
+      inbound: { publicAccessRules: { defaultAction: "Allow" } },
+      outbound: { publicAccessRules: { defaultAction: "Deny" } },
+    });
+    const observedPolicyHash = hashCommunicationPolicy({
+      inbound: { publicAccessRules: { defaultAction: "Allow" } },
+      outbound: { publicAccessRules: { defaultAction: "Allow" } },
+    });
+    const endpoints = planManagedPrivateEndpoints(
+      normalizeManagedPrivateEndpoints([
+        {
+          name: "storage-blob",
+          targetPrivateLinkResourceId: TARGET_ID,
+          requestMessage: "Approve this endpoint",
+        },
+      ]),
+      [],
+    );
+    plan.networkProtection = {
+      workspaceId: "11111111-1111-4111-8111-111111111111",
+      communicationPolicy: {
+        action: "blocked",
+        reason: "Endpoint approval required.",
+        desiredHash: desiredPolicyHash,
+        observedStateHash: observedPolicyHash,
+        desiredInboundDefaultAction: "Allow",
+        desiredOutboundDefaultAction: "Deny",
+        observedInboundDefaultAction: "Allow",
+        observedOutboundDefaultAction: "Allow",
+        isRelaxation: false,
+        blockedByManagedPrivateEndpoints: ["storage-blob"],
+      },
+      managedPrivateEndpoints: endpoints,
+    };
+    const approved = rehashPlan(plan);
+    writeFileSync(planPath, JSON.stringify(approved), "utf8");
+
+    const loaded = loadApprovedPlan(planPath);
+    expect(
+      loaded.networkProtection?.managedPrivateEndpoints?.[0],
+    ).toMatchObject({
+      action: "create",
+      requestMessageHash: expect.stringMatching(/^[a-f0-9]{64}$/),
+    });
+    expect(JSON.stringify(loaded)).not.toContain(
+      "Approve this endpoint",
+    );
+
+    (
+      approved.networkProtection!.managedPrivateEndpoints![0] as unknown as Record<
+        string,
+        unknown
+      >
+    ).requestMessage = "leak";
+    writeFileSync(
+      planPath,
+      JSON.stringify(rehashPlan(approved)),
+      "utf8",
+    );
+    expect(() => loadApprovedPlan(planPath)).toThrow(
+      "invalid structure",
+    );
+  });
+
+  it("rejects non-deterministic managed private endpoint ordering", () => {
+    const root = mkdtempSync(path.join(tmpdir(), "fabric-plan-"));
+    const planPath = path.join(root, "plan.json");
+    const plan = createPlan();
+    const policyHash = hashCommunicationPolicy({
+      inbound: { publicAccessRules: { defaultAction: "Allow" } },
+      outbound: { publicAccessRules: { defaultAction: "Allow" } },
+    });
+    plan.networkProtection = {
+      workspaceId: "11111111-1111-4111-8111-111111111111",
+      communicationPolicy: {
+        action: "no-op",
+        reason: "matches",
+        desiredHash: policyHash,
+        observedStateHash: policyHash,
+        desiredInboundDefaultAction: "Allow",
+        desiredOutboundDefaultAction: "Allow",
+        observedInboundDefaultAction: "Allow",
+        observedOutboundDefaultAction: "Allow",
+        isRelaxation: false,
+      },
+      managedPrivateEndpoints: planManagedPrivateEndpoints(
+        normalizeManagedPrivateEndpoints([
+          {
+            name: "zeta",
+            targetPrivateLinkResourceId: TARGET_ID,
+            requestMessage: "Approve zeta",
+          },
+          {
+            name: "alpha",
+            targetPrivateLinkResourceId: TARGET_ID,
+            requestMessage: "Approve alpha",
+          },
+        ]),
+        [],
+      ).reverse(),
+    };
+    writeFileSync(
+      planPath,
+      JSON.stringify(rehashPlan(plan)),
+      "utf8",
+    );
+
+    expect(() => loadApprovedPlan(planPath)).toThrow(
+      "invalid structure",
+    );
+  });
+
+  it("rejects an OAP prerequisite block that omits a declared endpoint blocker", () => {
+    const root = mkdtempSync(path.join(tmpdir(), "fabric-plan-"));
+    const planPath = path.join(root, "plan.json");
+    const plan = createPlan();
+    const desiredPolicyHash = hashCommunicationPolicy({
+      inbound: { publicAccessRules: { defaultAction: "Allow" } },
+      outbound: { publicAccessRules: { defaultAction: "Deny" } },
+    });
+    const observedPolicyHash = hashCommunicationPolicy({
+      inbound: { publicAccessRules: { defaultAction: "Allow" } },
+      outbound: { publicAccessRules: { defaultAction: "Allow" } },
+    });
+    plan.networkProtection = {
+      workspaceId: "11111111-1111-4111-8111-111111111111",
+      communicationPolicy: {
+        action: "blocked",
+        reason: "Endpoint approval required.",
+        desiredHash: desiredPolicyHash,
+        observedStateHash: observedPolicyHash,
+        desiredInboundDefaultAction: "Allow",
+        desiredOutboundDefaultAction: "Deny",
+        observedInboundDefaultAction: "Allow",
+        observedOutboundDefaultAction: "Allow",
+        isRelaxation: false,
+        blockedByManagedPrivateEndpoints: ["alpha"],
+      },
+      managedPrivateEndpoints: planManagedPrivateEndpoints(
+        normalizeManagedPrivateEndpoints([
+          {
+            name: "alpha",
+            targetPrivateLinkResourceId: TARGET_ID,
+            requestMessage: "Approve alpha",
+          },
+          {
+            name: "zeta",
+            targetPrivateLinkResourceId: TARGET_ID,
+            requestMessage: "Approve zeta",
+          },
+        ]),
+        [],
+      ),
+    };
+    writeFileSync(
+      planPath,
+      JSON.stringify(rehashPlan(plan)),
+      "utf8",
+    );
+
+    expect(() => loadApprovedPlan(planPath)).toThrow(
+      "invalid structure",
+    );
   });
 
   it("rejects inconsistent network policy relaxation metadata", () => {

@@ -52,6 +52,7 @@ export function loadNetworkProtectionManifest(
   }
   const parsed = parse(
     readFileSync(absoluteManifestPath, "utf8"),
+    { prettyErrors: false },
   ) as unknown;
   if (
     parsed === null ||
@@ -88,6 +89,7 @@ export function loadManifestItemDirectoriesForSafety(
   }
   const parsed = parse(
     readFileSync(absoluteManifestPath, "utf8"),
+    { prettyErrors: false },
   ) as unknown;
   if (
     parsed === null ||
@@ -144,7 +146,7 @@ export function loadManifest(
   }
 
   const source = readFileSync(absoluteManifestPath, "utf8");
-  const parsed = parse(source) as unknown;
+  const parsed = parse(source, { prettyErrors: false }) as unknown;
   applyWorkspaceOverride(parsed, options.workspaceIdOverride);
   const resolved = substituteVariables(parsed, options.variables ?? {});
 

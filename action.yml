@@ -133,6 +133,14 @@ inputs:
     description: Allow apply mode to update outbound access protection gateway rules.
     required: false
     default: "false"
+  allow-managed-private-endpoint-create:
+    description: Allow apply mode to create managed private endpoints.
+    required: false
+    default: "false"
+  allow-managed-private-endpoint-delete:
+    description: Allow apply mode to delete the exact approved managed private endpoint physical ID.
+    required: false
+    default: "false"
   return-livy-api-endpoint:
     description: Return deployed Lakehouse Livy API endpoints during apply.
     required: false
@@ -167,6 +175,22 @@ outputs:
     description: Planned action for the managed workspace.
   network-protection-action:
     description: Planned or applied action for the workspace network communication policy, or not-configured when networkProtection is absent from the manifest.
+  managed-private-endpoint-count:
+    description: Number of declared managed private endpoints.
+  managed-private-endpoint-create-count:
+    description: Number of managed private endpoints planned for creation.
+  managed-private-endpoint-delete-count:
+    description: Number of managed private endpoints planned for deletion.
+  managed-private-endpoint-noop-count:
+    description: Number of managed private endpoints requiring no lifecycle mutation.
+  managed-private-endpoint-blocked-count:
+    description: Number of managed private endpoint actions blocked by fail-closed planning.
+  managed-private-endpoint-unknown-count:
+    description: Number of managed private endpoint actions with unknown live state.
+  managed-private-endpoint-applied-count:
+    description: Number of managed private endpoint lifecycle operations applied or verified.
+  managed-private-endpoint-resumed-count:
+    description: Number of managed private endpoint operations resumed from checkpoint state.
   requires-item-replan:
     description: True when a new workspace was provisioned and child items require a fresh approved plan.
   result-file:

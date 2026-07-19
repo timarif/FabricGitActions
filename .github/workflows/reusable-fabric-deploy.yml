@@ -113,6 +113,14 @@ on:
         required: false
         default: false
         type: boolean
+      allow_managed_private_endpoint_create:
+        required: false
+        default: false
+        type: boolean
+      allow_managed_private_endpoint_delete:
+        required: false
+        default: false
+        type: boolean
       artifact_retention_days:
         description: Retention for approved plan, checkpoint, and result artifacts.
         required: false
@@ -261,10 +269,34 @@ jobs:
                   ][];
                   . == null or .action == "blocked"
                 )
+                and all(
+                  .networkProtection.managedPrivateEndpoints[]?;
+                  .action == "blocked"
+                  and .bootstrapBlocked == true
+                )
               ) else (
-                all(
+                (
+                  .networkProtection.communicationPolicy == null
+                  or (
+                    (
+                      .networkProtection.communicationPolicy.action != "blocked"
+                      and .networkProtection.communicationPolicy.action != "unknown"
+                    )
+                    or (
+                      .networkProtection.communicationPolicy.action == "blocked"
+                      and (
+                        .networkProtection.communicationPolicy.blockedByManagedPrivateEndpoints
+                        | type
+                      ) == "array"
+                      and (
+                        .networkProtection.communicationPolicy.blockedByManagedPrivateEndpoints
+                        | length
+                      ) > 0
+                    )
+                  )
+                )
+                and all(
                   [
-                    .networkProtection.communicationPolicy,
                     .networkProtection.outboundCloudConnectionRules,
                     .networkProtection.outboundGatewayRules
                   ][];
@@ -273,6 +305,11 @@ jobs:
                     .action != "blocked"
                     and .action != "unknown"
                   )
+                )
+                and all(
+                  .networkProtection.managedPrivateEndpoints[]?;
+                  .action != "blocked"
+                  and .action != "unknown"
                 )
               )
               end
@@ -423,6 +460,8 @@ jobs:
           allow-network-policy-relaxation: ${{ inputs.allow_network_policy_relaxation }}
           allow-outbound-cloud-connection-rule-update: ${{ inputs.allow_outbound_cloud_connection_rule_update }}
           allow-outbound-gateway-rule-update: ${{ inputs.allow_outbound_gateway_rule_update }}
+          allow-managed-private-endpoint-create: ${{ inputs.allow_managed_private_endpoint_create }}
+          allow-managed-private-endpoint-delete: ${{ inputs.allow_managed_private_endpoint_delete }}
           plan-file: apply-output/current-plan.json
           checkpoint-file: apply-output/checkpoint.json
           result-file: apply-output/result.json

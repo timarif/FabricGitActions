@@ -81,6 +81,14 @@ on:
         required: true
         default: false
         type: boolean
+      allow_managed_private_endpoint_create:
+        required: true
+        default: false
+        type: boolean
+      allow_managed_private_endpoint_delete:
+        required: true
+        default: false
+        type: boolean
 
 permissions:
   actions: read
@@ -114,6 +122,8 @@ jobs:
       allow_network_policy_relaxation: ${{ inputs.allow_network_policy_relaxation }}
       allow_outbound_cloud_connection_rule_update: ${{ inputs.allow_outbound_cloud_connection_rule_update }}
       allow_outbound_gateway_rule_update: ${{ inputs.allow_outbound_gateway_rule_update }}
+      allow_managed_private_endpoint_create: ${{ inputs.allow_managed_private_endpoint_create }}
+      allow_managed_private_endpoint_delete: ${{ inputs.allow_managed_private_endpoint_delete }}
 
   test:
     if: ${{ success() && (inputs.target == 'test' || inputs.target == 'prod') }}
@@ -143,6 +153,8 @@ jobs:
       allow_network_policy_relaxation: ${{ inputs.allow_network_policy_relaxation }}
       allow_outbound_cloud_connection_rule_update: ${{ inputs.allow_outbound_cloud_connection_rule_update }}
       allow_outbound_gateway_rule_update: ${{ inputs.allow_outbound_gateway_rule_update }}
+      allow_managed_private_endpoint_create: ${{ inputs.allow_managed_private_endpoint_create }}
+      allow_managed_private_endpoint_delete: ${{ inputs.allow_managed_private_endpoint_delete }}
 
   prod:
     if: ${{ success() && inputs.target == 'prod' }}
@@ -172,3 +184,5 @@ jobs:
       allow_network_policy_relaxation: ${{ inputs.allow_network_policy_relaxation }}
       allow_outbound_cloud_connection_rule_update: ${{ inputs.allow_outbound_cloud_connection_rule_update }}
       allow_outbound_gateway_rule_update: ${{ inputs.allow_outbound_gateway_rule_update }}
+      allow_managed_private_endpoint_create: ${{ inputs.allow_managed_private_endpoint_create }}
+      allow_managed_private_endpoint_delete: ${{ inputs.allow_managed_private_endpoint_delete }}

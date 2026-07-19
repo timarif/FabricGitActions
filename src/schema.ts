@@ -169,6 +169,57 @@ export const deploymentSchema = {
             },
           },
         },
+        managedPrivateEndpoints: {
+          type: "array",
+          items: {
+            type: "object",
+            additionalProperties: false,
+            required: ["name", "targetPrivateLinkResourceId"],
+            properties: {
+              name: {
+                type: "string",
+                minLength: 1,
+                maxLength: 64,
+                pattern: "^\\S(?:[\\s\\S]*\\S)?$",
+              },
+              desiredState: {
+                enum: ["present", "absent"],
+              },
+              targetPrivateLinkResourceId: {
+                type: "string",
+                minLength: 1,
+                pattern: "^\\S(?:[\\s\\S]*\\S)?$",
+              },
+              targetSubresourceType: {
+                type: "string",
+                minLength: 1,
+                pattern: "^\\S(?:[\\s\\S]*\\S)?$",
+              },
+              requestMessage: {
+                type: "string",
+                minLength: 1,
+                maxLength: 140,
+                pattern: "^\\S(?:[\\s\\S]*\\S)?$",
+              },
+            },
+            allOf: [
+              {
+                if: {
+                  required: ["desiredState"],
+                  properties: {
+                    desiredState: { const: "absent" },
+                  },
+                },
+                then: {
+                  not: { required: ["requestMessage"] },
+                },
+                else: {
+                  required: ["requestMessage"],
+                },
+              },
+            ],
+          },
+        },
       },
     },
     items: {

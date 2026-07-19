@@ -10,6 +10,14 @@ import type {
   PlannedNetworkSurface,
 } from "../types";
 import { FabricApiError, FabricClient } from "./client";
+import {
+  buildStaticManagedPrivateEndpointPlans,
+  managedPrivateEndpointOapBlockers,
+  ManagedPrivateEndpointAdapter,
+  normalizeManagedPrivateEndpoints,
+  planManagedPrivateEndpoints,
+  type CanonicalManagedPrivateEndpoint,
+} from "./managed-private-endpoints";
 
 const GUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -62,6 +70,7 @@ export interface CanonicalNetworkProtection {
   communicationPolicy: CanonicalNetworkCommunicationPolicy;
   outboundCloudConnectionRules?: CanonicalOutboundCloudConnectionRules;
   outboundGatewayRules?: CanonicalOutboundGatewayRules;
+  managedPrivateEndpoints?: CanonicalManagedPrivateEndpoint[];
 }
 
 export interface NetworkCommunicationPolicySnapshot {
@@ -108,6 +117,13 @@ export function normalizeNetworkProtection(
           desired.outboundGatewayRules,
           "networkProtection.outboundGatewayRules",
         );
+  const managedPrivateEndpoints =
+    desired.managedPrivateEndpoints === undefined
+      ? undefined
+      : normalizeManagedPrivateEndpoints(
+          desired.managedPrivateEndpoints,
+          "networkProtection.managedPrivateEndpoints",
+        );
 
   if (
     (outboundCloudConnectionRules || outboundGatewayRules) &&
@@ -123,6 +139,7 @@ export function normalizeNetworkProtection(
     communicationPolicy,
     ...(outboundCloudConnectionRules ? { outboundCloudConnectionRules } : {}),
     ...(outboundGatewayRules ? { outboundGatewayRules } : {}),
+    ...(managedPrivateEndpoints ? { managedPrivateEndpoints } : {}),
   };
 }
 
@@ -386,6 +403,7 @@ function buildStaticNetworkProtectionPlan(
   desired: NetworkProtectionManifest,
   action: Extract<PlannedNetworkSurface["action"], "blocked" | "unknown">,
   reason: string,
+  bootstrapBlocked = false,
 ): PlannedNetworkProtection {
   const canonical = normalizeNetworkProtection(desired);
   const communicationPolicy: PlannedNetworkCommunicationPolicy = {
@@ -420,6 +438,17 @@ function buildStaticNetworkProtectionPlan(
           },
         }
       : {}),
+    ...(canonical.managedPrivateEndpoints
+      ? {
+          managedPrivateEndpoints:
+            buildStaticManagedPrivateEndpointPlans(
+              canonical.managedPrivateEndpoints,
+              action,
+              reason,
+              bootstrapBlocked,
+            ),
+        }
+      : {}),
   };
 }
 
@@ -445,8 +474,14 @@ export function buildUnknownNetworkProtectionPlan(
 export function buildBlockedNetworkProtectionPlan(
   desired: NetworkProtectionManifest,
   reason: string,
+  bootstrapBlocked = false,
 ): PlannedNetworkProtection {
-  return buildStaticNetworkProtectionPlan(desired, "blocked", reason);
+  return buildStaticNetworkProtectionPlan(
+    desired,
+    "blocked",
+    reason,
+    bootstrapBlocked,
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -474,7 +509,11 @@ export function quoteEtag(etag: string): string {
 }
 
 export class NetworkProtectionAdapter {
-  constructor(private readonly client: FabricClient) {}
+  constructor(
+    private readonly client: FabricClient,
+    private readonly managedPrivateEndpointAdapter =
+      new ManagedPrivateEndpointAdapter(client),
+  ) {}
 
   async getCommunicationPolicy(
     workspaceId: string,
@@ -648,7 +687,7 @@ export class NetworkProtectionAdapter {
       (observedInbound === "Deny" && desiredInbound === "Allow") ||
       (observedOutbound === "Deny" && desiredOutbound === "Allow");
 
-    const communicationPolicy: PlannedNetworkCommunicationPolicy = {
+    let communicationPolicy: PlannedNetworkCommunicationPolicy = {
       action: policyMatches ? "no-op" : "update",
       reason: policyMatches
         ? "Workspace network communication policy already matches the desired configuration."
@@ -684,12 +723,38 @@ export class NetworkProtectionAdapter {
           "outbound gateway rules",
         )
       : undefined;
+    const managedPrivateEndpoints = canonical.managedPrivateEndpoints
+      ? planManagedPrivateEndpoints(
+          canonical.managedPrivateEndpoints,
+          await this.managedPrivateEndpointAdapter.listManagedPrivateEndpoints(
+            targetWorkspaceId,
+          ),
+        )
+      : undefined;
+    const managedPrivateEndpointBlockers =
+      managedPrivateEndpointOapBlockers(managedPrivateEndpoints);
+    if (
+      communicationPolicy.action === "update" &&
+      observedOutbound === "Allow" &&
+      desiredOutbound === "Deny" &&
+      managedPrivateEndpointBlockers.length > 0
+    ) {
+      communicationPolicy = {
+        ...communicationPolicy,
+        action: "blocked",
+        reason:
+          "Outbound Deny is blocked until every declared present managed private endpoint is provisioned and approved. Apply the endpoint changes first, obtain approval, then generate a new plan.",
+        blockedByManagedPrivateEndpoints:
+          managedPrivateEndpointBlockers,
+      };
+    }
 
     return {
       workspaceId: targetWorkspaceId,
       communicationPolicy,
       ...(outboundCloudConnectionRules ? { outboundCloudConnectionRules } : {}),
       ...(outboundGatewayRules ? { outboundGatewayRules } : {}),
+      ...(managedPrivateEndpoints ? { managedPrivateEndpoints } : {}),
     };
   }
 

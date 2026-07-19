@@ -1,4 +1,8 @@
-import { sha256, stableJson } from "./hash";
+import {
+  compareCanonicalStrings,
+  sha256,
+  stableJson,
+} from "./hash";
 import {
   assertDistinctFilePaths,
   assertOutputPathOutsideItems,
@@ -60,6 +64,11 @@ import {
 import type { OneLakeArtifactStager } from "./fabric/onelake-artifacts";
 import type { WorkspaceAdapter } from "./fabric/workspace";
 import type { NetworkProtectionAdapter } from "./fabric/network-protection";
+import {
+  managedPrivateEndpointRequestMessages,
+  redactManagedPrivateEndpointError,
+  type ManagedPrivateEndpointAdapter,
+} from "./fabric/managed-private-endpoints";
 import type { FabricTagAdapter } from "./fabric/tags";
 import {
   hashSparkJobDefinition,
@@ -80,9 +89,14 @@ import {
 import { applyManagedWorkspace } from "./workspace-apply";
 import {
   applyNetworkProtection,
+  finalizeNetworkProtectionCheckpoint,
   preflightNetworkProtection,
   recoverInterruptedNetworkProtection,
 } from "./network-apply";
+import {
+  applyManagedPrivateEndpoints,
+  type ApplyManagedPrivateEndpointOptions,
+} from "./managed-private-endpoint-apply";
 import type {
   ApplyCheckpoint,
   ApplyItemResult,
@@ -162,6 +176,14 @@ export interface ApplyPlanOptions {
     | "getOutboundGatewayRules"
     | "putOutboundGatewayRules"
   >;
+  managedPrivateEndpointAdapter?: Pick<
+    ManagedPrivateEndpointAdapter,
+    | "listManagedPrivateEndpoints"
+    | "getManagedPrivateEndpoint"
+    | "createManagedPrivateEndpoint"
+    | "deleteManagedPrivateEndpoint"
+    | "waitForProvisioningSucceeded"
+  >;
   oneLakeArtifactStager?: Pick<
     OneLakeArtifactStager,
     "uploadImmutable" | "verify" | "getEndpointIdentity"
@@ -184,6 +206,8 @@ export interface ApplyPlanOptions {
   allowNetworkPolicyRelaxation?: boolean;
   allowOutboundCloudConnectionRuleUpdate?: boolean;
   allowOutboundGatewayRuleUpdate?: boolean;
+  allowManagedPrivateEndpointCreate?: boolean;
+  allowManagedPrivateEndpointDelete?: boolean;
   checkpointFile: string;
   resultFile: string;
   itemDirectories?: string[];
@@ -316,9 +340,12 @@ export async function applyApprovedPlan(
         await recoverInterruptedNetworkProtection(
           networkProtectionApplyOptions(runtimeOptions, checkpoint, now),
         );
-        networkProtectionResult = await applyNetworkProtection(
-          networkProtectionApplyOptions(runtimeOptions, checkpoint, now),
-        );
+        networkProtectionResult =
+          await applyRuntimeNetworkProtection(
+            runtimeOptions,
+            checkpoint,
+            now,
+          );
       }
       const result = buildResult(
         options.approvedPlan,
@@ -610,9 +637,12 @@ export async function applyApprovedPlan(
 
     // Network protection changes are applied only after the workspace and
     // every item stage have completed.
-    networkProtectionResult = await applyNetworkProtection(
-      networkProtectionApplyOptions(runtimeOptions, checkpoint, now),
-    );
+    networkProtectionResult =
+      await applyRuntimeNetworkProtection(
+        runtimeOptions,
+        checkpoint,
+        now,
+      );
 
     const result = buildResult(
       options.approvedPlan,
@@ -628,7 +658,16 @@ export async function applyApprovedPlan(
     writeApplyResult(options.resultFile, result);
     return result;
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
+    const redactedError = redactManagedPrivateEndpointError(
+      error,
+      managedPrivateEndpointRequestMessages(
+        options.loadedManifest.manifest.networkProtection,
+      ),
+    );
+    const message =
+      redactedError instanceof Error
+        ? redactedError.message
+        : String(redactedError);
     results.push({
       logicalId: "<apply>",
       type: "Lakehouse",
@@ -653,12 +692,12 @@ export async function applyApprovedPlan(
         writeApplyResult(options.resultFile, result);
       } catch (reportingError) {
         throw new AggregateError(
-          [error, reportingError],
+          [redactedError, reportingError],
           `${message} Result reporting also failed.`,
         );
       }
     }
-    throw error;
+    throw redactedError;
   }
 }
 
@@ -899,6 +938,8 @@ function networkProtectionApplyOptions(
     currentPlan: runtimeOptions.currentPlan,
     desired: runtimeOptions.loadedManifest.manifest.networkProtection,
     adapter: runtimeOptions.networkProtectionAdapter,
+    managedPrivateEndpointAdapter:
+      runtimeOptions.managedPrivateEndpointAdapter,
     checkpoint,
     checkpointFile: runtimeOptions.checkpointFile,
     allowNetworkPolicyUpdate:
@@ -909,6 +950,10 @@ function networkProtectionApplyOptions(
       runtimeOptions.allowOutboundCloudConnectionRuleUpdate ?? false,
     allowOutboundGatewayRuleUpdate:
       runtimeOptions.allowOutboundGatewayRuleUpdate ?? false,
+    allowManagedPrivateEndpointCreate:
+      runtimeOptions.allowManagedPrivateEndpointCreate ?? false,
+    allowManagedPrivateEndpointDelete:
+      runtimeOptions.allowManagedPrivateEndpointDelete ?? false,
     now,
   };
 }
@@ -929,7 +974,74 @@ function preflightRuntimeNetworkProtection(
       runtimeOptions.allowOutboundCloudConnectionRuleUpdate ?? false,
     allowOutboundGatewayRuleUpdate:
       runtimeOptions.allowOutboundGatewayRuleUpdate ?? false,
+    allowManagedPrivateEndpointCreate:
+      runtimeOptions.allowManagedPrivateEndpointCreate ?? false,
+    allowManagedPrivateEndpointDelete:
+      runtimeOptions.allowManagedPrivateEndpointDelete ?? false,
   });
+}
+
+async function applyRuntimeNetworkProtection(
+  runtimeOptions: ApplyPlanOptions,
+  checkpoint: ApplyCheckpoint,
+  now: () => number,
+): Promise<ApplyNetworkProtectionResult | undefined> {
+  const managedOptions: ApplyManagedPrivateEndpointOptions = {
+    approvedPlan: runtimeOptions.approvedPlan,
+    currentPlan: runtimeOptions.currentPlan,
+    desired:
+      runtimeOptions.loadedManifest.manifest.networkProtection,
+    adapter: runtimeOptions.managedPrivateEndpointAdapter,
+    checkpoint,
+    checkpointFile: runtimeOptions.checkpointFile,
+    allowManagedPrivateEndpointCreate:
+      runtimeOptions.allowManagedPrivateEndpointCreate ?? false,
+    allowManagedPrivateEndpointDelete:
+      runtimeOptions.allowManagedPrivateEndpointDelete ?? false,
+    now,
+  };
+  const present = await applyManagedPrivateEndpoints(
+    managedOptions,
+    "present",
+  );
+  const network = await applyNetworkProtection(
+    networkProtectionApplyOptions(
+      runtimeOptions,
+      checkpoint,
+      now,
+    ),
+  );
+  const absent = await applyManagedPrivateEndpoints(
+    managedOptions,
+    "absent",
+  );
+  if (!network) {
+    return undefined;
+  }
+  if (network.communicationPolicy.status !== "deferred") {
+    finalizeNetworkProtectionCheckpoint(
+      networkProtectionApplyOptions(
+        runtimeOptions,
+        checkpoint,
+        now,
+      ),
+    );
+  }
+  const managedPrivateEndpoints = [
+    ...(present ?? []),
+    ...(absent ?? []),
+  ].sort((left, right) =>
+    compareCanonicalStrings(
+      left.name.toLowerCase(),
+      right.name.toLowerCase(),
+    ),
+  );
+  return {
+    ...network,
+    ...(managedPrivateEndpoints.length > 0
+      ? { managedPrivateEndpoints }
+      : {}),
+  };
 }
 
 function assertPlanIdentity(

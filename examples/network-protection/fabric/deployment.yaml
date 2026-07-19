@@ -11,7 +11,9 @@ workspace:
 # stays Allow because Phase 5A does not manage inbound firewall policy yet.
 # Outbound cloud connection and gateway rules may only be declared while
 # outboundDefaultAction is Deny; apply lands the master policy switch and the
-# configured allow lists together as one approved mutation.
+# configured allow lists together as one approved mutation. The declared
+# managed private endpoint makes this a guarded two-plan rollout: first create
+# and approve the endpoint, then replan before OAP can tighten to Deny.
 networkProtection:
   communicationPolicy:
     inboundDefaultAction: Allow
@@ -29,6 +31,11 @@ networkProtection:
     defaultAction: Deny
     allowedGateways:
       - id: ${var.FABRIC_GATEWAY_ID}
+  managedPrivateEndpoints:
+    - name: example-storage-blob
+      targetPrivateLinkResourceId: ${var.PRIVATE_LINK_RESOURCE_ID}
+      targetSubresourceType: blob
+      requestMessage: Approve Fabric access to the example storage account
 
 items:
   - logicalId: bronze

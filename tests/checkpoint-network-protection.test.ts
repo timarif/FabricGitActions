@@ -9,10 +9,19 @@ import {
   loadCheckpoint,
   writeCheckpoint,
 } from "../src/checkpoint";
+import {
+  managedPrivateEndpointCheckpointKey,
+  normalizeManagedPrivateEndpoints,
+  planManagedPrivateEndpoints,
+} from "../src/fabric/managed-private-endpoints";
 import { buildPlan, rehashPlan } from "../src/planner";
 import type { LoadedManifest } from "../src/types";
 
 const WORKSPACE_ID = "11111111-1111-4111-8111-111111111111";
+const TARGET_ID =
+  "/subscriptions/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/resourceGroups/data/providers/Microsoft.Storage/storageAccounts/storage";
+const STORAGE_CHECKPOINT_KEY =
+  managedPrivateEndpointCheckpointKey("storage-blob");
 
 function planWithNetworkProtection() {
   const loaded: LoadedManifest = {
@@ -228,6 +237,120 @@ describe("network protection checkpoint", () => {
 
     expect(() => loadCheckpoint(checkpointFile, plan)).toThrow(
       "Checkpoint network protection does not match",
+    );
+  });
+
+  it("round-trips managed private endpoint create intent without persisting requestMessage", () => {
+    const plan = planWithNetworkProtection();
+    plan.networkProtection!.managedPrivateEndpoints =
+      planManagedPrivateEndpoints(
+        normalizeManagedPrivateEndpoints([
+          {
+            name: "storage-blob",
+            targetPrivateLinkResourceId: TARGET_ID,
+            requestMessage: "Approve this private endpoint",
+          },
+        ]),
+        [],
+      );
+    const approved = rehashPlan(plan);
+    const endpoint =
+      approved.networkProtection!.managedPrivateEndpoints![0]!;
+    const checkpoint = createCheckpoint(approved);
+    checkpoint.networkProtection = {
+      workspaceId: WORKSPACE_ID,
+      managedPrivateEndpoints: {
+        [STORAGE_CHECKPOINT_KEY]: {
+          name: endpoint.name,
+          desiredState: "present",
+          action: "create",
+          operationHash: endpoint.operationHash,
+          desiredIdentityHash: endpoint.desiredIdentityHash,
+          phase: "create-submitting",
+          submittedAt: "2026-07-18T00:00:00.000Z",
+          updatedAt: "2026-07-18T00:00:00.000Z",
+        },
+      },
+      updatedAt: "2026-07-18T00:00:00.000Z",
+    };
+    const root = mkdtempSync(
+      path.join(tmpdir(), "fabric-mpe-checkpoint-"),
+    );
+    const checkpointFile = path.join(root, "checkpoint.json");
+
+    writeCheckpoint(checkpointFile, checkpoint);
+    const loaded = loadCheckpoint(checkpointFile, approved);
+
+    expect(
+      loaded?.networkProtection?.managedPrivateEndpoints?.[
+        STORAGE_CHECKPOINT_KEY
+      ]?.phase,
+    ).toBe("create-submitting");
+    expect(JSON.stringify(loaded)).not.toContain(
+      "Approve this private endpoint",
+    );
+  });
+
+  it("validates managed private endpoint operation hashes and delete cooldown timestamps", () => {
+    const plan = planWithNetworkProtection();
+    const desired = normalizeManagedPrivateEndpoints([
+      {
+        name: "storage-blob",
+        desiredState: "absent",
+        targetPrivateLinkResourceId: TARGET_ID,
+      },
+    ]);
+    plan.networkProtection!.managedPrivateEndpoints =
+      planManagedPrivateEndpoints(desired, [
+        {
+          id: "22222222-2222-4222-8222-222222222222",
+          name: "storage-blob",
+          targetPrivateLinkResourceId: TARGET_ID.toLowerCase(),
+          provisioningState: "Succeeded",
+          connectionStatus: "Approved",
+        },
+      ]);
+    const approved = rehashPlan(plan);
+    const endpoint =
+      approved.networkProtection!.managedPrivateEndpoints![0]!;
+    const checkpoint = createCheckpoint(approved);
+    checkpoint.networkProtection = {
+      workspaceId: WORKSPACE_ID,
+      managedPrivateEndpoints: {
+        [STORAGE_CHECKPOINT_KEY]: {
+          name: endpoint.name,
+          desiredState: "absent",
+          action: "delete",
+          operationHash: endpoint.operationHash,
+          desiredIdentityHash: endpoint.desiredIdentityHash,
+          phase: "absent-verified",
+          physicalId: endpoint.physicalId,
+          observedIdentityHash: endpoint.observedIdentityHash,
+          verifiedAt: "2026-07-18T00:00:00.000Z",
+          deletedAt: "2026-07-18T00:00:00.000Z",
+          recreateNotBefore: "2026-07-18T00:15:00.000Z",
+          updatedAt: "2026-07-18T00:00:00.000Z",
+        },
+      },
+      updatedAt: "2026-07-18T00:00:00.000Z",
+    };
+    const root = mkdtempSync(
+      path.join(tmpdir(), "fabric-mpe-checkpoint-"),
+    );
+    const checkpointFile = path.join(root, "checkpoint.json");
+    writeCheckpoint(checkpointFile, checkpoint);
+    expect(
+      loadCheckpoint(checkpointFile, approved)?.networkProtection
+        ?.managedPrivateEndpoints?.[STORAGE_CHECKPOINT_KEY]
+        ?.recreateNotBefore,
+    ).toBe("2026-07-18T00:15:00.000Z");
+
+    checkpoint.networkProtection.managedPrivateEndpoints![
+      STORAGE_CHECKPOINT_KEY
+    ]!.operationHash = "0".repeat(64);
+    writeCheckpoint(checkpointFile, checkpoint);
+    expect(() => loadCheckpoint(checkpointFile, approved)).toThrow(
+      "does not match the approved deployment plan",
     );
   });
 });

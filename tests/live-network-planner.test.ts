@@ -10,6 +10,8 @@ import type {
 
 const WORKSPACE_ID = "11111111-1111-4111-8111-111111111111";
 const INDEPENDENT_WORKSPACE_ID = "55555555-5555-4555-8555-555555555555";
+const TARGET_ID =
+  "/subscriptions/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/resourceGroups/data/providers/Microsoft.Storage/storageAccounts/storage";
 
 const desiredNetworkProtection: NetworkProtectionManifest = {
   communicationPolicy: {
@@ -101,7 +103,16 @@ describe("network protection live planning", () => {
   it("blocks network protection when the managed workspace is pending creation and no explicit workspaceId is set", async () => {
     const loaded = loadedManifest({
       workspace: { displayName: "tva-Analytics" },
-      networkProtection: desiredNetworkProtection,
+      networkProtection: {
+        ...desiredNetworkProtection,
+        managedPrivateEndpoints: [
+          {
+            name: "storage-blob",
+            targetPrivateLinkResourceId: TARGET_ID,
+            requestMessage: "Approve",
+          },
+        ],
+      },
     });
     const plan = buildPlan(loaded, { mode: "plan", environment: "dev" });
     const adapters = {
@@ -125,6 +136,12 @@ describe("network protection live planning", () => {
     expect(enriched.networkProtection?.communicationPolicy.reason).toContain(
       "managed workspace must be provisioned",
     );
+    expect(
+      enriched.networkProtection?.managedPrivateEndpoints?.[0],
+    ).toMatchObject({
+      action: "blocked",
+      bootstrapBlocked: true,
+    });
     expect(adapters.networkProtection.plan).not.toHaveBeenCalled();
   });
 

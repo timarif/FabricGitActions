@@ -94,11 +94,20 @@ export interface OutboundGatewayRulesManifest {
   allowedGateways: OutboundGatewayRuleManifest[];
 }
 
+export interface ManagedPrivateEndpointManifest {
+  name: string;
+  desiredState?: DesiredState;
+  targetPrivateLinkResourceId: string;
+  targetSubresourceType?: string;
+  requestMessage?: string;
+}
+
 export interface NetworkProtectionManifest {
   workspaceId?: string;
   communicationPolicy: NetworkCommunicationPolicyManifest;
   outboundCloudConnectionRules?: OutboundCloudConnectionRulesManifest;
   outboundGatewayRules?: OutboundGatewayRulesManifest;
+  managedPrivateEndpoints?: ManagedPrivateEndpointManifest[];
 }
 
 export interface DeploymentManifest {
@@ -247,6 +256,30 @@ export interface PlannedNetworkCommunicationPolicy extends PlannedNetworkSurface
   observedInboundDefaultAction?: NetworkDefaultAction;
   observedOutboundDefaultAction?: NetworkDefaultAction;
   isRelaxation?: boolean;
+  blockedByManagedPrivateEndpoints?: string[];
+}
+
+export type ManagedPrivateEndpointAction = Extract<
+  PlannedAction,
+  "create" | "delete" | "no-op" | "blocked" | "unknown"
+>;
+
+export interface PlannedManagedPrivateEndpoint {
+  name: string;
+  desiredState: DesiredState;
+  targetPrivateLinkResourceId: string;
+  targetSubresourceType?: string;
+  action: ManagedPrivateEndpointAction;
+  reason: string;
+  operationHash: string;
+  desiredIdentityHash: string;
+  requestMessageHash?: string;
+  physicalId?: string;
+  observedIdentityHash?: string;
+  observedProvisioningState?: string;
+  observedConnectionStatus?: string;
+  approvalRequired?: boolean;
+  bootstrapBlocked?: boolean;
 }
 
 export interface PlannedNetworkProtection {
@@ -254,6 +287,7 @@ export interface PlannedNetworkProtection {
   communicationPolicy: PlannedNetworkCommunicationPolicy;
   outboundCloudConnectionRules?: PlannedNetworkSurface;
   outboundGatewayRules?: PlannedNetworkSurface;
+  managedPrivateEndpoints?: PlannedManagedPrivateEndpoint[];
 }
 
 export interface DeploymentPlan {
@@ -325,11 +359,34 @@ export interface ApplyWorkspaceResult {
   error?: string;
 }
 
-export type ApplyNetworkSurfaceStatus = "updated" | "verified" | "resumed";
+export type ApplyNetworkSurfaceStatus =
+  | "updated"
+  | "verified"
+  | "resumed"
+  | "deferred";
 
 export interface ApplyNetworkSurfaceResult {
   action: NetworkSurfaceAction;
   status: ApplyNetworkSurfaceStatus;
+  durationMs: number;
+}
+
+export type ApplyManagedPrivateEndpointStatus =
+  | "created"
+  | "deleted"
+  | "verified"
+  | "resumed";
+
+export interface ApplyManagedPrivateEndpointResult {
+  name: string;
+  action: ManagedPrivateEndpointAction;
+  status: ApplyManagedPrivateEndpointStatus;
+  physicalId?: string;
+  provisioningState?: string;
+  connectionStatus?: string;
+  approvalRequired?: boolean;
+  deletedAt?: string;
+  recreateNotBefore?: string;
   durationMs: number;
 }
 
@@ -338,6 +395,7 @@ export interface ApplyNetworkProtectionResult {
   communicationPolicy: ApplyNetworkSurfaceResult;
   outboundCloudConnectionRules?: ApplyNetworkSurfaceResult;
   outboundGatewayRules?: ApplyNetworkSurfaceResult;
+  managedPrivateEndpoints?: ApplyManagedPrivateEndpointResult[];
 }
 
 export interface ApplyCheckpointItem {
@@ -425,11 +483,42 @@ export interface ApplyCheckpointNetworkSurface {
   updatedAt: string;
 }
 
+export interface ApplyCheckpointManagedPrivateEndpoint {
+  name: string;
+  desiredState: DesiredState;
+  action: Extract<
+    ManagedPrivateEndpointAction,
+    "create" | "delete" | "no-op"
+  >;
+  operationHash: string;
+  desiredIdentityHash: string;
+  phase:
+    | "create-submitting"
+    | "provisioning"
+    | "present-verified"
+    | "delete-submitting"
+    | "absent-verified";
+  physicalId?: string;
+  observedIdentityHash?: string;
+  observedProvisioningState?: string;
+  observedConnectionStatus?: string;
+  approvalRequired?: boolean;
+  submittedAt?: string;
+  verifiedAt?: string;
+  deletedAt?: string;
+  recreateNotBefore?: string;
+  updatedAt: string;
+}
+
 export interface ApplyCheckpointNetworkProtection {
   workspaceId: string;
   communicationPolicy?: ApplyCheckpointNetworkSurface;
   outboundCloudConnectionRules?: ApplyCheckpointNetworkSurface;
   outboundGatewayRules?: ApplyCheckpointNetworkSurface;
+  managedPrivateEndpoints?: Record<
+    string,
+    ApplyCheckpointManagedPrivateEndpoint
+  >;
   completedAt?: string;
   updatedAt: string;
 }

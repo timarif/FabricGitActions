@@ -9,11 +9,17 @@ import {
 import { randomUUID } from "node:crypto";
 import path from "node:path";
 
+import { managedPrivateEndpointCheckpointKey } from "./fabric/managed-private-endpoints";
+import { compareCanonicalStrings } from "./hash";
 import type {
   ApplyCheckpoint,
   ApplyResult,
   DeploymentPlan,
 } from "./types";
+
+const MANAGED_PRIVATE_ENDPOINT_RECREATE_DELAY_MS = 15 * 60 * 1000;
+const GUID_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
 export function loadCheckpoint(
   checkpointFile: string,
@@ -190,6 +196,22 @@ function assertCheckpointMatchesPlan(
       checkpoint.networkProtection.outboundGatewayRules,
       planned.outboundGatewayRules,
     );
+    if (
+      planned.communicationPolicy.action === "blocked" &&
+      (planned.communicationPolicy
+        .blockedByManagedPrivateEndpoints?.length ?? 0) > 0 &&
+      (checkpoint.networkProtection.communicationPolicy ||
+        checkpoint.networkProtection.outboundCloudConnectionRules ||
+        checkpoint.networkProtection.outboundGatewayRules)
+    ) {
+      throw new Error(
+        "Checkpoint contains an OAP mutation for a plan that defers OAP until managed private endpoint approval.",
+      );
+    }
+    assertCheckpointManagedPrivateEndpointsMatchPlan(
+      checkpoint.networkProtection.managedPrivateEndpoints,
+      planned.managedPrivateEndpoints,
+    );
     if (checkpoint.networkProtection.completedAt) {
       assertCompletedNetworkSurface(
         "communicationPolicy",
@@ -206,6 +228,91 @@ function assertCheckpointMatchesPlan(
         checkpoint.networkProtection.outboundGatewayRules,
         planned.outboundGatewayRules,
       );
+      for (const endpoint of planned.managedPrivateEndpoints ?? []) {
+        const managedStates =
+          checkpoint.networkProtection.managedPrivateEndpoints;
+        const key = managedPrivateEndpointCheckpointKey(
+          endpoint.name,
+        );
+        const state =
+          managedStates &&
+          Object.prototype.hasOwnProperty.call(managedStates, key)
+            ? managedStates[key]
+            : undefined;
+        if (
+          !state ||
+          (endpoint.desiredState === "present"
+            ? state.phase !== "present-verified"
+            : state.phase !== "absent-verified")
+        ) {
+          throw new Error(
+            `Completed network protection checkpoint is missing terminal managed private endpoint state for '${endpoint.name}'.`,
+          );
+        }
+      }
+    }
+
+    function assertCheckpointManagedPrivateEndpointsMatchPlan(
+      checkpoint:
+        | NonNullable<
+            ApplyCheckpoint["networkProtection"]
+          >["managedPrivateEndpoints"]
+        | undefined,
+      planned:
+        | NonNullable<
+            DeploymentPlan["networkProtection"]
+          >["managedPrivateEndpoints"]
+        | undefined,
+    ): void {
+      if (!checkpoint) {
+        return;
+      }
+      if (!planned) {
+        throw new Error(
+          "Checkpoint managed private endpoints do not match the approved deployment plan.",
+        );
+      }
+      const plannedByName = new Map(
+        planned.map((endpoint) => [
+          managedPrivateEndpointCheckpointKey(endpoint.name),
+          endpoint,
+        ]),
+      );
+      for (const [key, state] of Object.entries(checkpoint)) {
+        const endpoint = plannedByName.get(key);
+        if (
+          !endpoint ||
+          managedPrivateEndpointCheckpointKey(endpoint.name) !==
+            key ||
+          state.name !== endpoint.name ||
+          state.desiredState !== endpoint.desiredState ||
+          state.action !== endpoint.action ||
+          state.operationHash !== endpoint.operationHash ||
+          state.desiredIdentityHash !== endpoint.desiredIdentityHash
+        ) {
+          throw new Error(
+            `Checkpoint managed private endpoint '${state.name}' does not match the approved deployment plan.`,
+          );
+        }
+        const validPhase =
+          (endpoint.action === "create" &&
+            (state.phase === "create-submitting" ||
+              state.phase === "provisioning" ||
+              state.phase === "present-verified")) ||
+          (endpoint.action === "delete" &&
+            (state.phase === "delete-submitting" ||
+              state.phase === "absent-verified")) ||
+          (endpoint.action === "no-op" &&
+            ((endpoint.desiredState === "present" &&
+              state.phase === "present-verified") ||
+              (endpoint.desiredState === "absent" &&
+                state.phase === "absent-verified")));
+        if (!validPhase) {
+          throw new Error(
+            `Checkpoint managed private endpoint '${state.name}' phase does not match the approved action.`,
+          );
+        }
+      }
     }
   }
   const plannedItems = new Map(
@@ -988,6 +1095,19 @@ function isCheckpointNetworkProtection(value: unknown): boolean {
       isCheckpointNetworkSurface(state.outboundCloudConnectionRules)) &&
     (state.outboundGatewayRules === undefined ||
       isCheckpointNetworkSurface(state.outboundGatewayRules)) &&
+    (state.managedPrivateEndpoints === undefined ||
+      (state.managedPrivateEndpoints !== null &&
+        typeof state.managedPrivateEndpoints === "object" &&
+        !Array.isArray(state.managedPrivateEndpoints) &&
+        Object.entries(state.managedPrivateEndpoints).every(
+          ([key, endpoint]) =>
+            isCheckpointManagedPrivateEndpoint(key, endpoint),
+        ) &&
+        Object.keys(state.managedPrivateEndpoints).every(
+          (key, index, keys) =>
+            index === 0 ||
+            compareCanonicalStrings(keys[index - 1]!, key) < 0,
+        ))) &&
     (state.completedAt === undefined ||
       (typeof state.completedAt === "string" &&
         !Number.isNaN(Date.parse(state.completedAt)) &&
@@ -996,6 +1116,185 @@ function isCheckpointNetworkProtection(value: unknown): boolean {
         ))) &&
     typeof state.updatedAt === "string" &&
     !Number.isNaN(Date.parse(state.updatedAt))
+  );
+}
+
+function isCheckpointManagedPrivateEndpoint(
+  key: string,
+  value: unknown,
+): boolean {
+  if (
+    value === null ||
+    typeof value !== "object" ||
+    Array.isArray(value)
+  ) {
+    return false;
+  }
+  const state = value as Record<string, unknown>;
+  const allowedKeys = new Set([
+    "name",
+    "desiredState",
+    "action",
+    "operationHash",
+    "desiredIdentityHash",
+    "phase",
+    "physicalId",
+    "observedIdentityHash",
+    "observedProvisioningState",
+    "observedConnectionStatus",
+    "approvalRequired",
+    "submittedAt",
+    "verifiedAt",
+    "deletedAt",
+    "recreateNotBefore",
+    "updatedAt",
+  ]);
+  if (Object.keys(state).some((name) => !allowedKeys.has(name))) {
+    return false;
+  }
+  const name = state.name;
+  const desiredState = state.desiredState;
+  const action = state.action;
+  const phase = state.phase;
+  if (
+    typeof name !== "string" ||
+    managedPrivateEndpointCheckpointKey(name) !== key ||
+    (desiredState !== "present" && desiredState !== "absent") ||
+    (action !== "create" &&
+      action !== "delete" &&
+      action !== "no-op") ||
+    !/^[a-f0-9]{64}$/.test(String(state.operationHash)) ||
+    !/^[a-f0-9]{64}$/.test(String(state.desiredIdentityHash)) ||
+    ![
+      "create-submitting",
+      "provisioning",
+      "present-verified",
+      "delete-submitting",
+      "absent-verified",
+    ].includes(String(phase)) ||
+    (state.physicalId !== undefined &&
+      (typeof state.physicalId !== "string" ||
+        !GUID_PATTERN.test(state.physicalId))) ||
+    (state.observedIdentityHash !== undefined &&
+      !/^[a-f0-9]{64}$/.test(
+        String(state.observedIdentityHash),
+      )) ||
+    (state.observedProvisioningState !== undefined &&
+      (typeof state.observedProvisioningState !== "string" ||
+        state.observedProvisioningState.length === 0 ||
+        state.observedProvisioningState.trim() !==
+          state.observedProvisioningState)) ||
+    (state.observedConnectionStatus !== undefined &&
+      (typeof state.observedConnectionStatus !== "string" ||
+        state.observedConnectionStatus.length === 0 ||
+        state.observedConnectionStatus.trim() !==
+          state.observedConnectionStatus)) ||
+    (state.approvalRequired !== undefined &&
+      state.approvalRequired !== true) ||
+    !isOptionalTimestamp(state.submittedAt) ||
+    !isOptionalTimestamp(state.verifiedAt) ||
+    !isOptionalTimestamp(state.deletedAt) ||
+    !isOptionalTimestamp(state.recreateNotBefore) ||
+    !isOptionalTimestamp(state.updatedAt) ||
+    state.updatedAt === undefined
+  ) {
+    return false;
+  }
+  const phaseMatchesAction =
+    (action === "create" &&
+      desiredState === "present" &&
+      (phase === "create-submitting" ||
+        phase === "provisioning" ||
+        phase === "present-verified")) ||
+    (action === "delete" &&
+      desiredState === "absent" &&
+      (phase === "delete-submitting" ||
+        phase === "absent-verified")) ||
+    (action === "no-op" &&
+      ((desiredState === "present" &&
+        phase === "present-verified") ||
+        (desiredState === "absent" &&
+          phase === "absent-verified")));
+  const requiresPhysicalId =
+    phase === "provisioning" ||
+    phase === "present-verified" ||
+    phase === "delete-submitting" ||
+    action === "delete";
+  const deletionTimestampsValid =
+    (state.deletedAt === undefined &&
+      state.recreateNotBefore === undefined) ||
+    (phase === "absent-verified" &&
+      action === "delete" &&
+      typeof state.deletedAt === "string" &&
+      typeof state.recreateNotBefore === "string" &&
+      Date.parse(state.recreateNotBefore) -
+        Date.parse(state.deletedAt) ===
+        MANAGED_PRIVATE_ENDPOINT_RECREATE_DELAY_MS);
+  const phaseFieldsValid =
+    (phase === "create-submitting" &&
+      typeof state.submittedAt === "string" &&
+      state.physicalId === undefined &&
+      state.observedIdentityHash === undefined &&
+      state.observedProvisioningState === undefined &&
+      state.observedConnectionStatus === undefined &&
+      state.approvalRequired === undefined &&
+      state.verifiedAt === undefined) ||
+    (phase === "provisioning" &&
+      typeof state.submittedAt === "string" &&
+      typeof state.physicalId === "string" &&
+      typeof state.observedIdentityHash === "string" &&
+      typeof state.observedProvisioningState === "string" &&
+      state.approvalRequired === undefined &&
+      state.verifiedAt === undefined) ||
+    (phase === "present-verified" &&
+      typeof state.physicalId === "string" &&
+      typeof state.observedIdentityHash === "string" &&
+      String(state.observedProvisioningState).toLowerCase() ===
+        "succeeded" &&
+      (String(state.observedConnectionStatus).toLowerCase() ===
+        "pending" ||
+        String(state.observedConnectionStatus).toLowerCase() ===
+          "approved") &&
+      (state.approvalRequired === true) ===
+        (String(state.observedConnectionStatus).toLowerCase() ===
+          "pending") &&
+      state.submittedAt === undefined &&
+      typeof state.verifiedAt === "string") ||
+    (phase === "delete-submitting" &&
+      typeof state.submittedAt === "string" &&
+      typeof state.physicalId === "string" &&
+      typeof state.observedIdentityHash === "string" &&
+      typeof state.observedProvisioningState === "string" &&
+      state.approvalRequired === undefined &&
+      state.verifiedAt === undefined) ||
+    (phase === "absent-verified" &&
+      typeof state.verifiedAt === "string" &&
+      state.submittedAt === undefined &&
+      state.approvalRequired === undefined &&
+      ((action === "delete" &&
+        typeof state.physicalId === "string" &&
+        typeof state.observedIdentityHash === "string" &&
+        typeof state.deletedAt === "string" &&
+        typeof state.recreateNotBefore === "string") ||
+        (action === "no-op" &&
+          desiredState === "absent" &&
+          state.physicalId === undefined &&
+          state.observedIdentityHash === undefined &&
+          state.deletedAt === undefined &&
+          state.recreateNotBefore === undefined)));
+  return (
+    phaseMatchesAction &&
+    phaseFieldsValid &&
+    (!requiresPhysicalId ||
+      typeof state.physicalId === "string") &&
+    deletionTimestampsValid
+  );
+}
+
+function isOptionalTimestamp(value: unknown): boolean {
+  return (
+    value === undefined ||
+    (typeof value === "string" && !Number.isNaN(Date.parse(value)))
   );
 }
 

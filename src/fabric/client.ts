@@ -1,5 +1,8 @@
 import type { FetchLike, TokenProvider } from "./auth";
 
+export const DEFAULT_FABRIC_OPERATION_TIMEOUT_MS = 20 * 60 * 1000;
+export const DEFAULT_FABRIC_OPERATION_POLL_INTERVAL_MS = 5000;
+
 export interface FabricClientOptions {
   endpoint: string;
   scope: string;
@@ -109,8 +112,11 @@ export class FabricClient {
       ...options,
       maxRetries: options.maxRetries ?? 4,
       retryBaseDelayMs: options.retryBaseDelayMs ?? 1000,
-      operationTimeoutMs: options.operationTimeoutMs ?? 20 * 60 * 1000,
-      operationPollIntervalMs: options.operationPollIntervalMs ?? 5000,
+      operationTimeoutMs:
+        options.operationTimeoutMs ?? DEFAULT_FABRIC_OPERATION_TIMEOUT_MS,
+      operationPollIntervalMs:
+        options.operationPollIntervalMs ??
+        DEFAULT_FABRIC_OPERATION_POLL_INTERVAL_MS,
       requestTimeoutMs: options.requestTimeoutMs ?? 30_000,
       sleep:
         options.sleep ??

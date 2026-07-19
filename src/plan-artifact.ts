@@ -1,7 +1,13 @@
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 
+import {
+  canonicalizeArmResourceId,
+  hashManagedPrivateEndpointDesiredIdentity,
+  managedPrivateEndpointOapBlockers,
+} from "./fabric/managed-private-endpoints";
 import { hashCommunicationPolicy } from "./fabric/network-protection";
+import { compareCanonicalStrings, sha256, stableJson } from "./hash";
 import { rehashPlan } from "./planner";
 import {
   FABRIC_ITEM_TYPES,
@@ -24,6 +30,13 @@ const PLANNED_ACTIONS = new Set<PlannedAction>([
 ]);
 
 const NETWORK_SURFACE_ACTIONS = new Set(["update", "no-op", "blocked", "unknown"]);
+const MANAGED_PRIVATE_ENDPOINT_ACTIONS = new Set([
+  "create",
+  "delete",
+  "no-op",
+  "blocked",
+  "unknown",
+]);
 const NETWORK_DEFAULT_ACTIONS = new Set(["Allow", "Deny"]);
 const GUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -174,14 +187,44 @@ function isPlannedNetworkProtection(
   }
   const policy = plan.communicationPolicy as unknown as Record<string, unknown>;
   const policyAction = String(policy.action);
+  const managedPrivateEndpoints = plan.managedPrivateEndpoints;
+  const managedPrivateEndpointsValid =
+    managedPrivateEndpoints === undefined ||
+    isPlannedManagedPrivateEndpoints(managedPrivateEndpoints);
+  const policyBlockers =
+    Array.isArray(policy.blockedByManagedPrivateEndpoints)
+      ? (policy.blockedByManagedPrivateEndpoints as string[])
+      : undefined;
+  const policyBlockersValid =
+    policyBlockers === undefined ||
+    (managedPrivateEndpointsValid &&
+      managedPrivateEndpoints !== undefined &&
+      stableJson(policyBlockers) ===
+        stableJson(
+          managedPrivateEndpointOapBlockers(
+            managedPrivateEndpoints,
+          ),
+        ));
+  const requiresWorkspaceId =
+    policyAction === "update" ||
+    policyAction === "no-op" ||
+    isManagedPrivateEndpointPolicyBlock(policy) ||
+    (managedPrivateEndpoints?.some(
+      (endpoint) =>
+        endpoint.action === "create" ||
+        endpoint.action === "delete" ||
+        endpoint.action === "no-op",
+    ) ??
+      false);
   return (
     isPlannedNetworkCommunicationPolicy(policy) &&
-    ((policyAction !== "update" && policyAction !== "no-op") ||
-      typeof plan.workspaceId === "string") &&
+    (!requiresWorkspaceId || typeof plan.workspaceId === "string") &&
     (plan.outboundCloudConnectionRules === undefined ||
       isPlannedNetworkSurface(plan.outboundCloudConnectionRules)) &&
     (plan.outboundGatewayRules === undefined ||
-      isPlannedNetworkSurface(plan.outboundGatewayRules))
+      isPlannedNetworkSurface(plan.outboundGatewayRules)) &&
+    managedPrivateEndpointsValid &&
+    policyBlockersValid
   );
 }
 
@@ -217,8 +260,39 @@ function isPlannedNetworkCommunicationPolicy(
     return false;
   }
 
+  if (action === "blocked" && isManagedPrivateEndpointPolicyBlock(policy)) {
+    const observedInbound = policy.observedInboundDefaultAction;
+    const observedOutbound = policy.observedOutboundDefaultAction;
+    if (
+      !isNetworkDefaultAction(observedInbound) ||
+      !isNetworkDefaultAction(observedOutbound) ||
+      !isHash(policy.observedStateHash) ||
+      typeof policy.isRelaxation !== "boolean" ||
+      observedOutbound !== "Allow" ||
+      desiredOutbound !== "Deny"
+    ) {
+      return false;
+    }
+    const observedHash = hashCommunicationPolicy({
+      inbound: {
+        publicAccessRules: { defaultAction: observedInbound },
+      },
+      outbound: {
+        publicAccessRules: { defaultAction: observedOutbound },
+      },
+    });
+    const isRelaxation =
+      observedInbound === "Deny" && desiredInbound === "Allow";
+    return (
+      policy.observedStateHash === observedHash &&
+      policy.isRelaxation === isRelaxation &&
+      policy.desiredHash !== observedHash
+    );
+  }
+
   if (action === "blocked" || action === "unknown") {
     return (
+      policy.blockedByManagedPrivateEndpoints === undefined &&
       policy.observedStateHash === undefined &&
       policy.observedInboundDefaultAction === undefined &&
       policy.observedOutboundDefaultAction === undefined &&
@@ -232,7 +306,8 @@ function isPlannedNetworkCommunicationPolicy(
     !isNetworkDefaultAction(observedInbound) ||
     !isNetworkDefaultAction(observedOutbound) ||
     !isHash(policy.observedStateHash) ||
-    typeof policy.isRelaxation !== "boolean"
+    typeof policy.isRelaxation !== "boolean" ||
+    policy.blockedByManagedPrivateEndpoints !== undefined
   ) {
     return false;
   }
@@ -251,6 +326,280 @@ function isPlannedNetworkCommunicationPolicy(
     policy.observedStateHash === observedHash &&
     policy.isRelaxation === isRelaxation &&
     (action === "no-op") === (policy.desiredHash === observedHash)
+  );
+}
+
+function isManagedPrivateEndpointPolicyBlock(
+  policy: Record<string, unknown>,
+): boolean {
+  const blockers = policy.blockedByManagedPrivateEndpoints;
+  if (!Array.isArray(blockers) || blockers.length === 0) {
+    return false;
+  }
+  if (
+    !blockers.every(
+      (name) =>
+        typeof name === "string" &&
+        name.length > 0 &&
+        name.trim() === name,
+    )
+  ) {
+    return false;
+  }
+  const canonical = blockers.map((name) => name.toLowerCase());
+  return (
+    new Set(canonical).size === canonical.length &&
+    canonical.every(
+      (name, index) =>
+        index === 0 ||
+        compareCanonicalStrings(canonical[index - 1]!, name) < 0,
+    )
+  );
+}
+
+function isPlannedManagedPrivateEndpoints(value: unknown): boolean {
+  if (!Array.isArray(value)) {
+    return false;
+  }
+  const canonicalNames: string[] = [];
+  for (const entry of value) {
+    if (
+      entry === null ||
+      typeof entry !== "object" ||
+      Array.isArray(entry)
+    ) {
+      return false;
+    }
+    const endpoint = entry as Record<string, unknown>;
+    const allowedKeys = new Set([
+      "name",
+      "desiredState",
+      "targetPrivateLinkResourceId",
+      "targetSubresourceType",
+      "action",
+      "reason",
+      "operationHash",
+      "desiredIdentityHash",
+      "requestMessageHash",
+      "physicalId",
+      "observedIdentityHash",
+      "observedProvisioningState",
+      "observedConnectionStatus",
+      "approvalRequired",
+      "bootstrapBlocked",
+    ]);
+    if (Object.keys(endpoint).some((key) => !allowedKeys.has(key))) {
+      return false;
+    }
+    const name = endpoint.name;
+    const desiredState = endpoint.desiredState;
+    const targetPrivateLinkResourceId =
+      endpoint.targetPrivateLinkResourceId;
+    const targetSubresourceType = endpoint.targetSubresourceType;
+    const action = String(endpoint.action);
+    if (
+      typeof name !== "string" ||
+      name.length === 0 ||
+      name.length > 64 ||
+      name.trim() !== name ||
+      (desiredState !== "present" && desiredState !== "absent") ||
+      typeof targetPrivateLinkResourceId !== "string" ||
+      !MANAGED_PRIVATE_ENDPOINT_ACTIONS.has(action) ||
+      typeof endpoint.reason !== "string" ||
+      !isHash(endpoint.operationHash) ||
+      !isHash(endpoint.desiredIdentityHash) ||
+      (targetSubresourceType !== undefined &&
+        (typeof targetSubresourceType !== "string" ||
+          targetSubresourceType.length === 0 ||
+          targetSubresourceType.trim() !== targetSubresourceType)) ||
+      (endpoint.requestMessageHash !== undefined &&
+        !isHash(endpoint.requestMessageHash)) ||
+      (endpoint.physicalId !== undefined &&
+        (typeof endpoint.physicalId !== "string" ||
+          !GUID_PATTERN.test(endpoint.physicalId) ||
+          endpoint.physicalId !== endpoint.physicalId.toLowerCase())) ||
+      (endpoint.observedIdentityHash !== undefined &&
+        !isHash(endpoint.observedIdentityHash)) ||
+      (endpoint.observedProvisioningState !== undefined &&
+        (typeof endpoint.observedProvisioningState !== "string" ||
+          endpoint.observedProvisioningState.length === 0 ||
+          endpoint.observedProvisioningState.trim() !==
+            endpoint.observedProvisioningState)) ||
+      (endpoint.observedConnectionStatus !== undefined &&
+        (typeof endpoint.observedConnectionStatus !== "string" ||
+          endpoint.observedConnectionStatus.length === 0 ||
+          endpoint.observedConnectionStatus.trim() !==
+            endpoint.observedConnectionStatus)) ||
+      (endpoint.approvalRequired !== undefined &&
+        endpoint.approvalRequired !== true) ||
+      (endpoint.bootstrapBlocked !== undefined &&
+        endpoint.bootstrapBlocked !== true)
+    ) {
+      return false;
+    }
+    let canonicalResourceId: string;
+    try {
+      canonicalResourceId = canonicalizeArmResourceId(
+        targetPrivateLinkResourceId,
+        "plan targetPrivateLinkResourceId",
+      );
+    } catch {
+      return false;
+    }
+    if (canonicalResourceId !== targetPrivateLinkResourceId) {
+      return false;
+    }
+    const desiredIdentityHash =
+      hashManagedPrivateEndpointDesiredIdentity({
+        name,
+        targetPrivateLinkResourceId,
+        ...(typeof targetSubresourceType === "string"
+          ? { targetSubresourceType }
+          : {}),
+      });
+    const operationHash = sha256(
+      stableJson({
+        name,
+        desiredState,
+        targetPrivateLinkResourceId,
+        targetSubresourceType:
+          typeof targetSubresourceType === "string"
+            ? targetSubresourceType.toLowerCase()
+            : undefined,
+        requestMessageHash: endpoint.requestMessageHash,
+      }),
+    );
+    if (
+      endpoint.desiredIdentityHash !== desiredIdentityHash ||
+      endpoint.operationHash !== operationHash ||
+      (desiredState === "present") !==
+        (endpoint.requestMessageHash !== undefined)
+    ) {
+      return false;
+    }
+    if (
+      typeof targetSubresourceType === "string" &&
+      (action === "delete" ||
+        (action === "no-op" && desiredState === "present")) &&
+      endpoint.observedIdentityHash !== desiredIdentityHash
+    ) {
+      return false;
+    }
+    if (
+      action === "create" &&
+      (desiredState !== "present" ||
+        endpoint.physicalId !== undefined ||
+        endpoint.observedIdentityHash !== undefined ||
+        endpoint.observedProvisioningState !== undefined ||
+        endpoint.observedConnectionStatus !== undefined ||
+        endpoint.approvalRequired !== undefined ||
+        endpoint.bootstrapBlocked !== undefined)
+    ) {
+      return false;
+    }
+    if (
+      action === "delete" &&
+      (desiredState !== "absent" ||
+        endpoint.physicalId === undefined ||
+        endpoint.observedIdentityHash === undefined ||
+        endpoint.bootstrapBlocked !== undefined ||
+        !isSafeObservedManagedPrivateEndpointState(endpoint))
+    ) {
+      return false;
+    }
+    if (action === "no-op") {
+      const absentNoOp =
+        desiredState === "absent" &&
+        endpoint.physicalId === undefined &&
+        endpoint.observedIdentityHash === undefined &&
+        endpoint.observedProvisioningState === undefined &&
+        endpoint.observedConnectionStatus === undefined;
+      const presentNoOp =
+        desiredState === "present" &&
+        endpoint.physicalId !== undefined &&
+        endpoint.observedIdentityHash !== undefined &&
+        isSafeObservedManagedPrivateEndpointState(endpoint);
+      const approvalRequired =
+        presentNoOp &&
+        managedPrivateEndpointApprovalRequired(endpoint);
+      if (
+        (!absentNoOp && !presentNoOp) ||
+        endpoint.bootstrapBlocked !== undefined ||
+        (presentNoOp &&
+          (endpoint.approvalRequired === true) !== approvalRequired) ||
+        (absentNoOp && endpoint.approvalRequired !== undefined)
+      ) {
+        return false;
+      }
+    }
+    if (
+      action !== "no-op" &&
+      endpoint.approvalRequired !== undefined
+    ) {
+      return false;
+    }
+    if (
+      endpoint.bootstrapBlocked === true &&
+      (action !== "blocked" ||
+        endpoint.physicalId !== undefined ||
+        endpoint.observedIdentityHash !== undefined ||
+        endpoint.observedProvisioningState !== undefined ||
+        endpoint.observedConnectionStatus !== undefined)
+    ) {
+      return false;
+    }
+    canonicalNames.push(name.toLowerCase());
+  }
+  return (
+    new Set(canonicalNames).size === canonicalNames.length &&
+    canonicalNames.every(
+      (name, index) =>
+        index === 0 ||
+        compareCanonicalStrings(canonicalNames[index - 1]!, name) < 0,
+    )
+  );
+}
+
+function isSafeObservedManagedPrivateEndpointState(
+  endpoint: Record<string, unknown>,
+): boolean {
+  const provisioningState =
+    typeof endpoint.observedProvisioningState === "string"
+      ? endpoint.observedProvisioningState.toLowerCase()
+      : undefined;
+  const connectionStatus =
+    typeof endpoint.observedConnectionStatus === "string"
+      ? endpoint.observedConnectionStatus.toLowerCase()
+      : undefined;
+  if (
+    provisioningState !== "provisioning" &&
+    provisioningState !== "updating" &&
+    provisioningState !== "succeeded"
+  ) {
+    return false;
+  }
+  if (
+    connectionStatus !== undefined &&
+    connectionStatus !== "pending" &&
+    connectionStatus !== "approved"
+  ) {
+    return false;
+  }
+  return (
+    provisioningState !== "succeeded" ||
+    connectionStatus === "pending" ||
+    connectionStatus === "approved"
+  );
+}
+
+function managedPrivateEndpointApprovalRequired(
+  endpoint: Record<string, unknown>,
+): boolean {
+  return (
+    String(endpoint.observedProvisioningState).toLowerCase() !==
+      "succeeded" ||
+    String(endpoint.observedConnectionStatus).toLowerCase() ===
+      "pending"
   );
 }
 
