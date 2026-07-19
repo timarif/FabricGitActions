@@ -8,7 +8,10 @@ import {
   normalizeManagedPrivateEndpoints,
   planManagedPrivateEndpoints,
 } from "../src/fabric/managed-private-endpoints";
-import { hashCommunicationPolicy } from "../src/fabric/network-protection";
+import {
+  hashCommunicationPolicy,
+  hashInboundFirewallRules,
+} from "../src/fabric/network-protection";
 import { loadApprovedPlan } from "../src/plan-artifact";
 import { buildPlan, rehashPlan } from "../src/planner";
 import type { LoadedManifest } from "../src/types";
@@ -327,6 +330,21 @@ describe("approved plan loading", () => {
         observedOutboundDefaultAction: "Allow",
         isRelaxation: false,
       },
+      inboundFirewallRules: {
+        action: "update",
+        reason: "Preview firewall differs.",
+        desiredHash: hashInboundFirewallRules({
+          rules: [
+            {
+              displayName: "corporate",
+              value: "12.34.56.78",
+            },
+          ],
+        }),
+        observedStateHash: hashInboundFirewallRules({ rules: [] }),
+        etag: "firewall-etag",
+        ruleCount: 1,
+      },
       outboundGatewayRules: {
         action: "no-op",
         reason: "Matches.",
@@ -340,6 +358,110 @@ describe("approved plan loading", () => {
     expect(
       loadApprovedPlan(planPath).networkProtection?.communicationPolicy,
     ).toMatchObject({ action: "update", isRelaxation: false });
+    expect(
+      loadApprovedPlan(planPath).networkProtection
+        ?.inboundFirewallRules,
+    ).toMatchObject({
+      action: "update",
+      etag: "firewall-etag",
+      ruleCount: 1,
+    });
+
+    const headerless = structuredClone(approved);
+    delete headerless.networkProtection!.inboundFirewallRules!.etag;
+    writeFileSync(
+      planPath,
+      JSON.stringify(rehashPlan(headerless)),
+      "utf8",
+    );
+    expect(
+      loadApprovedPlan(planPath).networkProtection
+        ?.inboundFirewallRules,
+    ).not.toHaveProperty("etag");
+  });
+
+  it("rejects rehashed inbound firewall plan metadata tampering", () => {
+    const root = mkdtempSync(path.join(tmpdir(), "fabric-plan-"));
+    const planPath = path.join(root, "plan.json");
+    const plan = createPlan();
+    const policyHash = hashCommunicationPolicy({
+      inbound: { publicAccessRules: { defaultAction: "Deny" } },
+      outbound: { publicAccessRules: { defaultAction: "Allow" } },
+    });
+    plan.networkProtection = {
+      workspaceId: "11111111-1111-4111-8111-111111111111",
+      communicationPolicy: {
+        action: "update",
+        reason: "Inbound tightening.",
+        desiredHash: policyHash,
+        observedStateHash: hashCommunicationPolicy({
+          inbound: {
+            publicAccessRules: { defaultAction: "Allow" },
+          },
+          outbound: {
+            publicAccessRules: { defaultAction: "Allow" },
+          },
+        }),
+        desiredInboundDefaultAction: "Deny",
+        desiredOutboundDefaultAction: "Allow",
+        observedInboundDefaultAction: "Allow",
+        observedOutboundDefaultAction: "Allow",
+        isRelaxation: false,
+      },
+      inboundFirewallRules: {
+        action: "update",
+        reason: "differs",
+        desiredHash: hashInboundFirewallRules({
+          rules: [
+            {
+              displayName: "corporate",
+              value: "12.34.56.78",
+            },
+          ],
+        }),
+        observedStateHash: hashInboundFirewallRules({ rules: [] }),
+        etag: "etag",
+        ruleCount: 1,
+      },
+    };
+    const approved = rehashPlan(plan);
+
+    const missingFirewall = structuredClone(approved);
+    delete missingFirewall.networkProtection!.inboundFirewallRules;
+    writeFileSync(
+      planPath,
+      JSON.stringify(rehashPlan(missingFirewall)),
+      "utf8",
+    );
+    expect(() => loadApprovedPlan(planPath)).toThrow(
+      "invalid structure",
+    );
+
+    approved.networkProtection!.inboundFirewallRules!.etag = "";
+    writeFileSync(
+      planPath,
+      JSON.stringify(rehashPlan(approved)),
+      "utf8",
+    );
+    expect(() => loadApprovedPlan(planPath)).toThrow(
+      "invalid structure",
+    );
+
+    approved.networkProtection!.inboundFirewallRules!.etag = "etag";
+    (
+      approved.networkProtection!.inboundFirewallRules as unknown as Record<
+        string,
+        unknown
+      >
+    ).unexpected = true;
+    writeFileSync(
+      planPath,
+      JSON.stringify(rehashPlan(approved)),
+      "utf8",
+    );
+    expect(() => loadApprovedPlan(planPath)).toThrow(
+      "invalid structure",
+    );
   });
 
   it("round-trips a guarded managed private endpoint plan without exposing requestMessage", () => {

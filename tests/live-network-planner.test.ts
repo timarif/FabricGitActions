@@ -105,6 +105,14 @@ describe("network protection live planning", () => {
       workspace: { displayName: "tva-Analytics" },
       networkProtection: {
         ...desiredNetworkProtection,
+        inboundFirewallRules: {
+          rules: [
+            {
+              displayName: "corporate",
+              value: "12.34.56.78",
+            },
+          ],
+        },
         managedPrivateEndpoints: [
           {
             name: "storage-blob",
@@ -133,6 +141,12 @@ describe("network protection live planning", () => {
     expect(enriched.networkProtection?.communicationPolicy.action).toBe(
       "blocked",
     );
+    expect(
+      enriched.networkProtection?.inboundFirewallRules,
+    ).toMatchObject({
+      action: "blocked",
+      ruleCount: 1,
+    });
     expect(enriched.networkProtection?.communicationPolicy.reason).toContain(
       "managed workspace must be provisioned",
     );

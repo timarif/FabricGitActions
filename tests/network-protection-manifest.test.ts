@@ -295,14 +295,58 @@ items:
     );
   });
 
-  it("rejects inbound Deny with a clear Phase 5B validation error", () => {
+  it("requires an explicit non-empty inbound firewall body for inbound Deny", () => {
     const manifestPath = writeManifest(
       `  communicationPolicy:
     inboundDefaultAction: Deny
     outboundDefaultAction: Allow`,
     );
 
-    expect(() => loadManifest(manifestPath)).toThrow("Phase 5B");
+    expect(() => loadManifest(manifestPath)).toThrow(
+      "requires an explicit inboundFirewallRules configuration",
+    );
+  });
+
+  it("loads the exact documented inbound firewall body", () => {
+    const manifestPath = writeManifest(
+      `  communicationPolicy:
+    inboundDefaultAction: Deny
+    outboundDefaultAction: Allow
+  inboundFirewallRules:
+    rules:
+      - displayName: corporate-egress
+        value: 12.34.56.78`,
+    );
+
+    expect(
+      loadManifest(manifestPath).manifest.networkProtection
+        ?.inboundFirewallRules,
+    ).toEqual({
+      rules: [
+        {
+          displayName: "corporate-egress",
+          value: "12.34.56.78",
+        },
+      ],
+    });
+  });
+
+  it("continues to reject later inbound security surfaces", () => {
+    for (const unsupported of [
+      "inboundAzureResourceRules",
+      "inboundExternalDataSharesPolicy",
+    ]) {
+      const manifestPath = writeManifest(
+        `  communicationPolicy:
+    inboundDefaultAction: Allow
+    outboundDefaultAction: Allow
+  ${unsupported}: {}`,
+      );
+
+      expect(() =>
+        loadNetworkProtectionManifest(manifestPath),
+      ).toThrow(unsupported);
+    }
   });
 
   it("rejects outboundCloudConnectionRules declared alongside outbound Allow", () => {

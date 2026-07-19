@@ -90,6 +90,14 @@ export async function run(): Promise<void> {
       mode === "apply"
         ? readBooleanInput("allow-network-policy-relaxation")
         : false;
+    const allowInboundFirewallUpdate =
+      mode === "apply"
+        ? readBooleanInput("allow-inbound-firewall-update")
+        : false;
+    const acknowledgeFirewallLockoutRisk =
+      mode === "apply"
+        ? readBooleanInput("acknowledge-firewall-lockout-risk")
+        : false;
     const allowOutboundCloudConnectionRuleUpdate =
       mode === "apply"
         ? readBooleanInput(
@@ -278,6 +286,8 @@ export async function run(): Promise<void> {
         checkpointFile,
         allowNetworkPolicyUpdate,
         allowNetworkPolicyRelaxation,
+        allowInboundFirewallUpdate,
+        acknowledgeFirewallLockoutRisk,
         allowOutboundCloudConnectionRuleUpdate,
         allowOutboundGatewayRuleUpdate,
         allowManagedPrivateEndpointCreate,
@@ -409,6 +419,15 @@ export async function run(): Promise<void> {
       "network-protection-action",
       plan.networkProtection?.communicationPolicy.action ?? "not-configured",
     );
+    core.setOutput(
+      "inbound-firewall-action",
+      plan.networkProtection?.inboundFirewallRules?.action ??
+        "not-configured",
+    );
+    core.setOutput(
+      "inbound-firewall-rule-count",
+      String(plan.networkProtection?.inboundFirewallRules?.ruleCount ?? 0),
+    );
     const managedPrivateEndpoints =
       plan.networkProtection?.managedPrivateEndpoints ?? [];
     core.setOutput(
@@ -502,6 +521,8 @@ export async function run(): Promise<void> {
         allowTagAssign: readBooleanInput("allow-tag-assign"),
         allowNetworkPolicyUpdate,
         allowNetworkPolicyRelaxation,
+        allowInboundFirewallUpdate,
+        acknowledgeFirewallLockoutRisk,
         allowOutboundCloudConnectionRuleUpdate,
         allowOutboundGatewayRuleUpdate,
         allowManagedPrivateEndpointCreate,
@@ -521,6 +542,18 @@ export async function run(): Promise<void> {
         "network-protection-action",
         approvedPlan.networkProtection?.communicationPolicy.action ??
           "not-configured",
+      );
+      core.setOutput(
+        "inbound-firewall-action",
+        approvedPlan.networkProtection?.inboundFirewallRules?.action ??
+          "not-configured",
+      );
+      core.setOutput(
+        "inbound-firewall-rule-count",
+        String(
+          approvedPlan.networkProtection?.inboundFirewallRules
+            ?.ruleCount ?? 0,
+        ),
       );
       core.setOutput(
         "requires-item-replan",

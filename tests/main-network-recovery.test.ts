@@ -35,6 +35,7 @@ import {
 } from "../src/checkpoint";
 import {
   hashCommunicationPolicy,
+  hashInboundFirewallRules,
   NetworkProtectionAdapter,
   normalizeNetworkProtection,
 } from "../src/fabric/network-protection";
@@ -210,6 +211,210 @@ items:
     expect(
       loadCheckpoint(checkpointFile, approved)?.networkProtection,
     ).toMatchObject({
+      communicationPolicy: { phase: "verified" },
+      completedAt: expect.any(String),
+    });
+    expect(actionCore.setFailed).toHaveBeenCalledWith(
+      expect.stringContaining("directory not found"),
+    );
+  });
+
+  it("recovers a started inbound firewall unit before unrelated item loading", async () => {
+    const root = mkdtempSync(
+      path.join(tmpdir(), "fabric-main-firewall-recovery-"),
+    );
+    const manifestPath = path.join(root, "deployment.yaml");
+    const approvedPlanFile = path.join(root, "approved-plan.json");
+    const planFile = path.join(root, "current-plan.json");
+    const checkpointFile = path.join(root, "checkpoint.json");
+    const resultFile = path.join(root, "result.json");
+    const manifest = `
+apiVersion: fabric.deploy/v1alpha1
+kind: FabricDeployment
+metadata:
+  deploymentId: main-firewall-recovery
+workspace:
+  id: ${WORKSPACE_ID}
+networkProtection:
+  communicationPolicy:
+    inboundDefaultAction: Deny
+    outboundDefaultAction: Allow
+  inboundFirewallRules:
+    rules:
+      - displayName: corporate
+        value: 12.34.56.78
+items: []
+`;
+    writeFileSync(manifestPath, manifest, "utf8");
+    const loaded = loadManifest(manifestPath);
+    const desired = normalizeNetworkProtection(
+      loaded.manifest.networkProtection!,
+    );
+    const plan = buildPlan(loaded, {
+      mode: "plan",
+      environment: "dev",
+    });
+    const desiredPolicyHash = hashCommunicationPolicy(
+      desired.communicationPolicy,
+    );
+    const desiredFirewallHash = hashInboundFirewallRules(
+      desired.inboundFirewallRules!,
+    );
+    plan.networkProtection = {
+      workspaceId: WORKSPACE_ID,
+      communicationPolicy: {
+        action: "update",
+        reason: "differs",
+        desiredHash: desiredPolicyHash,
+        observedStateHash: hashCommunicationPolicy({
+          inbound: {
+            publicAccessRules: { defaultAction: "Allow" },
+          },
+          outbound: {
+            publicAccessRules: { defaultAction: "Allow" },
+          },
+        }),
+        desiredInboundDefaultAction: "Deny",
+        desiredOutboundDefaultAction: "Allow",
+        observedInboundDefaultAction: "Allow",
+        observedOutboundDefaultAction: "Allow",
+        isRelaxation: false,
+      },
+      inboundFirewallRules: {
+        action: "update",
+        reason: "differs",
+        desiredHash: desiredFirewallHash,
+        observedStateHash: hashInboundFirewallRules({ rules: [] }),
+        etag: "approval-etag",
+        ruleCount: 1,
+      },
+    };
+    const approved = rehashPlan(plan);
+    writeFileSync(
+      approvedPlanFile,
+      `${JSON.stringify(approved, null, 2)}\n`,
+      "utf8",
+    );
+    const checkpoint = createCheckpoint(approved);
+    checkpoint.networkProtection = {
+      workspaceId: WORKSPACE_ID,
+      inboundFirewallRules: {
+        desiredHash: desiredFirewallHash,
+        phase: "submitting",
+        updatedAt: "2026-07-19T00:00:00.000Z",
+      },
+      updatedAt: "2026-07-19T00:00:00.000Z",
+    };
+    writeCheckpoint(checkpointFile, checkpoint);
+    writeFileSync(
+      manifestPath,
+      manifest.replace(
+        "items: []",
+        `items:
+  - logicalId: missing
+    type: Lakehouse
+    path: items/does-not-exist`,
+      ),
+      "utf8",
+    );
+
+    const calls: string[] = [];
+    const freshNetworkPlan = {
+      ...approved.networkProtection!,
+      communicationPolicy: {
+        ...approved.networkProtection!.communicationPolicy,
+        etag: "policy-etag",
+      },
+      inboundFirewallRules: {
+        ...approved.networkProtection!.inboundFirewallRules!,
+        action: "no-op" as const,
+        reason: "matches",
+        observedStateHash: desiredFirewallHash,
+        etag: "fresh-firewall-etag",
+      },
+    };
+    vi.spyOn(NetworkProtectionAdapter.prototype, "plan").mockImplementation(
+      async () => {
+        calls.push("network-plan");
+        return freshNetworkPlan;
+      },
+    );
+    vi.spyOn(
+      NetworkProtectionAdapter.prototype,
+      "getInboundFirewallRules",
+    ).mockImplementation(async () => {
+      calls.push("firewall-get");
+      return {
+        configuration: desired.inboundFirewallRules!,
+        etag: "fresh-firewall-etag",
+      };
+    });
+    vi.spyOn(
+      NetworkProtectionAdapter.prototype,
+      "putInboundFirewallRules",
+    ).mockImplementation(async () => {
+      calls.push("firewall-put");
+      return {
+        configuration: desired.inboundFirewallRules!,
+        etag: "updated-firewall-etag",
+      };
+    });
+    vi.spyOn(
+      NetworkProtectionAdapter.prototype,
+      "putCommunicationPolicy",
+    ).mockImplementation(async (_id, _body, options) => {
+      options?.onDispatch?.();
+      calls.push("policy-put");
+      return {
+        policy: desired.communicationPolicy,
+        etag: "updated-policy-etag",
+      };
+    });
+    vi.spyOn(
+      NetworkProtectionAdapter.prototype,
+      "getCommunicationPolicy",
+    ).mockImplementation(async () => {
+      calls.push("policy-get");
+      return {
+        policy: desired.communicationPolicy,
+        etag: "updated-policy-etag",
+      };
+    });
+
+    for (const [name, value] of Object.entries({
+      mode: "apply",
+      manifest: manifestPath,
+      environment: "dev",
+      "auth-mode": "service-principal-secret",
+      "tenant-id": "tenant",
+      "client-id": "client",
+      "client-secret": "secret",
+      "approved-plan-file": approvedPlanFile,
+      "plan-file": planFile,
+      "checkpoint-file": checkpointFile,
+      "result-file": resultFile,
+      "allow-network-policy-update": "true",
+      "allow-inbound-firewall-update": "true",
+      "acknowledge-firewall-lockout-risk": "true",
+    })) {
+      actionCore.inputs.set(name, value);
+    }
+
+    await run();
+
+    expect(calls).toEqual([
+      "network-plan",
+      "network-plan",
+      "firewall-get",
+      "policy-put",
+      "policy-get",
+    ]);
+    expect(calls).not.toContain("firewall-put");
+    expect(enrichPlanWithFabric).not.toHaveBeenCalled();
+    expect(
+      loadCheckpoint(checkpointFile, approved)?.networkProtection,
+    ).toMatchObject({
+      inboundFirewallRules: { phase: "verified" },
       communicationPolicy: { phase: "verified" },
       completedAt: expect.any(String),
     });

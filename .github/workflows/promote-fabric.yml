@@ -73,6 +73,14 @@ on:
         required: true
         default: false
         type: boolean
+      allow_inbound_firewall_update:
+        required: true
+        default: false
+        type: boolean
+      acknowledge_firewall_lockout_risk:
+        required: true
+        default: false
+        type: boolean
       allow_outbound_cloud_connection_rule_update:
         required: true
         default: false
@@ -120,6 +128,8 @@ jobs:
       allow_tag_assign: ${{ inputs.allow_tag_assign }}
       allow_network_policy_update: ${{ inputs.allow_network_policy_update }}
       allow_network_policy_relaxation: ${{ inputs.allow_network_policy_relaxation }}
+      allow_inbound_firewall_update: ${{ inputs.allow_inbound_firewall_update }}
+      acknowledge_firewall_lockout_risk: ${{ inputs.acknowledge_firewall_lockout_risk }}
       allow_outbound_cloud_connection_rule_update: ${{ inputs.allow_outbound_cloud_connection_rule_update }}
       allow_outbound_gateway_rule_update: ${{ inputs.allow_outbound_gateway_rule_update }}
       allow_managed_private_endpoint_create: ${{ inputs.allow_managed_private_endpoint_create }}
@@ -151,6 +161,8 @@ jobs:
       allow_tag_assign: ${{ inputs.allow_tag_assign }}
       allow_network_policy_update: ${{ inputs.allow_network_policy_update }}
       allow_network_policy_relaxation: ${{ inputs.allow_network_policy_relaxation }}
+      allow_inbound_firewall_update: ${{ inputs.allow_inbound_firewall_update }}
+      acknowledge_firewall_lockout_risk: ${{ inputs.acknowledge_firewall_lockout_risk }}
       allow_outbound_cloud_connection_rule_update: ${{ inputs.allow_outbound_cloud_connection_rule_update }}
       allow_outbound_gateway_rule_update: ${{ inputs.allow_outbound_gateway_rule_update }}
       allow_managed_private_endpoint_create: ${{ inputs.allow_managed_private_endpoint_create }}
@@ -182,6 +194,8 @@ jobs:
       allow_tag_assign: ${{ inputs.allow_tag_assign }}
       allow_network_policy_update: ${{ inputs.allow_network_policy_update }}
       allow_network_policy_relaxation: ${{ inputs.allow_network_policy_relaxation }}
+      allow_inbound_firewall_update: ${{ inputs.allow_inbound_firewall_update }}
+      acknowledge_firewall_lockout_risk: ${{ inputs.acknowledge_firewall_lockout_risk }}
       allow_outbound_cloud_connection_rule_update: ${{ inputs.allow_outbound_cloud_connection_rule_update }}
       allow_outbound_gateway_rule_update: ${{ inputs.allow_outbound_gateway_rule_update }}
       allow_managed_private_endpoint_create: ${{ inputs.allow_managed_private_endpoint_create }}

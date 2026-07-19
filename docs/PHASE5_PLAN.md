@@ -38,8 +38,8 @@ Implement the generally available workspace APIs:
 
 Every `PUT` is a full replacement. Desired payloads must always include
 explicit `defaultAction` values so omitted fields cannot silently default to
-`Allow`. Plans bind the complete normalized body, observed hash, and ETag.
-Apply rechecks the observed hash and sends `If-Match` when supported.
+`Allow`. Plans bind the complete normalized body, observed hash, and available
+ETag. Apply rechecks the observed hash and sends `If-Match` when supported.
 Reusable workflow apply jobs are serialized repository-wide because one plan
 can mutate both its deployment workspace and a separate explicit network
 protection workspace. The concurrency group uses the extended queue so pending
@@ -103,18 +103,48 @@ an explicit independent `networkProtection.workspaceId` remains actionable.
 
 ### Phase 5B: inbound access protection
 
-Add the preview workspace APIs only after outbound recovery is proven:
+The first Phase 5B increment adds the documented preview workspace IP firewall
+API while leaving the other inbound surfaces for later:
 
 | Surface | Fabric REST API |
 | --- | --- |
-| IP firewall rules | `GET/PUT /v1/workspaces/{workspaceId}/networking/communicationPolicy/inbound/firewall` |
-| Azure resource instance rules | `GET/PUT /v1/workspaces/{workspaceId}/networking/communicationPolicy/inbound/azureResources` |
-| External Data Shares policy | `GET/PUT /v1/workspaces/{workspaceId}/networking/communicationPolicy/inbound/externalDataShares` |
+| IP firewall rules | `GET/PUT /v1/workspaces/{workspaceId}/networking/communicationPolicy/inbound/firewall` (implemented) |
+| Azure resource instance rules | `GET/PUT /v1/workspaces/{workspaceId}/networking/communicationPolicy/inbound/azureResources` (deferred) |
+| External Data Shares policy | `GET/PUT /v1/workspaces/{workspaceId}/networking/communicationPolicy/inbound/externalDataShares` (deferred) |
 
-Inbound exceptions are staged before changing the inbound communication policy
-to `Deny`. Enabling an inbound deny policy from a hosted runner requires an
-explicit lockout-risk acknowledgement. A self-hosted runner with a stable,
-allow-listed egress address is the recommended live-test path.
+`inboundFirewallRules` mirrors the documented request body exactly:
+`{ "rules": [{ "displayName": "...", "value": "..." }] }`. Rules are
+canonicalized and hashed as a complete replacement. The validator accepts only
+documented public IPv4 single-address, range, and CIDR forms, enforces the
+256-rule and 128-character name limits, and rejects unknown fields,
+case-ambiguous names, malformed/non-public values, duplicates, and overlaps.
+IPv6, empty inbound-Deny allow lists, Azure resource rules, and External Data
+Shares fail closed.
+
+Authenticated planning binds the target workspace, canonical desired hash,
+observed hash, rule count, and GET ETag when Fabric returns one. The preview
+reference advertises an ETag, but live GET responses can omit it. Apply uses a
+fresh ETag as quoted `If-Match` when available; a headerless approved plan may
+proceed only after fresh hash-based drift checks, while disappearance of an
+approval-time ETag fails closed. Apply checkpoints before dispatch, accepts the
+two status codes currently shown by the official reference (`200` in the
+response table and `204` in the example), and verifies with a new GET. Only
+definitive HTTP 429 is retried. Transport failures, 408, and 5xx remain
+ambiguous and are never blindly resubmitted.
+
+Inbound exceptions are staged and verified before changing inbound public
+access from `Allow` to `Deny`. The transition requires
+`allow-network-policy-update`, `allow-inbound-firewall-update`, and the
+independent `acknowledge-firewall-lockout-risk` before any mutation in the
+network unit, including recovery. Inbound `Deny` to `Allow` opens the master
+policy before firewall relaxation/removal. Combined inbound/outbound
+transitions run direction-specific pre-policy surfaces, the single
+communication policy PUT, then direction-specific post-policy surfaces.
+
+GitHub-hosted live validation is intentionally limited to an authenticated
+read-only plan probe with desired inbound `Allow`. A self-hosted runner with a
+stable, allow-listed egress address remains the recommended future mutation
+test path.
 
 Tenant-level and workspace-level Private Link configuration remains out of
 scope because the required controls are portal/ARM surfaces rather than
@@ -208,6 +238,9 @@ For every new item:
 
 - [Workspace network communication policy](https://learn.microsoft.com/en-us/rest/api/fabric/core/workspaces/get-network-communication-policy)
 - [Set network communication policy](https://learn.microsoft.com/en-us/rest/api/fabric/core/workspaces/set-network-communication-policy)
+- [Get workspace firewall rules](https://learn.microsoft.com/en-us/rest/api/fabric/core/workspaces/get-firewall-rules)
+- [Set workspace firewall rules](https://learn.microsoft.com/en-us/rest/api/fabric/core/workspaces/set-firewall-rules)
+- [Workspace IP firewall overview](https://learn.microsoft.com/en-us/fabric/security/security-workspace-level-firewall-overview)
 - [Outbound cloud connection rules](https://learn.microsoft.com/en-us/rest/api/fabric/core/workspaces/set-outbound-cloud-connection-rules)
 - [Outbound gateway rules](https://learn.microsoft.com/en-us/rest/api/fabric/core/workspaces/set-outbound-gateway-rules)
 - [Managed private endpoints](https://learn.microsoft.com/en-us/rest/api/fabric/core/managed-private-endpoints)

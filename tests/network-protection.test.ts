@@ -4,9 +4,11 @@ import type { FetchLike } from "../src/fabric/auth";
 import { FabricClient } from "../src/fabric/client";
 import {
   hashCommunicationPolicy,
+  hashInboundFirewallRules,
   hashOutboundCloudConnectionRules,
   hashOutboundGatewayRules,
   NetworkProtectionAdapter,
+  normalizeInboundFirewallRules,
   normalizeNetworkProtection,
   quoteEtag,
 } from "../src/fabric/network-protection";
@@ -339,7 +341,7 @@ describe("normalizeNetworkProtection", () => {
     ).toThrow("must be a GUID");
   });
 
-  it("rejects inbound Deny with a clear Phase 5B message", () => {
+  it("rejects inbound Deny without an explicit non-empty firewall body", () => {
     expect(() =>
       normalizeNetworkProtection({
         communicationPolicy: {
@@ -347,7 +349,7 @@ describe("normalizeNetworkProtection", () => {
           outboundDefaultAction: "Allow",
         },
       }),
-    ).toThrow("Phase 5B");
+    ).toThrow("requires an explicit inboundFirewallRules configuration");
   });
 
   it("rejects outbound rules declared while outboundDefaultAction is Allow", () => {
@@ -386,6 +388,143 @@ describe("normalizeNetworkProtection", () => {
         } as never,
       }),
     ).toThrow("must be either 'Allow' or 'Deny'");
+  });
+});
+
+describe("normalizeInboundFirewallRules", () => {
+  it("canonicalizes rule order and equivalent IPv4 forms deterministically", () => {
+    const first = normalizeInboundFirewallRules(
+      {
+        rules: [
+          {
+            displayName: "cidr",
+            value: "52.10.20.99/24",
+          },
+          {
+            displayName: "range",
+            value: "23.45.67.80-23.45.67.89",
+          },
+          {
+            displayName: "single",
+            value: "8.8.8.8/32",
+          },
+        ],
+      },
+      "networkProtection.inboundFirewallRules",
+    );
+    const second = normalizeInboundFirewallRules(
+      {
+        rules: [
+          {
+            displayName: "single",
+            value: "8.8.8.8",
+          },
+          {
+            displayName: "range",
+            value: "23.45.67.80-23.45.67.89",
+          },
+          {
+            displayName: "cidr",
+            value: "52.10.20.0/24",
+          },
+        ],
+      },
+      "networkProtection.inboundFirewallRules",
+    );
+
+    expect(first).toEqual({
+      rules: [
+        { displayName: "single", value: "8.8.8.8" },
+        {
+          displayName: "range",
+          value: "23.45.67.80-23.45.67.89",
+        },
+        { displayName: "cidr", value: "52.10.20.0/24" },
+      ],
+    });
+    expect(hashInboundFirewallRules(first)).toBe(
+      hashInboundFirewallRules(second),
+    );
+  });
+
+  it("rejects malformed, ambiguous, IPv6, and non-public values", () => {
+    for (const value of [
+      "1.2.3",
+      "01.2.3.4",
+      "1.2.3.4/33",
+      "1.2.3.9-1.2.3.4",
+      "1.2.3.4 -1.2.3.5",
+      "2001:db8::1",
+      "10.0.0.1",
+      "192.168.1.0/24",
+    ]) {
+      expect(() =>
+        normalizeInboundFirewallRules(
+          {
+            rules: [{ displayName: "rule", value }],
+          },
+          "networkProtection.inboundFirewallRules",
+        ),
+      ).toThrow();
+    }
+  });
+
+  it("rejects duplicate names and duplicate or overlapping address declarations", () => {
+    expect(() =>
+      normalizeInboundFirewallRules(
+        {
+          rules: [
+            { displayName: "Corporate", value: "8.8.8.8" },
+            { displayName: "corporate", value: "9.9.9.9" },
+          ],
+        },
+        "networkProtection.inboundFirewallRules",
+      ),
+    ).toThrow("case-ambiguous displayName");
+
+    expect(() =>
+      normalizeInboundFirewallRules(
+        {
+          rules: [
+            {
+              displayName: "network",
+              value: "52.10.20.0/24",
+            },
+            {
+              displayName: "host",
+              value: "52.10.20.10",
+            },
+          ],
+        },
+        "networkProtection.inboundFirewallRules",
+      ),
+    ).toThrow("overlapping IP declarations");
+  });
+
+  it("accepts inbound Deny only with an approved public rule", () => {
+    expect(
+      normalizeNetworkProtection({
+        communicationPolicy: {
+          inboundDefaultAction: "Deny",
+          outboundDefaultAction: "Allow",
+        },
+        inboundFirewallRules: {
+          rules: [
+            {
+              displayName: "corporate",
+              value: "12.34.56.78",
+            },
+          ],
+        },
+      }).inboundFirewallRules,
+    ).toEqual({
+      rules: [
+        {
+          displayName: "corporate",
+          value: "12.34.56.78",
+        },
+      ],
+    });
   });
 });
 
@@ -459,6 +598,238 @@ describe("NetworkProtectionAdapter GET/PUT", () => {
     );
     expect(requests[0]?.headers.get("if-match")).toBeNull();
     expect(requests[1]?.headers.get("if-match")).toBe('"bare-etag"');
+  });
+
+  it("GETs the documented inbound firewall path and captures an optional ETag", async () => {
+    const requests: string[] = [];
+    const adapter = createAdapter(
+      vi.fn(async (input: string | URL) => {
+        requests.push(String(input));
+        return jsonResponse(
+          {
+            rules: [
+              {
+                displayName: "corporate",
+                value: "12.34.56.78",
+              },
+            ],
+          },
+          200,
+          { etag: "firewall-etag" },
+        );
+      }),
+    );
+
+    await expect(
+      adapter.getInboundFirewallRules(WORKSPACE_ID),
+    ).resolves.toEqual({
+      configuration: {
+        rules: [
+          {
+            displayName: "corporate",
+            value: "12.34.56.78",
+          },
+        ],
+      },
+      etag: "firewall-etag",
+    });
+    expect(requests[0]).toMatch(
+      /\/networking\/communicationPolicy\/inbound\/firewall$/,
+    );
+
+    const missingEtag = createAdapter(
+      vi.fn(async () => jsonResponse({ rules: [] })),
+    );
+    await expect(
+      missingEtag.getInboundFirewallRules(WORKSPACE_ID),
+    ).resolves.toEqual({
+      configuration: { rules: [] },
+    });
+  });
+
+  it.each([200, 204])(
+    "PUTs the exact full firewall body with If-Match and accepts documented status %i",
+    async (status) => {
+      const requests: Array<{
+        headers: Headers;
+        body: unknown;
+      }> = [];
+      const adapter = createAdapter(
+        vi.fn(async (_input: string | URL, init?: RequestInit) => {
+          requests.push({
+            headers: new Headers(init?.headers),
+            body: JSON.parse(String(init?.body)),
+          });
+          return new Response(null, {
+            status,
+            headers: { etag: "updated-firewall-etag" },
+          });
+        }),
+      );
+      const desired = {
+        rules: [
+          {
+            displayName: "corporate",
+            value: "12.34.56.78",
+          },
+        ],
+      };
+
+      await expect(
+        adapter.putInboundFirewallRules(
+          WORKSPACE_ID,
+          desired,
+          { ifMatchEtag: "observed-etag" },
+        ),
+      ).resolves.toEqual({
+        configuration: desired,
+        etag: "updated-firewall-etag",
+      });
+      expect(requests[0]?.headers.get("if-match")).toBe(
+        '"observed-etag"',
+      );
+      expect(requests[0]?.body).toEqual(desired);
+    },
+  );
+
+  it("fails closed on undocumented firewall PUT response bodies", async () => {
+    const desired = {
+      rules: [
+        {
+          displayName: "corporate",
+          value: "12.34.56.78",
+        },
+      ],
+    };
+    const unexpectedBody = createAdapter(
+      vi.fn(async () =>
+        jsonResponse(desired, 200, { etag: "updated" }),
+      ),
+    );
+    await expect(
+      unexpectedBody.putInboundFirewallRules(
+        WORKSPACE_ID,
+        desired,
+        { ifMatchEtag: "observed" },
+      ),
+    ).rejects.toThrow("unexpected response body");
+  });
+
+  it("omits If-Match and accepts a missing response ETag when the preview API omits it", async () => {
+    const requests: Headers[] = [];
+    const adapter = createAdapter(
+      vi.fn(async (_input: string | URL, init?: RequestInit) => {
+        requests.push(new Headers(init?.headers));
+        return new Response(null, { status: 204 });
+      }),
+    );
+    const desired = {
+      rules: [
+        {
+          displayName: "corporate",
+          value: "12.34.56.78",
+        },
+      ],
+    };
+
+    await expect(
+      adapter.putInboundFirewallRules(
+        WORKSPACE_ID,
+        desired,
+        {},
+      ),
+    ).resolves.toEqual({ configuration: desired });
+    expect(requests[0]?.get("if-match")).toBeNull();
+  });
+
+  it("retries only definitive 429 responses for full firewall replacement", async () => {
+    const desired = {
+      rules: [
+        {
+          displayName: "corporate",
+          value: "12.34.56.78",
+        },
+      ],
+    };
+    const onDispatch = vi.fn();
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(
+        jsonResponse({ errorCode: "TooManyRequests" }, 429, {
+          "retry-after": "0",
+        }),
+      )
+      .mockResolvedValueOnce(
+        new Response(null, {
+          status: 204,
+          headers: { etag: "updated" },
+        }),
+      );
+    const adapter = createAdapter(fetchImpl);
+
+    await adapter.putInboundFirewallRules(
+      WORKSPACE_ID,
+      desired,
+      { ifMatchEtag: "observed", onDispatch },
+    );
+
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(onDispatch).toHaveBeenCalledTimes(2);
+    expect(fetchImpl.mock.calls[0]?.[1]?.body).toBe(
+      fetchImpl.mock.calls[1]?.[1]?.body,
+    );
+  });
+
+  it.each([
+    ["408", 408],
+    ["5xx", 503],
+  ])(
+    "does not blindly retry ambiguous firewall %s responses",
+    async (_label, status) => {
+      const fetchImpl = vi.fn(async () =>
+        jsonResponse({ errorCode: "ambiguous" }, status),
+      );
+      const adapter = createAdapter(fetchImpl);
+
+      await expect(
+        adapter.putInboundFirewallRules(
+          WORKSPACE_ID,
+          {
+            rules: [
+              {
+                displayName: "corporate",
+                value: "12.34.56.78",
+              },
+            ],
+          },
+          { ifMatchEtag: "observed" },
+        ),
+      ).rejects.toMatchObject({ status });
+      expect(fetchImpl).toHaveBeenCalledOnce();
+    },
+  );
+
+  it("does not retry an ambiguous firewall transport failure", async () => {
+    const fetchImpl = vi.fn(async () => {
+      throw new Error("connection reset");
+    });
+    const adapter = createAdapter(fetchImpl);
+
+    await expect(
+      adapter.putInboundFirewallRules(
+        WORKSPACE_ID,
+        {
+          rules: [
+            {
+              displayName: "corporate",
+              value: "12.34.56.78",
+            },
+          ],
+        },
+        { ifMatchEtag: "observed" },
+      ),
+    ).rejects.toThrow("connection reset");
+    expect(fetchImpl).toHaveBeenCalledOnce();
   });
 
   it("retries a throttled communication-policy PUT with the same body", async () => {
@@ -563,6 +934,100 @@ describe("NetworkProtectionAdapter GET/PUT", () => {
 });
 
 describe("NetworkProtectionAdapter plan", () => {
+  it("binds the canonical inbound firewall body, observed hash, ETag, and rule count", async () => {
+    const desired: NetworkProtectionManifest = {
+      communicationPolicy: {
+        inboundDefaultAction: "Deny",
+        outboundDefaultAction: "Allow",
+      },
+      inboundFirewallRules: {
+        rules: [
+          {
+            displayName: "corporate",
+            value: "12.34.56.78",
+          },
+        ],
+      },
+    };
+    const fetchImpl = vi.fn(
+      async (input: string | URL) => {
+        const url = String(input);
+        if (url.endsWith("/inbound/firewall")) {
+          return jsonResponse(
+            {
+              rules: [
+                {
+                  displayName: "old",
+                  value: "8.8.8.8",
+                },
+              ],
+            },
+            200,
+            { etag: "firewall-etag" },
+          );
+        }
+        return jsonResponse({
+          inbound: {
+            publicAccessRules: { defaultAction: "Allow" },
+          },
+          outbound: {
+            publicAccessRules: { defaultAction: "Allow" },
+          },
+        });
+      },
+    );
+    const adapter = createAdapter(fetchImpl);
+
+    const result = await adapter.plan(WORKSPACE_ID, desired);
+
+    expect(result.communicationPolicy).toMatchObject({
+      action: "update",
+      observedInboundDefaultAction: "Allow",
+      desiredInboundDefaultAction: "Deny",
+    });
+    expect(result.inboundFirewallRules).toMatchObject({
+      action: "update",
+      etag: "firewall-etag",
+      ruleCount: 1,
+      desiredHash: hashInboundFirewallRules(
+        normalizeNetworkProtection(desired).inboundFirewallRules!,
+      ),
+    });
+  });
+
+  it("keeps a headerless live firewall response actionable", async () => {
+    const desired: NetworkProtectionManifest = {
+      communicationPolicy: {
+        inboundDefaultAction: "Allow",
+        outboundDefaultAction: "Allow",
+      },
+      inboundFirewallRules: { rules: [] },
+    };
+    const adapter = createAdapter(
+      vi.fn(async (input: string | URL) =>
+        String(input).endsWith("/inbound/firewall")
+          ? jsonResponse({ rules: [] })
+          : jsonResponse({
+              inbound: {
+                publicAccessRules: { defaultAction: "Allow" },
+              },
+              outbound: {
+                publicAccessRules: { defaultAction: "Allow" },
+              },
+            }),
+      ),
+    );
+
+    const result = await adapter.plan(WORKSPACE_ID, desired);
+
+    expect(result.inboundFirewallRules).toMatchObject({
+      action: "no-op",
+      ruleCount: 0,
+      observedStateHash: hashInboundFirewallRules({ rules: [] }),
+    });
+    expect(result.inboundFirewallRules).not.toHaveProperty("etag");
+  });
+
   it("reports no-op when the observed policy already matches the desired configuration", async () => {
     const adapter = createAdapter(
       vi.fn(async () =>

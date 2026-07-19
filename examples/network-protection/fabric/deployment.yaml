@@ -7,8 +7,8 @@ metadata:
 workspace:
   id: ${var.FABRIC_WORKSPACE_ID}
 
-# Tightens outbound access protection (OAP) for the target workspace. Inbound
-# stays Allow because Phase 5A does not manage inbound firewall policy yet.
+# Stages a complete preview inbound IP firewall allow list while public inbound
+# access remains Allow, and tightens outbound access protection (OAP).
 # Outbound cloud connection and gateway rules may only be declared while
 # outboundDefaultAction is Deny; apply lands the master policy switch and the
 # configured allow lists together as one approved mutation. The declared
@@ -18,6 +18,14 @@ networkProtection:
   communicationPolicy:
     inboundDefaultAction: Allow
     outboundDefaultAction: Deny
+  inboundFirewallRules:
+    rules:
+      - displayName: corporate-egress
+        value: 12.34.56.78
+      - displayName: partner-range
+        value: 23.45.67.80-23.45.67.89
+      - displayName: vpn-cidr
+        value: 34.56.78.0/24
   outboundCloudConnectionRules:
     defaultAction: Deny
     rules:

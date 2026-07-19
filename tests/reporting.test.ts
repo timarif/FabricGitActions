@@ -122,6 +122,14 @@ describe("plan reporting", () => {
             observedOutboundDefaultAction: "Allow",
             isRelaxation: false,
           },
+          inboundFirewallRules: {
+            action: "update",
+            reason: "Preview firewall differs.",
+            desiredHash: "1".repeat(64),
+            observedStateHash: "2".repeat(64),
+            etag: "firewall-etag",
+            ruleCount: 3,
+          },
           outboundCloudConnectionRules: {
             action: "update",
             reason: "Outbound access protection is not yet enabled.",
@@ -154,6 +162,10 @@ describe("plan reporting", () => {
     expect(content).toContain("Network protection");
     expect(content).toContain("Communication policy");
     expect(content).toContain("inbound Allow, outbound Deny");
+    expect(content).toContain(
+      "Inbound IP firewall rules (Preview)",
+    );
+    expect(content).toContain("3 rule(s)");
     expect(content).toContain("Outbound cloud connection rules");
     expect(content).toContain("Managed private endpoints");
     expect(content).toContain("storage-blob");

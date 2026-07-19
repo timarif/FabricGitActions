@@ -58,6 +58,11 @@ for the promotion. Lakehouse deletion requires both `allow_delete` and
 `allow_lakehouse_data_loss`. Relaxing an inbound or outbound network
 communication policy default action from `Deny` to `Allow` requires both
 `allow_network_policy_update` and `allow_network_policy_relaxation`.
+Replacing the preview inbound firewall requires
+`allow_inbound_firewall_update`. Changing observed inbound `Allow` to desired
+`Deny` additionally requires `allow_network_policy_update` and the independent
+`acknowledge_firewall_lockout_risk`; no other allow flag implies that
+acknowledgement.
 Managed private endpoint creation and deletion use independent
 `allow_managed_private_endpoint_create` and
 `allow_managed_private_endpoint_delete` approvals. Endpoint creation may

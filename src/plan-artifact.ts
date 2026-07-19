@@ -6,7 +6,9 @@ import {
   hashManagedPrivateEndpointDesiredIdentity,
   managedPrivateEndpointOapBlockers,
 } from "./fabric/managed-private-endpoints";
-import { hashCommunicationPolicy } from "./fabric/network-protection";
+import {
+  hashCommunicationPolicy,
+} from "./fabric/network-protection";
 import { compareCanonicalStrings, sha256, stableJson } from "./hash";
 import { rehashPlan } from "./planner";
 import {
@@ -14,6 +16,7 @@ import {
   type DeploymentPlan,
   type NetworkDefaultAction,
   type PlannedAction,
+  type PlannedInboundFirewallRules,
   type PlannedItem,
   type PlannedNetworkProtection,
   type PlannedNetworkSurface,
@@ -175,6 +178,21 @@ function isPlannedNetworkProtection(
   if (value === null || typeof value !== "object") {
     return false;
   }
+  const allowedKeys = new Set([
+    "workspaceId",
+    "communicationPolicy",
+    "inboundFirewallRules",
+    "outboundCloudConnectionRules",
+    "outboundGatewayRules",
+    "managedPrivateEndpoints",
+  ]);
+  if (
+    Object.keys(value as Record<string, unknown>).some(
+      (key) => !allowedKeys.has(key),
+    )
+  ) {
+    return false;
+  }
   const plan = value as Partial<PlannedNetworkProtection>;
   if (
     (plan.workspaceId !== undefined &&
@@ -219,12 +237,53 @@ function isPlannedNetworkProtection(
   return (
     isPlannedNetworkCommunicationPolicy(policy) &&
     (!requiresWorkspaceId || typeof plan.workspaceId === "string") &&
+    (plan.inboundFirewallRules === undefined ||
+      isPlannedInboundFirewallRules(plan.inboundFirewallRules)) &&
     (plan.outboundCloudConnectionRules === undefined ||
       isPlannedNetworkSurface(plan.outboundCloudConnectionRules)) &&
     (plan.outboundGatewayRules === undefined ||
       isPlannedNetworkSurface(plan.outboundGatewayRules)) &&
     managedPrivateEndpointsValid &&
-    policyBlockersValid
+    policyBlockersValid &&
+    (policy.desiredInboundDefaultAction !== "Deny" ||
+      (plan.inboundFirewallRules !== undefined &&
+        plan.inboundFirewallRules.ruleCount > 0))
+  );
+}
+
+function isPlannedInboundFirewallRules(
+  value: unknown,
+): value is PlannedInboundFirewallRules {
+  if (value === null || typeof value !== "object") {
+    return false;
+  }
+  const surface = value as Record<string, unknown>;
+  const allowedKeys = new Set([
+    "action",
+    "reason",
+    "desiredHash",
+    "observedStateHash",
+    "etag",
+    "ruleCount",
+  ]);
+  if (Object.keys(surface).some((key) => !allowedKeys.has(key))) {
+    return false;
+  }
+  const action = String(surface.action);
+  const discovered = action === "update" || action === "no-op";
+  return (
+    isPlannedNetworkSurface(surface) &&
+    typeof surface.ruleCount === "number" &&
+    Number.isInteger(surface.ruleCount) &&
+    surface.ruleCount >= 0 &&
+    surface.ruleCount <= 256 &&
+    (discovered
+      ? isHash(surface.observedStateHash) &&
+        (surface.etag === undefined ||
+          (typeof surface.etag === "string" &&
+            surface.etag.trim().length > 0))
+      : surface.observedStateHash === undefined &&
+        surface.etag === undefined)
   );
 }
 

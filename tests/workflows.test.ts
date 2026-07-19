@@ -51,6 +51,8 @@ describe("deployment workflow metadata", () => {
     const networkInputNames = [
       "allow-network-policy-update",
       "allow-network-policy-relaxation",
+      "allow-inbound-firewall-update",
+      "acknowledge-firewall-lockout-risk",
       "allow-outbound-cloud-connection-rule-update",
       "allow-outbound-gateway-rule-update",
       "allow-managed-private-endpoint-create",
@@ -63,6 +65,14 @@ describe("deployment workflow metadata", () => {
     }
     expect(
       (action.outputs as Record<string, unknown>)["network-protection-action"],
+    ).toBeDefined();
+    expect(
+      (action.outputs as Record<string, unknown>)["inbound-firewall-action"],
+    ).toBeDefined();
+    expect(
+      (action.outputs as Record<string, unknown>)[
+        "inbound-firewall-rule-count"
+      ],
     ).toBeDefined();
     expect(
       (action.outputs as Record<string, unknown>)[
@@ -99,6 +109,14 @@ describe("deployment workflow metadata", () => {
     expect(call.inputs).toMatchObject({
       allow_network_policy_update: { default: false, type: "boolean" },
       allow_network_policy_relaxation: { default: false, type: "boolean" },
+      allow_inbound_firewall_update: {
+        default: false,
+        type: "boolean",
+      },
+      acknowledge_firewall_lockout_risk: {
+        default: false,
+        type: "boolean",
+      },
       allow_outbound_cloud_connection_rule_update: {
         default: false,
         type: "boolean",
@@ -122,6 +140,12 @@ describe("deployment workflow metadata", () => {
     expect(applyWith["allow-network-policy-relaxation"]).toBe(
       "${{ inputs.allow_network_policy_relaxation }}",
     );
+    expect(applyWith["allow-inbound-firewall-update"]).toBe(
+      "${{ inputs.allow_inbound_firewall_update }}",
+    );
+    expect(applyWith["acknowledge-firewall-lockout-risk"]).toBe(
+      "${{ inputs.acknowledge_firewall_lockout_risk }}",
+    );
     expect(applyWith["allow-outbound-cloud-connection-rule-update"]).toBe(
       "${{ inputs.allow_outbound_cloud_connection_rule_update }}",
     );
@@ -144,6 +168,14 @@ describe("deployment workflow metadata", () => {
     expect(promoteInputs).toMatchObject({
       allow_network_policy_update: { required: true, default: false },
       allow_network_policy_relaxation: { required: true, default: false },
+      allow_inbound_firewall_update: {
+        required: true,
+        default: false,
+      },
+      acknowledge_firewall_lockout_risk: {
+        required: true,
+        default: false,
+      },
       allow_outbound_cloud_connection_rule_update: {
         required: true,
         default: false,
@@ -168,6 +200,12 @@ describe("deployment workflow metadata", () => {
       );
       expect(jobWith.allow_network_policy_relaxation).toBe(
         "${{ inputs.allow_network_policy_relaxation }}",
+      );
+      expect(jobWith.allow_inbound_firewall_update).toBe(
+        "${{ inputs.allow_inbound_firewall_update }}",
+      );
+      expect(jobWith.acknowledge_firewall_lockout_risk).toBe(
+        "${{ inputs.acknowledge_firewall_lockout_risk }}",
       );
       expect(jobWith.allow_outbound_cloud_connection_rule_update).toBe(
         "${{ inputs.allow_outbound_cloud_connection_rule_update }}",
@@ -198,6 +236,9 @@ describe("deployment workflow metadata", () => {
     );
     expect(inspectStep?.run).toContain(
       ".networkProtection.outboundCloudConnectionRules",
+    );
+    expect(inspectStep?.run).toContain(
+      ".networkProtection.inboundFirewallRules",
     );
     expect(inspectStep?.run).toContain(
       ".networkProtection.outboundGatewayRules",
@@ -321,6 +362,41 @@ describe("deployment workflow metadata", () => {
     );
     expect(reusable).toContain("authorization_header");
     expect(reusable).toContain('--header "$authorization_header"');
+  });
+
+  it("keeps the GitHub-hosted inbound firewall live probe read-only", () => {
+    const workflow = loadYaml(
+      ".github/workflows/live-fabric-plan.yml",
+    );
+    const trigger = workflow.on as {
+      workflow_dispatch: {
+        inputs: Record<string, Record<string, unknown>>;
+      };
+    };
+    const steps = workflowSteps(workflow, "plan");
+    const probe = steps.find(
+      (step) => step.name === "Read-only inbound firewall plan probe",
+    );
+    const withValues = probe?.with as Record<string, string>;
+
+    expect(
+      trigger.workflow_dispatch.inputs.probe_inbound_firewall,
+    ).toMatchObject({
+      default: false,
+      type: "boolean",
+    });
+    expect(withValues.mode).toBe("plan");
+    expect(withValues.manifest).toBe(
+      "examples/inbound-firewall-probe/fabric/deployment.yaml",
+    );
+    expect(
+      steps.some(
+        (step) =>
+          step.name?.toString().toLowerCase().includes("firewall") &&
+          (step.with as Record<string, unknown> | undefined)?.mode ===
+            "apply",
+      ),
+    ).toBe(false);
   });
 
   it("runs live E2E in a disposable workspace", () => {

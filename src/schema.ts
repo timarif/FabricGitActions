@@ -105,6 +105,35 @@ export const deploymentSchema = {
             outboundDefaultAction: networkDefaultActionSchema,
           },
         },
+        inboundFirewallRules: {
+          type: "object",
+          additionalProperties: false,
+          required: ["rules"],
+          properties: {
+            rules: {
+              type: "array",
+              maxItems: 256,
+              items: {
+                type: "object",
+                additionalProperties: false,
+                required: ["displayName", "value"],
+                properties: {
+                  displayName: {
+                    type: "string",
+                    minLength: 1,
+                    maxLength: 128,
+                    pattern: "^\\S(?:[\\s\\S]*\\S)?$",
+                  },
+                  value: {
+                    type: "string",
+                    minLength: 1,
+                    pattern: "^\\S+$",
+                  },
+                },
+              },
+            },
+          },
+        },
         outboundCloudConnectionRules: {
           type: "object",
           additionalProperties: false,

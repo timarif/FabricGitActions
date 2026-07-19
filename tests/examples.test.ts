@@ -86,6 +86,12 @@ const examples: ExampleCase[] = [
     },
     itemCount: 1,
   },
+  {
+    name: "read-only inbound firewall probe",
+    manifestPath: "inbound-firewall-probe/fabric/deployment.yaml",
+    options: { workspaceIdOverride: WORKSPACE_ID },
+    itemCount: 0,
+  },
 ];
 
 describe("maintained examples", () => {

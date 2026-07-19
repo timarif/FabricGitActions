@@ -3,6 +3,7 @@ import { FabricApiError } from "./fabric/client";
 import { stableJson } from "./hash";
 import {
   hashCommunicationPolicy,
+  hashInboundFirewallRules,
   hashOutboundCloudConnectionRules,
   hashOutboundGatewayRules,
   normalizeNetworkProtection,
@@ -29,6 +30,7 @@ import type {
   DeploymentPlan,
   NetworkProtectionManifest,
   PlannedNetworkCommunicationPolicy,
+  PlannedInboundFirewallRules,
   PlannedManagedPrivateEndpoint,
   PlannedNetworkProtection,
   PlannedNetworkSurface,
@@ -47,7 +49,13 @@ export interface ApplyNetworkProtectionOptions {
     | "putOutboundCloudConnectionRules"
     | "getOutboundGatewayRules"
     | "putOutboundGatewayRules"
-  >;
+  > &
+    Partial<
+      Pick<
+        NetworkProtectionAdapter,
+        "getInboundFirewallRules" | "putInboundFirewallRules"
+      >
+    >;
   managedPrivateEndpointAdapter?: Pick<
     ManagedPrivateEndpointAdapter,
     | "listManagedPrivateEndpoints"
@@ -60,6 +68,8 @@ export interface ApplyNetworkProtectionOptions {
   checkpointFile: string;
   allowNetworkPolicyUpdate: boolean;
   allowNetworkPolicyRelaxation: boolean;
+  allowInboundFirewallUpdate?: boolean;
+  acknowledgeFirewallLockoutRisk?: boolean;
   allowOutboundCloudConnectionRuleUpdate: boolean;
   allowOutboundGatewayRuleUpdate: boolean;
   allowManagedPrivateEndpointCreate?: boolean;
@@ -69,6 +79,7 @@ export interface ApplyNetworkProtectionOptions {
 
 type CheckpointSurfaceKey =
   | "communicationPolicy"
+  | "inboundFirewallRules"
   | "outboundCloudConnectionRules"
   | "outboundGatewayRules";
 
@@ -84,6 +95,8 @@ export function preflightNetworkProtection(options: {
   checkpoint: ApplyCheckpoint;
   allowNetworkPolicyUpdate: boolean;
   allowNetworkPolicyRelaxation: boolean;
+  allowInboundFirewallUpdate?: boolean;
+  acknowledgeFirewallLockoutRisk?: boolean;
   allowOutboundCloudConnectionRuleUpdate: boolean;
   allowOutboundGatewayRuleUpdate: boolean;
   allowManagedPrivateEndpointCreate?: boolean;
@@ -107,6 +120,16 @@ export function preflightNetworkProtection(options: {
     );
   }
   assertPlanIsApplicable(current);
+  assertNoUnexpectedDrift(planned, current, checkpointState);
+  assertInboundFirewallLockoutAuthorization({
+    planned,
+    checkpoint: checkpointState,
+    allowNetworkPolicyUpdate: options.allowNetworkPolicyUpdate,
+    allowInboundFirewallUpdate:
+      options.allowInboundFirewallUpdate ?? false,
+    acknowledgeFirewallLockoutRisk:
+      options.acknowledgeFirewallLockoutRisk ?? false,
+  });
   preflightManagedPrivateEndpoints({
     approvedPlan: options.approvedPlan,
     currentPlan: options.currentPlan,
@@ -116,7 +139,6 @@ export function preflightNetworkProtection(options: {
     allowManagedPrivateEndpointDelete:
       options.allowManagedPrivateEndpointDelete ?? false,
   });
-  assertNoUnexpectedDrift(planned, current, checkpointState);
 
   assertPreflightSurfaceAuthorized(
     planned.communicationPolicy,
@@ -137,6 +159,19 @@ export function preflightNetworkProtection(options: {
       }
     },
   );
+  if (planned.inboundFirewallRules) {
+    assertPreflightSurfaceAuthorized(
+      planned.inboundFirewallRules,
+      checkpointState?.inboundFirewallRules,
+      () => {
+        if (!options.allowInboundFirewallUpdate) {
+          throw new Error(
+            "The approved plan requires an inbound firewall update, but allow-inbound-firewall-update is false.",
+          );
+        }
+      },
+    );
+  }
   if (planned.outboundCloudConnectionRules) {
     assertPreflightSurfaceAuthorized(
       planned.outboundCloudConnectionRules,
@@ -207,6 +242,10 @@ export async function recoverInterruptedNetworkProtection(
     allowNetworkPolicyUpdate: options.allowNetworkPolicyUpdate,
     allowNetworkPolicyRelaxation:
       options.allowNetworkPolicyRelaxation,
+    allowInboundFirewallUpdate:
+      options.allowInboundFirewallUpdate ?? false,
+    acknowledgeFirewallLockoutRisk:
+      options.acknowledgeFirewallLockoutRisk ?? false,
     allowOutboundCloudConnectionRuleUpdate:
       options.allowOutboundCloudConnectionRuleUpdate,
     allowOutboundGatewayRuleUpdate:
@@ -278,6 +317,15 @@ export async function applyNetworkProtection(
     "manifest",
   );
   assertDesiredConfigurationMatchesPlan(planned, canonical);
+  assertInboundFirewallLockoutAuthorization({
+    planned,
+    checkpoint: options.checkpoint.networkProtection,
+    allowNetworkPolicyUpdate: options.allowNetworkPolicyUpdate,
+    allowInboundFirewallUpdate:
+      options.allowInboundFirewallUpdate ?? false,
+    acknowledgeFirewallLockoutRisk:
+      options.acknowledgeFirewallLockoutRisk ?? false,
+  });
   if (
     isManagedPrivateEndpointPolicyBlock(
       planned.communicationPolicy,
@@ -285,6 +333,7 @@ export async function applyNetworkProtection(
   ) {
     if (
       options.checkpoint.networkProtection?.communicationPolicy ||
+      options.checkpoint.networkProtection?.inboundFirewallRules ||
       options.checkpoint.networkProtection
         ?.outboundCloudConnectionRules ||
       options.checkpoint.networkProtection?.outboundGatewayRules
@@ -300,6 +349,15 @@ export async function applyNetworkProtection(
         status: "deferred",
         durationMs: 0,
       },
+      ...(planned.inboundFirewallRules
+        ? {
+            inboundFirewallRules: {
+              action: planned.inboundFirewallRules.action,
+              status: "deferred" as const,
+              durationMs: 0,
+            },
+          }
+        : {}),
       ...(planned.outboundCloudConnectionRules
         ? {
             outboundCloudConnectionRules: {
@@ -331,23 +389,36 @@ export async function applyNetworkProtection(
     fresh,
     options.checkpoint.networkProtection,
   );
+  assertInboundFirewallLockoutAuthorization({
+    planned,
+    checkpoint: options.checkpoint.networkProtection,
+    allowNetworkPolicyUpdate: options.allowNetworkPolicyUpdate,
+    allowInboundFirewallUpdate:
+      options.allowInboundFirewallUpdate ?? false,
+    acknowledgeFirewallLockoutRisk:
+      options.acknowledgeFirewallLockoutRisk ?? false,
+  });
 
   ensureCheckpointInitialized(options, workspaceId, now);
 
-  const tightening =
+  const inboundRelaxing =
+    planned.communicationPolicy.observedInboundDefaultAction === "Deny" &&
+    planned.communicationPolicy.desiredInboundDefaultAction === "Allow";
+  const outboundTightening =
     planned.communicationPolicy.observedOutboundDefaultAction === "Allow" &&
     planned.communicationPolicy.desiredOutboundDefaultAction === "Deny";
 
   let communicationPolicyResult: ApplyNetworkSurfaceResult | undefined;
+  let inboundFirewallRulesResult: ApplyNetworkSurfaceResult | undefined;
   let outboundCloudConnectionRulesResult: ApplyNetworkSurfaceResult | undefined;
   let outboundGatewayRulesResult: ApplyNetworkSurfaceResult | undefined;
 
-  if (tightening) {
-    // Tightening Allow -> Deny: the master switch must land before any
-    // configured allow list, or the workspace would briefly enforce Deny
-    // with no exceptions in place yet is still safe; landing rules first
-    // would fail outright because OAP is not enabled yet.
-    communicationPolicyResult = await applyCommunicationPolicySurface(
+  // Pre-policy phase:
+  // - Inbound Allow -> Deny stages and verifies firewall exceptions first.
+  // - Outbound rule bodies run first unless OAP itself is being enabled,
+  //   because those APIs are unavailable before outbound Deny is active.
+  if (!inboundRelaxing) {
+    inboundFirewallRulesResult = await applyInboundFirewallRulesSurface(
       options,
       workspaceId,
       planned,
@@ -355,6 +426,8 @@ export async function applyNetworkProtection(
       canonical,
       now,
     );
+  }
+  if (!outboundTightening) {
     outboundCloudConnectionRulesResult = await applyOutboundCloudConnectionRulesSurface(
       options,
       workspaceId,
@@ -369,10 +442,32 @@ export async function applyNetworkProtection(
       canonical,
       now,
     );
-  } else {
-    // Relaxing Deny -> Allow (or no default-action transition at all): any
-    // configured rule bodies are applied first while OAP remains enabled,
-    // then the communication policy is written last.
+  }
+
+  communicationPolicyResult = await applyCommunicationPolicySurface(
+    options,
+    workspaceId,
+    planned,
+    fresh,
+    canonical,
+    now,
+  );
+
+  // Post-policy phase:
+  // - Inbound Deny -> Allow opens the master policy before any rule
+  //   relaxation/removal.
+  // - Outbound Allow -> Deny enables OAP before its configured rule bodies.
+  if (inboundRelaxing) {
+    inboundFirewallRulesResult = await applyInboundFirewallRulesSurface(
+      options,
+      workspaceId,
+      planned,
+      fresh,
+      canonical,
+      now,
+    );
+  }
+  if (outboundTightening) {
     outboundCloudConnectionRulesResult = await applyOutboundCloudConnectionRulesSurface(
       options,
       workspaceId,
@@ -384,14 +479,6 @@ export async function applyNetworkProtection(
       options,
       workspaceId,
       planned,
-      canonical,
-      now,
-    );
-    communicationPolicyResult = await applyCommunicationPolicySurface(
-      options,
-      workspaceId,
-      planned,
-      fresh,
       canonical,
       now,
     );
@@ -401,6 +488,9 @@ export async function applyNetworkProtection(
   return {
     workspaceId,
     communicationPolicy: communicationPolicyResult!,
+    ...(inboundFirewallRulesResult
+      ? { inboundFirewallRules: inboundFirewallRulesResult }
+      : {}),
     ...(outboundCloudConnectionRulesResult
       ? { outboundCloudConnectionRules: outboundCloudConnectionRulesResult }
       : {}),
@@ -461,6 +551,72 @@ async function applyCommunicationPolicySurface(
     verify: async () => {
       const observed = await options.adapter!.getCommunicationPolicy(workspaceId);
       return hashCommunicationPolicy(observed.policy) === surface.desiredHash;
+    },
+  });
+}
+
+async function applyInboundFirewallRulesSurface(
+  options: ApplyNetworkProtectionOptions,
+  workspaceId: string,
+  planned: PlannedNetworkProtection,
+  fresh: PlannedNetworkProtection,
+  canonical: ReturnType<typeof normalizeNetworkProtection>,
+  now: () => number,
+): Promise<ApplyNetworkSurfaceResult | undefined> {
+  const surface = planned.inboundFirewallRules;
+  if (!surface) {
+    return undefined;
+  }
+  const desired = canonical.inboundFirewallRules;
+  if (!desired) {
+    throw new Error(
+      "Approved plan configures inboundFirewallRules, but the manifest no longer declares them.",
+    );
+  }
+  const adapter = options.adapter;
+  if (
+    !adapter?.getInboundFirewallRules ||
+    !adapter.putInboundFirewallRules
+  ) {
+    throw new Error(
+      "Inbound firewall apply requires inbound firewall adapter methods.",
+    );
+  }
+  const getInboundFirewallRules =
+    adapter.getInboundFirewallRules.bind(adapter);
+  const putInboundFirewallRules =
+    adapter.putInboundFirewallRules.bind(adapter);
+  const freshSurface = fresh.inboundFirewallRules;
+  const freshEtag = freshSurface?.etag;
+  return applySurface({
+    label: "inbound firewall rules",
+    planned: surface,
+    checkpointKey: "inboundFirewallRules",
+    options,
+    now,
+    authorize: () => {
+      if (!options.allowInboundFirewallUpdate) {
+        throw new Error(
+          "The approved plan requires an inbound firewall update, but allow-inbound-firewall-update is false.",
+        );
+      }
+    },
+    dispatch: async (onDispatch) => {
+      await putInboundFirewallRules(
+        workspaceId,
+        desired,
+        {
+          ...(freshEtag ? { ifMatchEtag: freshEtag } : {}),
+          onDispatch,
+        },
+      );
+    },
+    verify: async () => {
+      const observed = await getInboundFirewallRules(workspaceId);
+      return (
+        hashInboundFirewallRules(observed.configuration) ===
+        surface.desiredHash
+      );
     },
   });
 }
@@ -703,6 +859,7 @@ async function applySurface(params: {
 
 function assertPlanIsApplicable(planned: PlannedNetworkProtection): void {
   const actions = [
+    planned.inboundFirewallRules?.action,
     planned.outboundCloudConnectionRules?.action,
     planned.outboundGatewayRules?.action,
   ];
@@ -734,6 +891,15 @@ function assertPlanIsApplicable(planned: PlannedNetworkProtection): void {
   }
   requirePlannedWorkspaceId(planned);
   assertCommunicationPolicyMetadata(planned.communicationPolicy);
+  if (
+    planned.communicationPolicy.desiredInboundDefaultAction === "Deny" &&
+    (!planned.inboundFirewallRules ||
+      planned.inboundFirewallRules.ruleCount < 1)
+  ) {
+    throw new Error(
+      "Inbound Deny requires an approved non-empty inbound firewall configuration.",
+    );
+  }
 }
 
 function isManagedPrivateEndpointPolicyBlock(
@@ -825,6 +991,13 @@ function assertNoUnexpectedDrift(
     fresh.communicationPolicy,
     checkpoint?.communicationPolicy,
   );
+  if (planned.inboundFirewallRules) {
+    assertInboundFirewallRulesNotDrifted(
+      planned.inboundFirewallRules,
+      fresh.inboundFirewallRules,
+      checkpoint?.inboundFirewallRules,
+    );
+  }
   if (planned.outboundCloudConnectionRules) {
     assertSurfaceNotDrifted(
       "outbound cloud connection rules",
@@ -848,6 +1021,33 @@ function assertNoUnexpectedDrift(
     fresh.managedPrivateEndpoints,
     checkpoint?.managedPrivateEndpoints,
   );
+}
+
+function assertInboundFirewallRulesNotDrifted(
+  planned: PlannedInboundFirewallRules,
+  fresh: PlannedInboundFirewallRules | undefined,
+  checkpointState: ApplyCheckpointNetworkSurface | undefined,
+): void {
+  assertSurfaceNotDrifted(
+    "inbound firewall rules",
+    planned,
+    fresh,
+    checkpointState,
+    false,
+  );
+  if (!fresh) {
+    return;
+  }
+  if (
+    planned.ruleCount !== fresh.ruleCount ||
+    (checkpointState === undefined &&
+      planned.etag !== undefined &&
+      fresh.etag === undefined)
+  ) {
+    throw new Error(
+      "Fabric inbound firewall rule metadata drifted after approval. Generate a new plan.",
+    );
+  }
 }
 
 function assertCommunicationPolicyNotDrifted(
@@ -952,6 +1152,7 @@ function networkProtectionRequiresRecovery(
   }
   const hasStartedSurface =
     checkpoint.communicationPolicy !== undefined ||
+    checkpoint.inboundFirewallRules !== undefined ||
     checkpoint.outboundCloudConnectionRules !== undefined ||
     checkpoint.outboundGatewayRules !== undefined;
   if (!planned) {
@@ -959,6 +1160,9 @@ function networkProtectionRequiresRecovery(
   }
   const fullyVerified =
     checkpoint.communicationPolicy?.phase === "verified" &&
+    (planned.inboundFirewallRules === undefined
+      ? checkpoint.inboundFirewallRules === undefined
+      : checkpoint.inboundFirewallRules?.phase === "verified") &&
     (planned.outboundCloudConnectionRules === undefined
       ? checkpoint.outboundCloudConnectionRules === undefined
       : checkpoint.outboundCloudConnectionRules?.phase === "verified") &&
@@ -981,6 +1185,10 @@ function assertDesiredConfigurationMatchesPlan(
       "The networkProtection communication policy manifest no longer matches the approved plan.",
     );
   }
+  assertDesiredInboundFirewallRulesMatchesPlan(
+    planned.inboundFirewallRules,
+    canonical.inboundFirewallRules,
+  );
   assertDesiredSurfaceMatchesPlan(
     "outbound cloud connection rules",
     planned.outboundCloudConnectionRules,
@@ -1001,6 +1209,27 @@ function assertDesiredConfigurationMatchesPlan(
     planned.managedPrivateEndpoints,
     canonical.managedPrivateEndpoints,
   );
+}
+
+function assertDesiredInboundFirewallRulesMatchesPlan(
+  planned: PlannedInboundFirewallRules | undefined,
+  desired: ReturnType<
+    typeof normalizeNetworkProtection
+  >["inboundFirewallRules"],
+): void {
+  if (!planned && desired === undefined) {
+    return;
+  }
+  if (
+    !planned ||
+    desired === undefined ||
+    planned.desiredHash !== hashInboundFirewallRules(desired) ||
+    planned.ruleCount !== desired.rules.length
+  ) {
+    throw new Error(
+      "The networkProtection inbound firewall rules manifest no longer matches the approved plan.",
+    );
+  }
 }
 
 function assertDesiredSurfaceMatchesPlan(
@@ -1093,6 +1322,37 @@ function isCommunicationPolicyRelaxation(
     (policy.observedOutboundDefaultAction === "Deny" &&
       policy.desiredOutboundDefaultAction === "Allow")
   );
+}
+
+function assertInboundFirewallLockoutAuthorization(options: {
+  planned: PlannedNetworkProtection;
+  checkpoint: ApplyCheckpointNetworkProtection | undefined;
+  allowNetworkPolicyUpdate: boolean;
+  allowInboundFirewallUpdate: boolean;
+  acknowledgeFirewallLockoutRisk: boolean;
+}): void {
+  const policy = options.planned.communicationPolicy;
+  const enablesInboundDeny =
+    policy.observedInboundDefaultAction === "Allow" &&
+    policy.desiredInboundDefaultAction === "Deny";
+  if (!enablesInboundDeny || options.checkpoint?.completedAt) {
+    return;
+  }
+  if (!options.allowNetworkPolicyUpdate) {
+    throw new Error(
+      "Enabling inbound Deny requires allow-network-policy-update in addition to the inbound firewall safeguards.",
+    );
+  }
+  if (!options.allowInboundFirewallUpdate) {
+    throw new Error(
+      "Enabling inbound Deny requires allow-inbound-firewall-update even when the approved firewall body is already present.",
+    );
+  }
+  if (!options.acknowledgeFirewallLockoutRisk) {
+    throw new Error(
+      "Enabling inbound Deny requires the independent acknowledge-firewall-lockout-risk safeguard.",
+    );
+  }
 }
 
 function requirePlannedWorkspaceId(planned: PlannedNetworkProtection): string {
@@ -1194,7 +1454,20 @@ function markNetworkProtectionCompleted(
           phase === "absent-verified")
       );
     });
-  if (managedPrivateEndpointsComplete) {
+  const planned = options.approvedPlan.networkProtection;
+  const configuredSurfacesComplete =
+    planned !== undefined &&
+    checkpoint.communicationPolicy?.phase === "verified" &&
+    (planned.inboundFirewallRules === undefined
+      ? checkpoint.inboundFirewallRules === undefined
+      : checkpoint.inboundFirewallRules?.phase === "verified") &&
+    (planned.outboundCloudConnectionRules === undefined
+      ? checkpoint.outboundCloudConnectionRules === undefined
+      : checkpoint.outboundCloudConnectionRules?.phase === "verified") &&
+    (planned.outboundGatewayRules === undefined
+      ? checkpoint.outboundGatewayRules === undefined
+      : checkpoint.outboundGatewayRules?.phase === "verified");
+  if (managedPrivateEndpointsComplete && configuredSurfacesComplete) {
     checkpoint.completedAt = timestamp;
   } else {
     delete checkpoint.completedAt;

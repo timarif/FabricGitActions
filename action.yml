@@ -125,6 +125,14 @@ inputs:
     description: Allow apply mode to relax an inbound or outbound Deny communication policy default action to Allow. Required in addition to allow-network-policy-update.
     required: false
     default: "false"
+  allow-inbound-firewall-update:
+    description: Allow apply mode to replace the complete preview workspace inbound IP firewall rule set.
+    required: false
+    default: "false"
+  acknowledge-firewall-lockout-risk:
+    description: Acknowledge the lockout risk when an approved plan changes inbound public access from Allow to Deny. Required independently from all other network safeguards.
+    required: false
+    default: "false"
   allow-outbound-cloud-connection-rule-update:
     description: Allow apply mode to update outbound access protection cloud connection rules.
     required: false
@@ -175,6 +183,10 @@ outputs:
     description: Planned action for the managed workspace.
   network-protection-action:
     description: Planned or applied action for the workspace network communication policy, or not-configured when networkProtection is absent from the manifest.
+  inbound-firewall-action:
+    description: Planned action for the preview workspace inbound IP firewall rules, or not-configured.
+  inbound-firewall-rule-count:
+    description: Number of approved inbound IP firewall rules.
   managed-private-endpoint-count:
     description: Number of declared managed private endpoints.
   managed-private-endpoint-create-count:

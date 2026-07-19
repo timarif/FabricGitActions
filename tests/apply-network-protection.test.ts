@@ -12,6 +12,7 @@ import {
 } from "../src/checkpoint";
 import {
   hashCommunicationPolicy,
+  hashInboundFirewallRules,
   normalizeNetworkProtection,
 } from "../src/fabric/network-protection";
 import type {
@@ -70,9 +71,13 @@ function files() {
   };
 }
 
-function buildApprovedPlan(loaded: LoadedManifest, policyAction: "update" | "no-op" | "blocked") {
+function buildApprovedPlan(
+  loaded: LoadedManifest,
+  policyAction: "update" | "no-op" | "blocked",
+  desired: NetworkProtectionManifest = DESIRED_NETWORK_PROTECTION,
+) {
   const plan = buildPlan(loaded, { mode: "plan", environment: "dev" });
-  const canonical = normalizeNetworkProtection(DESIRED_NETWORK_PROTECTION);
+  const canonical = normalizeNetworkProtection(desired);
   const desiredHash = hashCommunicationPolicy(canonical.communicationPolicy);
   const observedHash = hashCommunicationPolicy({
     inbound: { publicAccessRules: { defaultAction: "Allow" } },
@@ -91,13 +96,29 @@ function buildApprovedPlan(loaded: LoadedManifest, policyAction: "update" | "no-
       reason: policyAction === "no-op" ? "matches" : "differs",
       desiredHash,
       observedStateHash: policyAction === "no-op" ? desiredHash : observedHash,
-      desiredInboundDefaultAction: "Allow",
-      desiredOutboundDefaultAction: "Deny",
+      desiredInboundDefaultAction:
+        canonical.communicationPolicy.inbound.publicAccessRules
+          .defaultAction,
+      desiredOutboundDefaultAction:
+        canonical.communicationPolicy.outbound.publicAccessRules
+          .defaultAction,
       observedInboundDefaultAction: "Allow",
       observedOutboundDefaultAction: "Allow",
       isRelaxation: false,
     },
   };
+  if (canonical.inboundFirewallRules) {
+    plan.networkProtection.inboundFirewallRules = {
+      action: "update",
+      reason: "differs",
+      desiredHash: hashInboundFirewallRules(
+        canonical.inboundFirewallRules,
+      ),
+      observedStateHash: hashInboundFirewallRules({ rules: [] }),
+      etag: "firewall-etag",
+      ruleCount: canonical.inboundFirewallRules.rules.length,
+    };
+  }
   return rehashPlan(plan);
 }
 
@@ -212,6 +233,65 @@ describe("network protection apply integration", () => {
       }),
     ).rejects.toThrow("allow-network-policy-update is false");
     expect(npAdapter.putCommunicationPolicy).not.toHaveBeenCalled();
+  });
+
+  it("preflights inbound firewall lockout safeguards before any item mutation", async () => {
+    const desired: NetworkProtectionManifest = {
+      communicationPolicy: {
+        inboundDefaultAction: "Deny",
+        outboundDefaultAction: "Allow",
+      },
+      inboundFirewallRules: {
+        rules: [
+          {
+            displayName: "corporate",
+            value: "12.34.56.78",
+          },
+        ],
+      },
+    };
+    const loaded = loadedWithLakehouseAndNetworkProtection();
+    loaded.manifest.networkProtection = desired;
+    const approved = buildApprovedPlan(
+      loaded,
+      "update",
+      desired,
+    );
+    const create = vi.fn();
+    const adapter = {
+      ...networkProtectionAdapter([]),
+      getInboundFirewallRules: vi.fn(),
+      putInboundFirewallRules: vi.fn(),
+    };
+    adapter.plan.mockResolvedValue(
+      approved.networkProtection as never,
+    );
+
+    await expect(
+      applyApprovedPlan({
+        approvedPlan: approved,
+        currentPlan: approved,
+        loadedManifest: loaded,
+        lakehouseAdapter: {
+          plan: vi.fn(),
+          create,
+          update: vi.fn(),
+          resumeCreate: vi.fn(),
+          verify: vi.fn(),
+        },
+        networkProtectionAdapter: adapter,
+        allowCreate: true,
+        allowUpdate: false,
+        allowNetworkPolicyUpdate: true,
+        allowInboundFirewallUpdate: false,
+        acknowledgeFirewallLockoutRisk: true,
+        ...files(),
+      }),
+    ).rejects.toThrow("requires allow-inbound-firewall-update");
+
+    expect(create).not.toHaveBeenCalled();
+    expect(adapter.putInboundFirewallRules).not.toHaveBeenCalled();
+    expect(adapter.putCommunicationPolicy).not.toHaveBeenCalled();
   });
 
   it("refuses to apply a blocked network protection plan", async () => {

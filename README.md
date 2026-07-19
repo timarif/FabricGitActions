@@ -121,14 +121,21 @@ adapters remain `unknown`.
 
 An optional top-level `networkProtection` manifest section manages the GA
 workspace network communication policy, outbound cloud connection and gateway
-rules, and managed private endpoints, either for the manifest's own
-managed/target workspace or an independent explicit `workspaceId`:
+rules, managed private endpoints, and the preview workspace inbound IP
+firewall, either for the manifest's own managed/target workspace or an
+independent explicit `workspaceId`:
 
 ```yaml
 networkProtection:
   communicationPolicy:
     inboundDefaultAction: Allow
     outboundDefaultAction: Deny
+  inboundFirewallRules:
+    rules:
+      - displayName: corporate-egress
+        value: 12.34.56.78
+      - displayName: vpn-cidr
+        value: 34.56.78.0/24
   outboundCloudConnectionRules:
     defaultAction: Deny
     rules:
@@ -154,8 +161,19 @@ networkProtection:
 
 `communicationPolicy` is required whenever `networkProtection` is present, and
 every `defaultAction` field must be explicit so nothing silently defaults to
-`Allow`. Only inbound `Allow` is accepted in this increment; inbound `Deny`
-raises a validation error until Phase 5B adds inbound firewall support.
+`Allow`. `inboundFirewallRules` uses the documented full-replacement body
+exactly: `rules[]` entries contain only `displayName` and `value`. The action
+accepts documented public IPv4 single addresses, ranges, and CIDRs, normalizes
+them deterministically, limits the list to 256 rules, and rejects unknown
+fields, duplicate or case-ambiguous names, malformed/non-public values, and
+duplicate or overlapping address declarations. IPv6 support is not documented
+by Fabric and fails closed.
+
+Inbound `Deny` is accepted only with an explicit non-empty approved firewall
+configuration. An empty `rules` array is permitted only while the desired
+inbound policy is `Allow`, for example to clear staged rules after first opening
+the master policy. Inbound Azure resource rules and the External Data Shares
+policy remain unsupported.
 `outboundCloudConnectionRules` and `outboundGatewayRules` are optional and may
 only be declared while `outboundDefaultAction` is `Deny`, matching the Fabric
 API's own requirement that outbound access protection (OAP) be enabled before
@@ -176,6 +194,10 @@ Network safeguards are independent and default to `false`:
 - `allow-network-policy-relaxation` (required in addition to
   `allow-network-policy-update` for either an inbound or outbound
   Deny -> Allow transition)
+- `allow-inbound-firewall-update`
+- `acknowledge-firewall-lockout-risk` (required independently, together with
+  both `allow-network-policy-update` and
+  `allow-inbound-firewall-update`, for observed inbound Allow -> desired Deny)
 - `allow-outbound-cloud-connection-rule-update`
 - `allow-outbound-gateway-rule-update`
 - `allow-managed-private-endpoint-create`
@@ -184,11 +206,17 @@ Network safeguards are independent and default to `false`:
 Every configured surface is preflighted before any Fabric item is mutated.
 Present managed private endpoints are verified or created after item
 reconciliation, OAP policy/rules run next, and absent endpoint deletions run
-last. An interrupted endpoint operation is recovered early, but untouched
-endpoints are never started during early recovery. Tightening
-outbound `Allow` -> `Deny` writes the complete communication policy first and
-then applies the configured outbound rules; relaxing `Deny` -> `Allow` applies
-any configured rule bodies first and writes the communication policy last.
+last. An interrupted inbound firewall or policy operation is recovered before
+unrelated item loading, while untouched operations are never started by early
+recovery.
+
+Safe ordering is directional even though both defaults share one communication
+policy PUT. Inbound `Allow` -> `Deny` stages and verifies firewall exceptions
+before the policy; inbound `Deny` -> `Allow` opens the policy before firewall
+relaxation or removal. Outbound `Allow` -> `Deny` writes the policy before OAP
+rules; other outbound rule updates run before the policy. Combined transitions
+apply all required pre-policy surfaces, write the single policy body, then
+apply required post-policy surfaces.
 
 Outbound `Allow` -> `Deny` is intentionally deferred when a declared present
 endpoint is missing, provisioning, awaiting approval, or otherwise not safely
@@ -198,6 +226,15 @@ Approve the private-link request and generate a fresh plan before OAP can
 tighten. A managed workspace bootstrap likewise requires a replan before
 same-workspace endpoints can run; an explicit independent
 `networkProtection.workspaceId` remains actionable.
+
+The inbound firewall API is preview. Although the reference documents an ETag,
+live GET responses can omit it. Apply sends the fresh value as quoted
+`If-Match` when available. A plan approved without an ETag remains actionable
+only while fresh discovery is also headerless and the observed body hash still
+matches; losing ETag support after approving a token-bound plan fails closed.
+Only HTTP 429 is retried; transport failures, 408, and 5xx remain ambiguous and
+are resolved by checkpointed read-back rather than blind resubmission.
+GitHub-hosted live validation is plan-only and never enables inbound `Deny`.
 
 ## Authenticated Fabric plan with GitHub OIDC
 

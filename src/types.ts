@@ -65,6 +65,15 @@ export interface NetworkCommunicationPolicyManifest {
   outboundDefaultAction: NetworkDefaultAction;
 }
 
+export interface InboundFirewallRuleManifest {
+  displayName: string;
+  value: string;
+}
+
+export interface InboundFirewallRulesManifest {
+  rules: InboundFirewallRuleManifest[];
+}
+
 export interface OutboundConnectionEndpointRuleManifest {
   hostnamePattern: string;
 }
@@ -105,6 +114,7 @@ export interface ManagedPrivateEndpointManifest {
 export interface NetworkProtectionManifest {
   workspaceId?: string;
   communicationPolicy: NetworkCommunicationPolicyManifest;
+  inboundFirewallRules?: InboundFirewallRulesManifest;
   outboundCloudConnectionRules?: OutboundCloudConnectionRulesManifest;
   outboundGatewayRules?: OutboundGatewayRulesManifest;
   managedPrivateEndpoints?: ManagedPrivateEndpointManifest[];
@@ -259,6 +269,11 @@ export interface PlannedNetworkCommunicationPolicy extends PlannedNetworkSurface
   blockedByManagedPrivateEndpoints?: string[];
 }
 
+export interface PlannedInboundFirewallRules extends PlannedNetworkSurface {
+  etag?: string;
+  ruleCount: number;
+}
+
 export type ManagedPrivateEndpointAction = Extract<
   PlannedAction,
   "create" | "delete" | "no-op" | "blocked" | "unknown"
@@ -285,6 +300,7 @@ export interface PlannedManagedPrivateEndpoint {
 export interface PlannedNetworkProtection {
   workspaceId?: string;
   communicationPolicy: PlannedNetworkCommunicationPolicy;
+  inboundFirewallRules?: PlannedInboundFirewallRules;
   outboundCloudConnectionRules?: PlannedNetworkSurface;
   outboundGatewayRules?: PlannedNetworkSurface;
   managedPrivateEndpoints?: PlannedManagedPrivateEndpoint[];
@@ -393,6 +409,7 @@ export interface ApplyManagedPrivateEndpointResult {
 export interface ApplyNetworkProtectionResult {
   workspaceId: string;
   communicationPolicy: ApplyNetworkSurfaceResult;
+  inboundFirewallRules?: ApplyNetworkSurfaceResult;
   outboundCloudConnectionRules?: ApplyNetworkSurfaceResult;
   outboundGatewayRules?: ApplyNetworkSurfaceResult;
   managedPrivateEndpoints?: ApplyManagedPrivateEndpointResult[];
@@ -513,6 +530,7 @@ export interface ApplyCheckpointManagedPrivateEndpoint {
 export interface ApplyCheckpointNetworkProtection {
   workspaceId: string;
   communicationPolicy?: ApplyCheckpointNetworkSurface;
+  inboundFirewallRules?: ApplyCheckpointNetworkSurface;
   outboundCloudConnectionRules?: ApplyCheckpointNetworkSurface;
   outboundGatewayRules?: ApplyCheckpointNetworkSurface;
   managedPrivateEndpoints?: Record<

@@ -105,6 +105,14 @@ on:
         required: false
         default: false
         type: boolean
+      allow_inbound_firewall_update:
+        required: false
+        default: false
+        type: boolean
+      acknowledge_firewall_lockout_risk:
+        required: false
+        default: false
+        type: boolean
       allow_outbound_cloud_connection_rule_update:
         required: false
         default: false
@@ -264,6 +272,7 @@ jobs:
                 all(
                   [
                     .networkProtection.communicationPolicy,
+                    .networkProtection.inboundFirewallRules,
                     .networkProtection.outboundCloudConnectionRules,
                     .networkProtection.outboundGatewayRules
                   ][];
@@ -297,6 +306,7 @@ jobs:
                 )
                 and all(
                   [
+                    .networkProtection.inboundFirewallRules,
                     .networkProtection.outboundCloudConnectionRules,
                     .networkProtection.outboundGatewayRules
                   ][];
@@ -458,6 +468,8 @@ jobs:
           allow-tag-assign: ${{ inputs.allow_tag_assign }}
           allow-network-policy-update: ${{ inputs.allow_network_policy_update }}
           allow-network-policy-relaxation: ${{ inputs.allow_network_policy_relaxation }}
+          allow-inbound-firewall-update: ${{ inputs.allow_inbound_firewall_update }}
+          acknowledge-firewall-lockout-risk: ${{ inputs.acknowledge_firewall_lockout_risk }}
           allow-outbound-cloud-connection-rule-update: ${{ inputs.allow_outbound_cloud_connection_rule_update }}
           allow-outbound-gateway-rule-update: ${{ inputs.allow_outbound_gateway_rule_update }}
           allow-managed-private-endpoint-create: ${{ inputs.allow_managed_private_endpoint_create }}

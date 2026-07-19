@@ -187,6 +187,11 @@ function assertCheckpointMatchesPlan(
       planned.communicationPolicy,
     );
     assertCheckpointNetworkSurfaceMatchesPlan(
+      "inboundFirewallRules",
+      checkpoint.networkProtection.inboundFirewallRules,
+      planned.inboundFirewallRules,
+    );
+    assertCheckpointNetworkSurfaceMatchesPlan(
       "outboundCloudConnectionRules",
       checkpoint.networkProtection.outboundCloudConnectionRules,
       planned.outboundCloudConnectionRules,
@@ -201,11 +206,12 @@ function assertCheckpointMatchesPlan(
       (planned.communicationPolicy
         .blockedByManagedPrivateEndpoints?.length ?? 0) > 0 &&
       (checkpoint.networkProtection.communicationPolicy ||
+        checkpoint.networkProtection.inboundFirewallRules ||
         checkpoint.networkProtection.outboundCloudConnectionRules ||
         checkpoint.networkProtection.outboundGatewayRules)
     ) {
       throw new Error(
-        "Checkpoint contains an OAP mutation for a plan that defers OAP until managed private endpoint approval.",
+          "Checkpoint contains a network policy surface mutation for a plan that defers the communication policy until managed private endpoint approval.",
       );
     }
     assertCheckpointManagedPrivateEndpointsMatchPlan(
@@ -217,6 +223,11 @@ function assertCheckpointMatchesPlan(
         "communicationPolicy",
         checkpoint.networkProtection.communicationPolicy,
         planned.communicationPolicy,
+      );
+      assertCompletedNetworkSurface(
+        "inboundFirewallRules",
+        checkpoint.networkProtection.inboundFirewallRules,
+        planned.inboundFirewallRules,
       );
       assertCompletedNetworkSurface(
         "outboundCloudConnectionRules",
@@ -1078,11 +1089,29 @@ function isCheckpointNetworkProtection(value: unknown): boolean {
   if (value === null || typeof value !== "object") {
     return false;
   }
+  const allowedKeys = new Set([
+    "workspaceId",
+    "communicationPolicy",
+    "inboundFirewallRules",
+    "outboundCloudConnectionRules",
+    "outboundGatewayRules",
+    "managedPrivateEndpoints",
+    "completedAt",
+    "updatedAt",
+  ]);
+  if (
+    Object.keys(value as Record<string, unknown>).some(
+      (key) => !allowedKeys.has(key),
+    )
+  ) {
+    return false;
+  }
   const state = value as Partial<
     NonNullable<ApplyCheckpoint["networkProtection"]>
   >;
   const surfaces = [
     state.communicationPolicy,
+    state.inboundFirewallRules,
     state.outboundCloudConnectionRules,
     state.outboundGatewayRules,
   ];
@@ -1091,6 +1120,8 @@ function isCheckpointNetworkProtection(value: unknown): boolean {
     state.workspaceId.length > 0 &&
     (state.communicationPolicy === undefined ||
       isCheckpointNetworkSurface(state.communicationPolicy)) &&
+    (state.inboundFirewallRules === undefined ||
+      isCheckpointNetworkSurface(state.inboundFirewallRules)) &&
     (state.outboundCloudConnectionRules === undefined ||
       isCheckpointNetworkSurface(state.outboundCloudConnectionRules)) &&
     (state.outboundGatewayRules === undefined ||
@@ -1303,6 +1334,16 @@ function isCheckpointNetworkSurface(value: unknown): boolean {
     return false;
   }
   const surface = value as Record<string, unknown>;
+  if (
+    Object.keys(surface).some(
+      (key) =>
+        key !== "desiredHash" &&
+        key !== "phase" &&
+        key !== "updatedAt",
+    )
+  ) {
+    return false;
+  }
   return (
     /^[a-f0-9]{64}$/.test(String(surface.desiredHash)) &&
     (surface.phase === "submitting" || surface.phase === "verified") &&

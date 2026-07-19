@@ -8,6 +8,7 @@ import { createCheckpoint, loadCheckpoint, writeCheckpoint } from "../src/checkp
 import { FabricApiError } from "../src/fabric/client";
 import {
   hashCommunicationPolicy,
+  hashInboundFirewallRules,
   hashOutboundCloudConnectionRules,
   hashOutboundGatewayRules,
   normalizeNetworkProtection,
@@ -54,6 +55,31 @@ const ALLOW_DESIRED: NetworkProtectionManifest = {
   },
 };
 
+const INBOUND_TIGHTENING_DESIRED: NetworkProtectionManifest = {
+  communicationPolicy: {
+    inboundDefaultAction: "Deny",
+    outboundDefaultAction: "Allow",
+  },
+  inboundFirewallRules: {
+    rules: [
+      {
+        displayName: "corporate",
+        value: "12.34.56.78",
+      },
+    ],
+  },
+};
+
+const INBOUND_RELAXING_DESIRED: NetworkProtectionManifest = {
+  communicationPolicy: {
+    inboundDefaultAction: "Allow",
+    outboundDefaultAction: "Allow",
+  },
+  inboundFirewallRules: {
+    rules: [],
+  },
+};
+
 function canonicalOf(desired: NetworkProtectionManifest) {
   return normalizeNetworkProtection(desired);
 }
@@ -64,6 +90,9 @@ function buildApprovedPlan(options: {
   observedInbound: "Allow" | "Deny";
   observedOutbound: "Allow" | "Deny";
   policyAction: "update" | "no-op";
+  firewallAction?: "update" | "no-op";
+  firewallObservedHash?: string;
+  firewallEtag?: string;
   ruleAction?: "update" | "no-op";
   ruleObservedIsSentinel?: boolean;
 }): DeploymentPlan {
@@ -95,6 +124,23 @@ function buildApprovedPlan(options: {
     },
   };
 
+  if (canonical.inboundFirewallRules) {
+    const desiredHash = hashInboundFirewallRules(
+      canonical.inboundFirewallRules,
+    );
+    networkProtection.inboundFirewallRules = {
+      action: options.firewallAction ?? "update",
+      reason: "firewall",
+      desiredHash,
+      observedStateHash:
+        options.firewallAction === "no-op"
+          ? desiredHash
+          : (options.firewallObservedHash ??
+            hashInboundFirewallRules({ rules: [] })),
+      etag: options.firewallEtag ?? "firewall-etag",
+      ruleCount: canonical.inboundFirewallRules.rules.length,
+    };
+  }
   if (canonical.outboundCloudConnectionRules) {
     const desiredHash = hashOutboundCloudConnectionRules(canonical.outboundCloudConnectionRules);
     networkProtection.outboundCloudConnectionRules = {
@@ -155,6 +201,8 @@ function mockAdapter() {
     plan: vi.fn(),
     getCommunicationPolicy: vi.fn(),
     putCommunicationPolicy: vi.fn(),
+    getInboundFirewallRules: vi.fn(),
+    putInboundFirewallRules: vi.fn(),
     getOutboundCloudConnectionRules: vi.fn(),
     putOutboundCloudConnectionRules: vi.fn(),
     getOutboundGatewayRules: vi.fn(),
@@ -178,10 +226,64 @@ function baseOptions(
     checkpointFile,
     allowNetworkPolicyUpdate: false,
     allowNetworkPolicyRelaxation: false,
+    allowInboundFirewallUpdate: false,
+    acknowledgeFirewallLockoutRisk: false,
     allowOutboundCloudConnectionRuleUpdate: false,
     allowOutboundGatewayRuleUpdate: false,
     ...overrides,
   };
+}
+
+function mockSuccessfulNetworkSurfaces(
+  adapter: ReturnType<typeof mockAdapter>,
+  desired: NetworkProtectionManifest,
+  calls: string[],
+): void {
+  const canonical = canonicalOf(desired);
+  adapter.putCommunicationPolicy.mockImplementation(async () => {
+    calls.push("put-policy");
+    return {
+      policy: canonical.communicationPolicy,
+      etag: "policy-updated",
+    };
+  });
+  adapter.getCommunicationPolicy.mockResolvedValue({
+    policy: canonical.communicationPolicy,
+    etag: "policy-updated",
+  });
+  if (canonical.inboundFirewallRules) {
+    adapter.putInboundFirewallRules.mockImplementation(async () => {
+      calls.push("put-firewall");
+      return {
+        configuration: canonical.inboundFirewallRules!,
+        etag: "firewall-updated",
+      };
+    });
+    adapter.getInboundFirewallRules.mockResolvedValue({
+      configuration: canonical.inboundFirewallRules,
+      etag: "firewall-updated",
+    });
+  }
+  if (canonical.outboundCloudConnectionRules) {
+    adapter.putOutboundCloudConnectionRules.mockImplementation(
+      async () => {
+        calls.push("put-connections");
+        return canonical.outboundCloudConnectionRules!;
+      },
+    );
+    adapter.getOutboundCloudConnectionRules.mockResolvedValue(
+      canonical.outboundCloudConnectionRules,
+    );
+  }
+  if (canonical.outboundGatewayRules) {
+    adapter.putOutboundGatewayRules.mockImplementation(async () => {
+      calls.push("put-gateways");
+      return canonical.outboundGatewayRules!;
+    });
+    adapter.getOutboundGatewayRules.mockResolvedValue(
+      canonical.outboundGatewayRules,
+    );
+  }
 }
 
 describe("preflightNetworkProtection", () => {
@@ -280,6 +382,81 @@ describe("preflightNetworkProtection", () => {
         allowOutboundGatewayRuleUpdate: false,
       }),
     ).toThrow("allow-outbound-gateway-rule-update is false");
+  });
+
+  it("requires the inbound firewall safeguard independently", () => {
+    const plan = buildApprovedPlan({
+      desired: INBOUND_RELAXING_DESIRED,
+      observedInbound: "Allow",
+      observedOutbound: "Allow",
+      policyAction: "no-op",
+      firewallAction: "update",
+    });
+
+    expect(() =>
+      preflightNetworkProtection({
+        approvedPlan: plan,
+        currentPlan: plan,
+        checkpoint: createCheckpoint(plan),
+        allowNetworkPolicyUpdate: false,
+        allowNetworkPolicyRelaxation: false,
+        allowInboundFirewallUpdate: false,
+        acknowledgeFirewallLockoutRisk: false,
+        allowOutboundCloudConnectionRuleUpdate: false,
+        allowOutboundGatewayRuleUpdate: false,
+      }),
+    ).toThrow("allow-inbound-firewall-update is false");
+  });
+
+  it("requires all three independent safeguards before any inbound Allow -> Deny unit mutation", () => {
+    const plan = buildApprovedPlan({
+      desired: INBOUND_TIGHTENING_DESIRED,
+      observedInbound: "Allow",
+      observedOutbound: "Allow",
+      policyAction: "update",
+      firewallAction: "no-op",
+    });
+    const base = {
+      approvedPlan: plan,
+      currentPlan: plan,
+      checkpoint: createCheckpoint(plan),
+      allowNetworkPolicyRelaxation: false,
+      allowOutboundCloudConnectionRuleUpdate: false,
+      allowOutboundGatewayRuleUpdate: false,
+    };
+
+    expect(() =>
+      preflightNetworkProtection({
+        ...base,
+        allowNetworkPolicyUpdate: false,
+        allowInboundFirewallUpdate: true,
+        acknowledgeFirewallLockoutRisk: true,
+      }),
+    ).toThrow("requires allow-network-policy-update");
+    expect(() =>
+      preflightNetworkProtection({
+        ...base,
+        allowNetworkPolicyUpdate: true,
+        allowInboundFirewallUpdate: false,
+        acknowledgeFirewallLockoutRisk: true,
+      }),
+    ).toThrow("requires allow-inbound-firewall-update");
+    expect(() =>
+      preflightNetworkProtection({
+        ...base,
+        allowNetworkPolicyUpdate: true,
+        allowInboundFirewallUpdate: true,
+        acknowledgeFirewallLockoutRisk: false,
+      }),
+    ).toThrow("acknowledge-firewall-lockout-risk");
+    expect(() =>
+      preflightNetworkProtection({
+        ...base,
+        allowNetworkPolicyUpdate: true,
+        allowInboundFirewallUpdate: true,
+        acknowledgeFirewallLockoutRisk: true,
+      }),
+    ).not.toThrow();
   });
 
   it("skips re-authorization once a surface is checkpointed verified", () => {
@@ -387,6 +564,328 @@ describe("preflightNetworkProtection", () => {
 });
 
 describe("applyNetworkProtection ordering", () => {
+  it("stages and verifies inbound firewall rules before inbound Allow -> Deny", async () => {
+    const plan = buildApprovedPlan({
+      desired: INBOUND_TIGHTENING_DESIRED,
+      observedInbound: "Allow",
+      observedOutbound: "Allow",
+      policyAction: "update",
+      firewallAction: "update",
+    });
+    const adapter = mockAdapter();
+    const calls: string[] = [];
+    adapter.plan.mockResolvedValue(plan.networkProtection);
+    mockSuccessfulNetworkSurfaces(
+      adapter,
+      INBOUND_TIGHTENING_DESIRED,
+      calls,
+    );
+
+    await applyNetworkProtection(
+      baseOptions(plan, adapter, checkpointFilePath(), {
+        desired: INBOUND_TIGHTENING_DESIRED,
+        allowNetworkPolicyUpdate: true,
+        allowInboundFirewallUpdate: true,
+        acknowledgeFirewallLockoutRisk: true,
+      }),
+    );
+
+    expect(calls).toEqual(["put-firewall", "put-policy"]);
+    expect(
+      adapter.putInboundFirewallRules.mock.calls[0]?.[2],
+    ).toMatchObject({ ifMatchEtag: "firewall-etag" });
+  });
+
+  it("uses the freshly observed inbound firewall ETag rather than the approval-time value", async () => {
+    const plan = buildApprovedPlan({
+      desired: INBOUND_RELAXING_DESIRED,
+      observedInbound: "Allow",
+      observedOutbound: "Allow",
+      policyAction: "no-op",
+      firewallAction: "update",
+      firewallEtag: "approval-etag",
+    });
+    const fresh = structuredClone(plan.networkProtection!);
+    fresh.inboundFirewallRules!.etag = "fresh-etag";
+    const adapter = mockAdapter();
+    const calls: string[] = [];
+    adapter.plan.mockResolvedValue(fresh);
+    mockSuccessfulNetworkSurfaces(
+      adapter,
+      INBOUND_RELAXING_DESIRED,
+      calls,
+    );
+
+    await applyNetworkProtection(
+      baseOptions(plan, adapter, checkpointFilePath(), {
+        desired: INBOUND_RELAXING_DESIRED,
+        allowInboundFirewallUpdate: true,
+      }),
+    );
+
+    expect(adapter.putInboundFirewallRules).toHaveBeenCalledWith(
+      WORKSPACE_ID,
+      canonicalOf(INBOUND_RELAXING_DESIRED).inboundFirewallRules,
+      expect.objectContaining({ ifMatchEtag: "fresh-etag" }),
+    );
+  });
+
+  it("applies a headerless approved firewall plan without If-Match", async () => {
+    let plan = buildApprovedPlan({
+      desired: INBOUND_RELAXING_DESIRED,
+      observedInbound: "Allow",
+      observedOutbound: "Allow",
+      policyAction: "no-op",
+      firewallAction: "update",
+    });
+    delete plan.networkProtection!.inboundFirewallRules!.etag;
+    plan = rehashPlan(plan);
+    const adapter = mockAdapter();
+    const calls: string[] = [];
+    adapter.plan.mockResolvedValue(plan.networkProtection);
+    mockSuccessfulNetworkSurfaces(
+      adapter,
+      INBOUND_RELAXING_DESIRED,
+      calls,
+    );
+
+    const result = await applyNetworkProtection(
+      baseOptions(plan, adapter, checkpointFilePath(), {
+        desired: INBOUND_RELAXING_DESIRED,
+        allowInboundFirewallUpdate: true,
+      }),
+    );
+
+    expect(
+      adapter.putInboundFirewallRules.mock.calls[0]?.[2],
+    ).not.toHaveProperty("ifMatchEtag");
+    expect(result?.inboundFirewallRules?.status).toBe("updated");
+  });
+
+  it("fails closed if ETag support disappears after approval", async () => {
+    const plan = buildApprovedPlan({
+      desired: INBOUND_RELAXING_DESIRED,
+      observedInbound: "Allow",
+      observedOutbound: "Allow",
+      policyAction: "no-op",
+      firewallAction: "update",
+    });
+    const fresh = structuredClone(plan.networkProtection!);
+    delete fresh.inboundFirewallRules!.etag;
+    const adapter = mockAdapter();
+    adapter.plan.mockResolvedValue(fresh);
+
+    await expect(
+      applyNetworkProtection(
+        baseOptions(plan, adapter, checkpointFilePath(), {
+          desired: INBOUND_RELAXING_DESIRED,
+          allowInboundFirewallUpdate: true,
+        }),
+      ),
+    ).rejects.toThrow("metadata drifted after approval");
+    expect(adapter.putInboundFirewallRules).not.toHaveBeenCalled();
+  });
+
+  it("checkpoints the inbound firewall replacement before dispatch", async () => {
+    const plan = buildApprovedPlan({
+      desired: INBOUND_RELAXING_DESIRED,
+      observedInbound: "Allow",
+      observedOutbound: "Allow",
+      policyAction: "no-op",
+      firewallAction: "update",
+    });
+    const checkpointFile = checkpointFilePath();
+    const adapter = mockAdapter();
+    adapter.plan.mockResolvedValue(plan.networkProtection);
+    adapter.getCommunicationPolicy.mockResolvedValue({
+      policy: canonicalOf(INBOUND_RELAXING_DESIRED)
+        .communicationPolicy,
+      etag: "policy-etag",
+    });
+    adapter.getInboundFirewallRules.mockResolvedValue({
+      configuration:
+        canonicalOf(INBOUND_RELAXING_DESIRED)
+          .inboundFirewallRules!,
+      etag: "updated-etag",
+    });
+    let duringDispatch: ApplyCheckpoint | undefined;
+    adapter.putInboundFirewallRules.mockImplementation(
+      async (
+        _workspaceId: string,
+        _desired: unknown,
+        options?: { onDispatch?: () => void },
+      ) => {
+        options?.onDispatch?.();
+        duringDispatch = loadCheckpoint(checkpointFile, plan);
+        return {
+          configuration:
+            canonicalOf(INBOUND_RELAXING_DESIRED)
+              .inboundFirewallRules!,
+          etag: "updated-etag",
+        };
+      },
+    );
+
+    await applyNetworkProtection(
+      baseOptions(plan, adapter, checkpointFile, {
+        desired: INBOUND_RELAXING_DESIRED,
+        allowInboundFirewallUpdate: true,
+      }),
+    );
+
+    expect(
+      duringDispatch?.networkProtection?.inboundFirewallRules
+        ?.phase,
+    ).toBe("submitting");
+  });
+
+  it("moves inbound Deny -> Allow before clearing or relaxing firewall rules", async () => {
+    const plan = buildApprovedPlan({
+      desired: INBOUND_RELAXING_DESIRED,
+      observedInbound: "Deny",
+      observedOutbound: "Allow",
+      policyAction: "update",
+      firewallAction: "update",
+    });
+    const adapter = mockAdapter();
+    const calls: string[] = [];
+    adapter.plan.mockResolvedValue(plan.networkProtection);
+    mockSuccessfulNetworkSurfaces(
+      adapter,
+      INBOUND_RELAXING_DESIRED,
+      calls,
+    );
+
+    await applyNetworkProtection(
+      baseOptions(plan, adapter, checkpointFilePath(), {
+        desired: INBOUND_RELAXING_DESIRED,
+        allowNetworkPolicyUpdate: true,
+        allowNetworkPolicyRelaxation: true,
+        allowInboundFirewallUpdate: true,
+      }),
+    );
+
+    expect(calls).toEqual(["put-policy", "put-firewall"]);
+  });
+
+  it("orders combined inbound and outbound tightening firewall -> policy -> OAP rules", async () => {
+    const desired: NetworkProtectionManifest = {
+      ...TIGHTENING_DESIRED,
+      communicationPolicy: {
+        inboundDefaultAction: "Deny",
+        outboundDefaultAction: "Deny",
+      },
+      inboundFirewallRules:
+        INBOUND_TIGHTENING_DESIRED.inboundFirewallRules,
+    };
+    const plan = buildApprovedPlan({
+      desired,
+      observedInbound: "Allow",
+      observedOutbound: "Allow",
+      policyAction: "update",
+      firewallAction: "update",
+      ruleAction: "update",
+      ruleObservedIsSentinel: true,
+    });
+    const adapter = mockAdapter();
+    const calls: string[] = [];
+    adapter.plan.mockResolvedValue(plan.networkProtection);
+    mockSuccessfulNetworkSurfaces(adapter, desired, calls);
+
+    await applyNetworkProtection(
+      baseOptions(plan, adapter, checkpointFilePath(), {
+        desired,
+        allowNetworkPolicyUpdate: true,
+        allowInboundFirewallUpdate: true,
+        acknowledgeFirewallLockoutRisk: true,
+        allowOutboundCloudConnectionRuleUpdate: true,
+        allowOutboundGatewayRuleUpdate: true,
+      }),
+    );
+
+    expect(calls[0]).toBe("put-firewall");
+    expect(calls[1]).toBe("put-policy");
+    expect(calls.slice(2)).toEqual([
+      "put-connections",
+      "put-gateways",
+    ]);
+  });
+
+  it("orders a mixed inbound relaxation and outbound tightening policy -> firewall -> OAP rules", async () => {
+    const desired: NetworkProtectionManifest = {
+      ...TIGHTENING_DESIRED,
+      communicationPolicy: {
+        inboundDefaultAction: "Allow",
+        outboundDefaultAction: "Deny",
+      },
+      inboundFirewallRules: { rules: [] },
+    };
+    const plan = buildApprovedPlan({
+      desired,
+      observedInbound: "Deny",
+      observedOutbound: "Allow",
+      policyAction: "update",
+      firewallAction: "update",
+      ruleAction: "update",
+      ruleObservedIsSentinel: true,
+    });
+    const adapter = mockAdapter();
+    const calls: string[] = [];
+    adapter.plan.mockResolvedValue(plan.networkProtection);
+    mockSuccessfulNetworkSurfaces(adapter, desired, calls);
+
+    await applyNetworkProtection(
+      baseOptions(plan, adapter, checkpointFilePath(), {
+        desired,
+        allowNetworkPolicyUpdate: true,
+        allowNetworkPolicyRelaxation: true,
+        allowInboundFirewallUpdate: true,
+        allowOutboundCloudConnectionRuleUpdate: true,
+        allowOutboundGatewayRuleUpdate: true,
+      }),
+    );
+
+    expect(calls).toEqual([
+      "put-policy",
+      "put-firewall",
+      "put-connections",
+      "put-gateways",
+    ]);
+  });
+
+  it("applies each outbound rule surface once when OAP is already enabled", async () => {
+    let plan = buildApprovedPlan({
+      desired: TIGHTENING_DESIRED,
+      observedInbound: "Allow",
+      observedOutbound: "Deny",
+      policyAction: "no-op",
+      ruleAction: "update",
+    });
+    plan.networkProtection!.outboundCloudConnectionRules!.observedStateHash =
+      "a".repeat(64);
+    plan.networkProtection!.outboundGatewayRules!.observedStateHash =
+      "b".repeat(64);
+    plan = rehashPlan(plan);
+
+    const adapter = mockAdapter();
+    const calls: string[] = [];
+    adapter.plan.mockResolvedValue(plan.networkProtection);
+    mockSuccessfulNetworkSurfaces(adapter, TIGHTENING_DESIRED, calls);
+
+    const result = await applyNetworkProtection(
+      baseOptions(plan, adapter, checkpointFilePath(), {
+        allowOutboundCloudConnectionRuleUpdate: true,
+        allowOutboundGatewayRuleUpdate: true,
+      }),
+    );
+
+    expect(calls).toEqual(["put-connections", "put-gateways"]);
+    expect(adapter.getOutboundCloudConnectionRules).toHaveBeenCalledOnce();
+    expect(adapter.getOutboundGatewayRules).toHaveBeenCalledOnce();
+    expect(result?.outboundCloudConnectionRules?.status).toBe("updated");
+    expect(result?.outboundGatewayRules?.status).toBe("updated");
+  });
+
   it("tightens Allow -> Deny by PUTting the policy before any outbound rule", async () => {
     const plan = buildApprovedPlan({
       desired: TIGHTENING_DESIRED,
@@ -869,6 +1368,61 @@ describe("applyNetworkProtection ordering", () => {
 
     expect(adapter.putCommunicationPolicy).not.toHaveBeenCalled();
     expect(result?.communicationPolicy.status).toBe("resumed");
+  });
+
+  it("does not resubmit an ambiguous inbound firewall replacement and re-requires lockout acknowledgement", async () => {
+    const plan = buildApprovedPlan({
+      desired: INBOUND_TIGHTENING_DESIRED,
+      observedInbound: "Allow",
+      observedOutbound: "Allow",
+      policyAction: "update",
+      firewallAction: "update",
+    });
+    const checkpoint = createCheckpoint(plan);
+    checkpoint.networkProtection = {
+      workspaceId: WORKSPACE_ID,
+      inboundFirewallRules: {
+        desiredHash:
+          plan.networkProtection!.inboundFirewallRules!.desiredHash,
+        phase: "submitting",
+        updatedAt: "2026-07-19T00:00:00.000Z",
+      },
+      updatedAt: "2026-07-19T00:00:00.000Z",
+    };
+    const adapter = mockAdapter();
+    adapter.plan.mockResolvedValue(plan.networkProtection);
+
+    await expect(
+      applyNetworkProtection(
+        baseOptions(plan, adapter, checkpointFilePath(), {
+          desired: INBOUND_TIGHTENING_DESIRED,
+          checkpoint,
+          allowNetworkPolicyUpdate: true,
+          allowInboundFirewallUpdate: true,
+          acknowledgeFirewallLockoutRisk: false,
+        }),
+      ),
+    ).rejects.toThrow("acknowledge-firewall-lockout-risk");
+    expect(adapter.getInboundFirewallRules).not.toHaveBeenCalled();
+    expect(adapter.putInboundFirewallRules).not.toHaveBeenCalled();
+
+    adapter.getInboundFirewallRules.mockResolvedValue({
+      configuration: { rules: [] },
+      etag: "current-etag",
+    });
+    await expect(
+      applyNetworkProtection(
+        baseOptions(plan, adapter, checkpointFilePath(), {
+          desired: INBOUND_TIGHTENING_DESIRED,
+          checkpoint,
+          allowNetworkPolicyUpdate: true,
+          allowInboundFirewallUpdate: true,
+          acknowledgeFirewallLockoutRisk: true,
+        }),
+      ),
+    ).rejects.toThrow("ambiguous");
+    expect(adapter.putInboundFirewallRules).not.toHaveBeenCalled();
+    expect(adapter.putCommunicationPolicy).not.toHaveBeenCalled();
   });
 });
 

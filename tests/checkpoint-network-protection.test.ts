@@ -14,6 +14,7 @@ import {
   normalizeManagedPrivateEndpoints,
   planManagedPrivateEndpoints,
 } from "../src/fabric/managed-private-endpoints";
+import { hashInboundFirewallRules } from "../src/fabric/network-protection";
 import { buildPlan, rehashPlan } from "../src/planner";
 import type { LoadedManifest } from "../src/types";
 
@@ -65,6 +66,26 @@ function planWithNetworkProtection() {
   return rehashPlan(plan);
 }
 
+function planWithInboundFirewall() {
+  const plan = planWithNetworkProtection();
+  plan.networkProtection!.inboundFirewallRules = {
+    action: "update",
+    reason: "differs",
+    desiredHash: hashInboundFirewallRules({
+      rules: [
+        {
+          displayName: "corporate",
+          value: "12.34.56.78",
+        },
+      ],
+    }),
+    observedStateHash: hashInboundFirewallRules({ rules: [] }),
+    etag: "firewall-etag",
+    ruleCount: 1,
+  };
+  return rehashPlan(plan);
+}
+
 describe("network protection checkpoint", () => {
   it("round-trips a submitting communication policy surface", () => {
     const plan = planWithNetworkProtection();
@@ -87,6 +108,91 @@ describe("network protection checkpoint", () => {
 
     expect(loadCheckpoint(checkpointFile, plan)?.networkProtection).toEqual(
       checkpoint.networkProtection,
+    );
+  });
+
+  it("round-trips a submitting inbound firewall surface bound to the approved hash", () => {
+    const plan = planWithInboundFirewall();
+    const checkpoint = createCheckpoint(plan);
+    checkpoint.networkProtection = {
+      workspaceId: WORKSPACE_ID,
+      inboundFirewallRules: {
+        desiredHash:
+          plan.networkProtection!.inboundFirewallRules!.desiredHash,
+        phase: "submitting",
+        updatedAt: "2026-07-19T00:00:00.000Z",
+      },
+      updatedAt: "2026-07-19T00:00:00.000Z",
+    };
+    const root = mkdtempSync(
+      path.join(tmpdir(), "fabric-firewall-checkpoint-"),
+    );
+    const checkpointFile = path.join(root, "checkpoint.json");
+
+    writeCheckpoint(checkpointFile, checkpoint);
+
+    expect(
+      loadCheckpoint(checkpointFile, plan)?.networkProtection
+        ?.inboundFirewallRules,
+    ).toEqual(checkpoint.networkProtection.inboundFirewallRules);
+  });
+
+  it("requires every configured firewall surface before a completed marker is accepted", () => {
+    const plan = planWithInboundFirewall();
+    const checkpoint = createCheckpoint(plan);
+    checkpoint.networkProtection = {
+      workspaceId: WORKSPACE_ID,
+      communicationPolicy: {
+        desiredHash:
+          plan.networkProtection!.communicationPolicy.desiredHash,
+        phase: "verified",
+        updatedAt: "2026-07-19T00:00:00.000Z",
+      },
+      completedAt: "2026-07-19T00:00:00.000Z",
+      updatedAt: "2026-07-19T00:00:00.000Z",
+    };
+    const root = mkdtempSync(
+      path.join(tmpdir(), "fabric-firewall-checkpoint-"),
+    );
+    const checkpointFile = path.join(root, "checkpoint.json");
+    writeCheckpoint(checkpointFile, checkpoint);
+
+    expect(() => loadCheckpoint(checkpointFile, plan)).toThrow(
+      "'inboundFirewallRules' is not verified",
+    );
+  });
+
+  it("rejects inbound firewall checkpoint tampering and unknown checkpoint fields", () => {
+    const plan = planWithInboundFirewall();
+    const checkpoint = createCheckpoint(plan);
+    checkpoint.networkProtection = {
+      workspaceId: WORKSPACE_ID,
+      inboundFirewallRules: {
+        desiredHash: "0".repeat(64),
+        phase: "submitting",
+        updatedAt: "2026-07-19T00:00:00.000Z",
+      },
+      updatedAt: "2026-07-19T00:00:00.000Z",
+    };
+    const root = mkdtempSync(
+      path.join(tmpdir(), "fabric-firewall-checkpoint-"),
+    );
+    const checkpointFile = path.join(root, "checkpoint.json");
+    writeCheckpoint(checkpointFile, checkpoint);
+    expect(() => loadCheckpoint(checkpointFile, plan)).toThrow(
+      "'inboundFirewallRules' does not match",
+    );
+
+    checkpoint.networkProtection.inboundFirewallRules = {
+      desiredHash:
+        plan.networkProtection!.inboundFirewallRules!.desiredHash,
+      phase: "submitting",
+      updatedAt: "2026-07-19T00:00:00.000Z",
+      unexpected: true,
+    } as never;
+    writeCheckpoint(checkpointFile, checkpoint);
+    expect(() => loadCheckpoint(checkpointFile, plan)).toThrow(
+      "invalid structure",
     );
   });
 

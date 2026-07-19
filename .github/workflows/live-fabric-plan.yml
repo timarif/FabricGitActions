@@ -2,6 +2,12 @@ name: Live Fabric Plan
 
 on:
   workflow_dispatch:
+    inputs:
+      probe_inbound_firewall:
+        description: Run the read-only preview inbound firewall planning probe. This never applies changes.
+        required: true
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -41,9 +47,37 @@ jobs:
               or .action == "blocked"
           ' live-output/fabric-plan.json
 
+      - name: Read-only inbound firewall plan probe
+        if: ${{ inputs.probe_inbound_firewall }}
+        id: firewall-plan
+        uses: ./
+        with:
+          mode: plan
+          manifest: examples/inbound-firewall-probe/fabric/deployment.yaml
+          environment: live-firewall-readonly
+          workspace-id: ${{ vars.FABRIC_WORKSPACE_ID }}
+          auth-mode: oidc
+          tenant-id: ${{ vars.FABRIC_TENANT_ID }}
+          client-id: ${{ vars.FABRIC_CLIENT_ID }}
+          plan-file: live-output/inbound-firewall-plan.json
+
+      - name: Verify read-only inbound firewall probe
+        if: ${{ inputs.probe_inbound_firewall }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          jq -e '
+            .networkProtection.communicationPolicy.desiredInboundDefaultAction == "Allow"
+            and .networkProtection.inboundFirewallRules.ruleCount == 1
+            and (
+              .networkProtection.inboundFirewallRules.action == "update"
+              or .networkProtection.inboundFirewallRules.action == "no-op"
+            )
+          ' live-output/inbound-firewall-plan.json
+
       - name: Upload live plan
         uses: actions/upload-artifact@v5
         with:
           name: live-fabric-plan
-          path: live-output/fabric-plan.json
+          path: live-output
           if-no-files-found: error

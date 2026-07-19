@@ -37,3 +37,18 @@ Successful runs always clean up.
 The tag fixture uses one stable tenant tag rather than creating a new
 tenant-scoped tag on every run. The disposable tagged Lakehouse is removed
 with the workspace.
+
+## Inbound firewall live probe
+
+[`live-fabric-plan.yml`](../.github/workflows/live-fabric-plan.yml) has an
+optional `probe_inbound_firewall` input. It runs an authenticated read-only
+plan against `examples/inbound-firewall-probe` and verifies that the preview
+firewall surface is discoverable. The fixture keeps desired inbound public
+access at `Allow`; no GitHub-hosted workflow applies firewall rules or enables
+inbound `Deny`. The preview service can omit the ETag advertised by the REST
+reference; the probe remains actionable by binding and rechecking the complete
+observed firewall body hash.
+
+Future mutation validation must use a self-hosted runner with stable,
+allow-listed egress and an explicit recovery plan. Tenant-level Private Link
+settings remain outside this action.

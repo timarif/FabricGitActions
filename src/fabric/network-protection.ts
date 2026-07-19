@@ -1,10 +1,12 @@
 import { compareCanonicalStrings, sha256, stableJson } from "../hash";
 import type {
+  InboundFirewallRulesManifest,
   NetworkCommunicationPolicyManifest,
   NetworkDefaultAction,
   NetworkProtectionManifest,
   OutboundCloudConnectionRulesManifest,
   OutboundGatewayRulesManifest,
+  PlannedInboundFirewallRules,
   PlannedNetworkCommunicationPolicy,
   PlannedNetworkProtection,
   PlannedNetworkSurface,
@@ -34,6 +36,15 @@ export const OAP_NOT_ENABLED_SENTINEL_HASH = sha256(
 export interface CanonicalNetworkCommunicationPolicy {
   inbound: { publicAccessRules: { defaultAction: NetworkDefaultAction } };
   outbound: { publicAccessRules: { defaultAction: NetworkDefaultAction } };
+}
+
+export interface CanonicalInboundFirewallRule {
+  displayName: string;
+  value: string;
+}
+
+export interface CanonicalInboundFirewallRules {
+  rules: CanonicalInboundFirewallRule[];
 }
 
 export interface CanonicalOutboundConnectionEndpointRule {
@@ -68,6 +79,7 @@ export interface CanonicalOutboundGatewayRules {
 export interface CanonicalNetworkProtection {
   workspaceId?: string;
   communicationPolicy: CanonicalNetworkCommunicationPolicy;
+  inboundFirewallRules?: CanonicalInboundFirewallRules;
   outboundCloudConnectionRules?: CanonicalOutboundCloudConnectionRules;
   outboundGatewayRules?: CanonicalOutboundGatewayRules;
   managedPrivateEndpoints?: CanonicalManagedPrivateEndpoint[];
@@ -75,6 +87,11 @@ export interface CanonicalNetworkProtection {
 
 export interface NetworkCommunicationPolicySnapshot {
   policy: CanonicalNetworkCommunicationPolicy;
+  etag?: string;
+}
+
+export interface InboundFirewallRulesSnapshot {
+  configuration: CanonicalInboundFirewallRules;
   etag?: string;
 }
 
@@ -94,6 +111,18 @@ export function normalizeNetworkProtection(
   if (!isRecord(desired)) {
     throw new Error("networkProtection must be an object.");
   }
+  assertOnlyKeys(
+    desired,
+    [
+      "workspaceId",
+      "communicationPolicy",
+      "inboundFirewallRules",
+      "outboundCloudConnectionRules",
+      "outboundGatewayRules",
+      "managedPrivateEndpoints",
+    ],
+    "networkProtection",
+  );
   let workspaceId: string | undefined;
   if (desired.workspaceId !== undefined) {
     assertGuid(desired.workspaceId, "networkProtection.workspaceId");
@@ -103,6 +132,13 @@ export function normalizeNetworkProtection(
     desired.communicationPolicy,
     "networkProtection.communicationPolicy",
   );
+  const inboundFirewallRules =
+    desired.inboundFirewallRules === undefined
+      ? undefined
+      : normalizeInboundFirewallRules(
+          desired.inboundFirewallRules,
+          "networkProtection.inboundFirewallRules",
+        );
   const outboundCloudConnectionRules =
     desired.outboundCloudConnectionRules === undefined
       ? undefined
@@ -126,6 +162,14 @@ export function normalizeNetworkProtection(
         );
 
   if (
+    communicationPolicy.inbound.publicAccessRules.defaultAction === "Deny" &&
+    (!inboundFirewallRules || inboundFirewallRules.rules.length === 0)
+  ) {
+    throw new Error(
+      "networkProtection.communicationPolicy.inboundDefaultAction 'Deny' requires an explicit inboundFirewallRules configuration with at least one valid public IPv4 rule.",
+    );
+  }
+  if (
     (outboundCloudConnectionRules || outboundGatewayRules) &&
     communicationPolicy.outbound.publicAccessRules.defaultAction !== "Deny"
   ) {
@@ -137,6 +181,7 @@ export function normalizeNetworkProtection(
   return {
     ...(workspaceId ? { workspaceId } : {}),
     communicationPolicy,
+    ...(inboundFirewallRules ? { inboundFirewallRules } : {}),
     ...(outboundCloudConnectionRules ? { outboundCloudConnectionRules } : {}),
     ...(outboundGatewayRules ? { outboundGatewayRules } : {}),
     ...(managedPrivateEndpoints ? { managedPrivateEndpoints } : {}),
@@ -150,15 +195,15 @@ function normalizeCommunicationPolicyManifest(
   if (!isRecord(value)) {
     throw new Error(`${context} is required and must be an object.`);
   }
+  assertOnlyKeys(
+    value,
+    ["inboundDefaultAction", "outboundDefaultAction"],
+    context,
+  );
   const inboundDefaultAction = assertDefaultAction(
     value.inboundDefaultAction,
     `${context}.inboundDefaultAction`,
   );
-  if (inboundDefaultAction === "Deny") {
-    throw new Error(
-      `${context}.inboundDefaultAction 'Deny' is not supported yet. Phase 5A manages outbound access protection only; inbound firewall support arrives in Phase 5B. Use 'Allow' for now.`,
-    );
-  }
   const outboundDefaultAction = assertDefaultAction(
     value.outboundDefaultAction,
     `${context}.outboundDefaultAction`,
@@ -209,6 +254,221 @@ function parseNestedDefaultAction(
     value.publicAccessRules.defaultAction,
     `${context}.publicAccessRules.defaultAction`,
   );
+}
+
+interface ParsedIpv4Interval {
+  start: number;
+  end: number;
+  canonicalValue: string;
+}
+
+const NON_PUBLIC_IPV4_INTERVALS = [
+  { start: 0x00000000, end: 0x00ffffff, label: "0.0.0.0/8" },
+  { start: 0x0a000000, end: 0x0affffff, label: "RFC 1918 10.0.0.0/8" },
+  { start: 0x64400000, end: 0x647fffff, label: "100.64.0.0/10" },
+  { start: 0x7f000000, end: 0x7fffffff, label: "127.0.0.0/8" },
+  { start: 0xa9fe0000, end: 0xa9feffff, label: "169.254.0.0/16" },
+  { start: 0xac100000, end: 0xac1fffff, label: "RFC 1918 172.16.0.0/12" },
+  { start: 0xc0000000, end: 0xc00000ff, label: "192.0.0.0/24" },
+  { start: 0xc0000200, end: 0xc00002ff, label: "192.0.2.0/24" },
+  { start: 0xc0586300, end: 0xc05863ff, label: "192.88.99.0/24" },
+  { start: 0xc0a80000, end: 0xc0a8ffff, label: "RFC 1918 192.168.0.0/16" },
+  { start: 0xc6120000, end: 0xc613ffff, label: "198.18.0.0/15" },
+  { start: 0xc6336400, end: 0xc63364ff, label: "198.51.100.0/24" },
+  { start: 0xcb007100, end: 0xcb0071ff, label: "203.0.113.0/24" },
+  { start: 0xe0000000, end: 0xefffffff, label: "224.0.0.0/4" },
+  { start: 0xf0000000, end: 0xffffffff, label: "240.0.0.0/4" },
+] as const;
+
+/**
+ * Validates and canonicalizes the preview workspace inbound IP firewall body.
+ * Only the documented public IPv4 single-address, range, and CIDR forms are
+ * accepted. IPv6 support is not documented by Fabric and therefore fails
+ * closed in this increment.
+ */
+export function normalizeInboundFirewallRules(
+  value: InboundFirewallRulesManifest,
+  context: string,
+): CanonicalInboundFirewallRules {
+  if (!isRecord(value)) {
+    throw new Error(`${context} must be an object.`);
+  }
+  assertOnlyKeys(value, ["rules"], context);
+  if (!Array.isArray(value.rules)) {
+    throw new Error(`${context}.rules must be an array.`);
+  }
+  if (value.rules.length > 256) {
+    throw new Error(`${context}.rules may contain at most 256 rules.`);
+  }
+
+  const seenDisplayNames = new Map<string, string>();
+  const normalized = value.rules.map((rule, index) => {
+    const ruleContext = `${context}.rules[${index}]`;
+    if (!isRecord(rule)) {
+      throw new Error(`${ruleContext} must be an object.`);
+    }
+    assertOnlyKeys(rule, ["displayName", "value"], ruleContext);
+    const displayName = assertNonBlankString(
+      rule.displayName,
+      `${ruleContext}.displayName`,
+    );
+    if (displayName.trim() !== displayName) {
+      throw new Error(
+        `${ruleContext}.displayName must not contain leading or trailing whitespace.`,
+      );
+    }
+    if (Array.from(displayName).length > 128) {
+      throw new Error(
+        `${ruleContext}.displayName must be at most 128 characters.`,
+      );
+    }
+    const displayNameKey = displayName.toLowerCase();
+    const previousDisplayName = seenDisplayNames.get(displayNameKey);
+    if (previousDisplayName !== undefined) {
+      throw new Error(
+        `${context}.rules declares duplicate or case-ambiguous displayName '${displayName}' (already declared as '${previousDisplayName}').`,
+      );
+    }
+    seenDisplayNames.set(displayNameKey, displayName);
+
+    const interval = parsePublicIpv4Interval(
+      rule.value,
+      `${ruleContext}.value`,
+    );
+    return {
+      displayName,
+      value: interval.canonicalValue,
+      start: interval.start,
+      end: interval.end,
+    };
+  });
+
+  normalized.sort(
+    (left, right) =>
+      left.start - right.start ||
+      left.end - right.end ||
+      compareCanonicalStrings(left.displayName, right.displayName),
+  );
+  for (let index = 1; index < normalized.length; index += 1) {
+    const previous = normalized[index - 1]!;
+    const current = normalized[index]!;
+    if (current.start <= previous.end) {
+      throw new Error(
+        `${context}.rules contains duplicate or overlapping IP declarations '${previous.value}' and '${current.value}'.`,
+      );
+    }
+  }
+
+  return {
+    rules: normalized.map(({ displayName, value: ruleValue }) => ({
+      displayName,
+      value: ruleValue,
+    })),
+  };
+}
+
+function parsePublicIpv4Interval(
+  value: unknown,
+  context: string,
+): ParsedIpv4Interval {
+  if (typeof value !== "string" || value.length === 0) {
+    throw new Error(
+      `${context} must be a public IPv4 address, range, or CIDR string.`,
+    );
+  }
+  if (/\s/.test(value)) {
+    throw new Error(`${context} must not contain whitespace.`);
+  }
+
+  let start: number;
+  let end: number;
+  if (value.includes("/")) {
+    if (value.includes("-") || value.split("/").length !== 2) {
+      throw new Error(`${context} is not a valid IPv4 CIDR value.`);
+    }
+    const [addressText, prefixText] = value.split("/");
+    const address = parseIpv4Address(addressText!, context);
+    if (!/^(?:0|[1-9]|[12][0-9]|3[0-2])$/.test(prefixText!)) {
+      throw new Error(`${context} has an invalid IPv4 CIDR prefix.`);
+    }
+    const prefix = Number(prefixText);
+    const blockSize = 2 ** (32 - prefix);
+    start = Math.floor(address / blockSize) * blockSize;
+    end = start + blockSize - 1;
+  } else if (value.includes("-")) {
+    const parts = value.split("-");
+    if (parts.length !== 2) {
+      throw new Error(`${context} is not a valid IPv4 range.`);
+    }
+    start = parseIpv4Address(parts[0]!, context);
+    end = parseIpv4Address(parts[1]!, context);
+    if (start > end) {
+      throw new Error(
+        `${context} range start must be less than or equal to its end.`,
+      );
+    }
+  } else {
+    start = parseIpv4Address(value, context);
+    end = start;
+  }
+
+  const nonPublic = NON_PUBLIC_IPV4_INTERVALS.find(
+    (interval) => start <= interval.end && end >= interval.start,
+  );
+  if (nonPublic) {
+    throw new Error(
+      `${context} must contain only public internet IPv4 addresses and overlaps unsupported ${nonPublic.label}.`,
+    );
+  }
+  return {
+    start,
+    end,
+    canonicalValue: canonicalIpv4IntervalValue(start, end),
+  };
+}
+
+function parseIpv4Address(value: string, context: string): number {
+  const octets = value.split(".");
+  if (
+    octets.length !== 4 ||
+    octets.some(
+      (octet) =>
+        !/^(?:0|[1-9][0-9]{0,2})$/.test(octet) ||
+        Number(octet) > 255,
+    )
+  ) {
+    throw new Error(
+      `${context} must use an unambiguous dotted-decimal IPv4 address.`,
+    );
+  }
+  return octets.reduce(
+    (result, octet) => result * 256 + Number(octet),
+    0,
+  );
+}
+
+function canonicalIpv4IntervalValue(start: number, end: number): string {
+  if (start === end) {
+    return formatIpv4Address(start);
+  }
+  const size = end - start + 1;
+  const prefixOffset = Math.log2(size);
+  if (
+    Number.isInteger(prefixOffset) &&
+    start % size === 0
+  ) {
+    return `${formatIpv4Address(start)}/${32 - prefixOffset}`;
+  }
+  return `${formatIpv4Address(start)}-${formatIpv4Address(end)}`;
+}
+
+function formatIpv4Address(value: number): string {
+  return [
+    Math.floor(value / 2 ** 24) % 256,
+    Math.floor(value / 2 ** 16) % 256,
+    Math.floor(value / 2 ** 8) % 256,
+    value % 256,
+  ].join(".");
 }
 
 /**
@@ -386,6 +646,12 @@ export function hashCommunicationPolicy(
   return sha256(stableJson(policy));
 }
 
+export function hashInboundFirewallRules(
+  rules: CanonicalInboundFirewallRules,
+): string {
+  return sha256(stableJson(rules));
+}
+
 export function hashOutboundCloudConnectionRules(
   rules: CanonicalOutboundCloudConnectionRules,
 ): string {
@@ -418,6 +684,18 @@ function buildStaticNetworkProtectionPlan(
   return {
     ...(canonical.workspaceId ? { workspaceId: canonical.workspaceId } : {}),
     communicationPolicy,
+    ...(canonical.inboundFirewallRules
+      ? {
+          inboundFirewallRules: {
+            action,
+            reason,
+            desiredHash: hashInboundFirewallRules(
+              canonical.inboundFirewallRules,
+            ),
+            ruleCount: canonical.inboundFirewallRules.rules.length,
+          },
+        }
+      : {}),
     ...(canonical.outboundCloudConnectionRules
       ? {
           outboundCloudConnectionRules: {
@@ -492,6 +770,10 @@ function communicationPolicyPath(workspaceId: string): string {
   return `/v1/workspaces/${encodeURIComponent(workspaceId)}/networking/communicationPolicy`;
 }
 
+function inboundFirewallPath(workspaceId: string): string {
+  return `${communicationPolicyPath(workspaceId)}/inbound/firewall`;
+}
+
 function outboundConnectionsPath(workspaceId: string): string {
   return `${communicationPolicyPath(workspaceId)}/outbound/connections`;
 }
@@ -560,6 +842,59 @@ export class NetworkProtectionAdapter {
           ? desired
           : parseCommunicationPolicyResponse(response.body),
       etag: response.headers.get("etag") ?? undefined,
+    };
+  }
+
+  async getInboundFirewallRules(
+    workspaceId: string,
+  ): Promise<InboundFirewallRulesSnapshot> {
+    assertGuid(workspaceId, "workspace ID");
+    const response = await this.client.request<unknown>(
+      "GET",
+      inboundFirewallPath(workspaceId),
+    );
+    if (response.body === undefined) {
+      throw new Error("Fabric Get Firewall Rules response is empty.");
+    }
+    const etag = response.headers.get("etag")?.trim();
+    return {
+      configuration: normalizeInboundFirewallRules(
+        response.body as InboundFirewallRulesManifest,
+        "Fabric inbound firewall rules response",
+      ),
+      ...(etag ? { etag } : {}),
+    };
+  }
+
+  async putInboundFirewallRules(
+    workspaceId: string,
+    desired: CanonicalInboundFirewallRules,
+    options: { ifMatchEtag?: string; onDispatch?: () => void },
+  ): Promise<InboundFirewallRulesSnapshot> {
+    assertGuid(workspaceId, "workspace ID");
+    const response = await this.client.request<unknown>(
+      "PUT",
+      inboundFirewallPath(workspaceId),
+      {
+        body: desired,
+        retryable: true,
+        retryMode: "throttling-only",
+        acceptedStatuses: [200, 204],
+        ...(options.ifMatchEtag
+          ? { headers: { "if-match": quoteEtag(options.ifMatchEtag) } }
+          : {}),
+        onDispatch: options.onDispatch,
+      },
+    );
+    if (response.body !== undefined) {
+      throw new Error(
+        "Fabric Set Firewall Rules returned an unexpected response body.",
+      );
+    }
+    const etag = response.headers.get("etag")?.trim();
+    return {
+      configuration: desired,
+      ...(etag ? { etag } : {}),
     };
   }
 
@@ -702,6 +1037,13 @@ export class NetworkProtectionAdapter {
       isRelaxation,
     };
 
+    const inboundFirewallRules = canonical.inboundFirewallRules
+      ? await this.planInboundFirewallSurface(
+          targetWorkspaceId,
+          canonical.inboundFirewallRules,
+        )
+      : undefined;
+
     const outboundCloudConnectionRules = canonical.outboundCloudConnectionRules
       ? await this.planOutboundSurface(
           targetWorkspaceId,
@@ -752,9 +1094,30 @@ export class NetworkProtectionAdapter {
     return {
       workspaceId: targetWorkspaceId,
       communicationPolicy,
+      ...(inboundFirewallRules ? { inboundFirewallRules } : {}),
       ...(outboundCloudConnectionRules ? { outboundCloudConnectionRules } : {}),
       ...(outboundGatewayRules ? { outboundGatewayRules } : {}),
       ...(managedPrivateEndpoints ? { managedPrivateEndpoints } : {}),
+    };
+  }
+
+  private async planInboundFirewallSurface(
+    workspaceId: string,
+    desired: CanonicalInboundFirewallRules,
+  ): Promise<PlannedInboundFirewallRules> {
+    const observed = await this.getInboundFirewallRules(workspaceId);
+    const desiredHash = hashInboundFirewallRules(desired);
+    const observedHash = hashInboundFirewallRules(observed.configuration);
+    const matches = observedHash === desiredHash;
+    return {
+      action: matches ? "no-op" : "update",
+      reason: matches
+        ? "The preview inbound firewall rules already match the desired configuration."
+        : "The preview inbound firewall rules differ from the desired full-replacement configuration.",
+      desiredHash,
+      observedStateHash: observedHash,
+      ...(observed.etag ? { etag: observed.etag } : {}),
+      ruleCount: desired.rules.length,
     };
   }
 
@@ -808,6 +1171,24 @@ function assertNonBlankString(value: unknown, name: string): string {
     throw new Error(`${name} must be a non-blank string.`);
   }
   return value;
+}
+
+function assertOnlyKeys(
+  value: Record<string, unknown>,
+  allowedKeys: readonly string[],
+  context: string,
+): void {
+  const allowed = new Set(allowedKeys);
+  const unexpected = Object.keys(value)
+    .filter((key) => !allowed.has(key))
+    .sort(compareCanonicalStrings);
+  if (unexpected.length > 0) {
+    throw new Error(
+      `${context} contains unsupported propert${unexpected.length === 1 ? "y" : "ies"}: ${unexpected
+        .map((key) => `'${key}'`)
+        .join(", ")}.`,
+    );
+  }
 }
 
 function assertGuid(value: unknown, name: string): asserts value is string {

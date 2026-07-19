@@ -199,6 +199,14 @@ export async function writeJobSummary(plan: DeploymentPlan): Promise<void> {
         networkProtection.communicationPolicy.reason,
       ],
     ];
+    if (networkProtection.inboundFirewallRules) {
+      surfaceRows.push([
+        "Inbound IP firewall rules (Preview)",
+        networkProtection.inboundFirewallRules.action,
+        `${networkProtection.inboundFirewallRules.ruleCount} rule(s)`,
+        networkProtection.inboundFirewallRules.reason,
+      ]);
+    }
     if (networkProtection.outboundCloudConnectionRules) {
       surfaceRows.push([
         "Outbound cloud connection rules",

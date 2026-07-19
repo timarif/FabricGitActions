@@ -56,7 +56,8 @@
 - [x] Outbound access protection communication policy
 - [x] Outbound cloud connection and gateway rules
 - [x] Guarded managed private endpoint create/delete, checkpoint, and recovery
-- [ ] Inbound firewall, Azure resource, and External Data Shares policies
+- [x] Guarded declarative inbound IP firewall rules
+- [ ] Inbound Azure resource and External Data Shares policies
 - [x] Network recovery
 - [ ] Disposable managed private endpoint live validation
 

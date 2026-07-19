@@ -175,7 +175,13 @@ export interface ApplyPlanOptions {
     | "putOutboundCloudConnectionRules"
     | "getOutboundGatewayRules"
     | "putOutboundGatewayRules"
-  >;
+  > &
+    Partial<
+      Pick<
+        NetworkProtectionAdapter,
+        "getInboundFirewallRules" | "putInboundFirewallRules"
+      >
+    >;
   managedPrivateEndpointAdapter?: Pick<
     ManagedPrivateEndpointAdapter,
     | "listManagedPrivateEndpoints"
@@ -204,6 +210,8 @@ export interface ApplyPlanOptions {
   allowTagAssign?: boolean;
   allowNetworkPolicyUpdate?: boolean;
   allowNetworkPolicyRelaxation?: boolean;
+  allowInboundFirewallUpdate?: boolean;
+  acknowledgeFirewallLockoutRisk?: boolean;
   allowOutboundCloudConnectionRuleUpdate?: boolean;
   allowOutboundGatewayRuleUpdate?: boolean;
   allowManagedPrivateEndpointCreate?: boolean;
@@ -946,6 +954,10 @@ function networkProtectionApplyOptions(
       runtimeOptions.allowNetworkPolicyUpdate ?? false,
     allowNetworkPolicyRelaxation:
       runtimeOptions.allowNetworkPolicyRelaxation ?? false,
+    allowInboundFirewallUpdate:
+      runtimeOptions.allowInboundFirewallUpdate ?? false,
+    acknowledgeFirewallLockoutRisk:
+      runtimeOptions.acknowledgeFirewallLockoutRisk ?? false,
     allowOutboundCloudConnectionRuleUpdate:
       runtimeOptions.allowOutboundCloudConnectionRuleUpdate ?? false,
     allowOutboundGatewayRuleUpdate:
@@ -970,6 +982,10 @@ function preflightRuntimeNetworkProtection(
       runtimeOptions.allowNetworkPolicyUpdate ?? false,
     allowNetworkPolicyRelaxation:
       runtimeOptions.allowNetworkPolicyRelaxation ?? false,
+    allowInboundFirewallUpdate:
+      runtimeOptions.allowInboundFirewallUpdate ?? false,
+    acknowledgeFirewallLockoutRisk:
+      runtimeOptions.acknowledgeFirewallLockoutRisk ?? false,
     allowOutboundCloudConnectionRuleUpdate:
       runtimeOptions.allowOutboundCloudConnectionRuleUpdate ?? false,
     allowOutboundGatewayRuleUpdate:
