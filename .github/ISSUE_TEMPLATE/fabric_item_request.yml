@@ -1,0 +1,93 @@
+name: Fabric item support request
+description: Request guarded declarative support for a Microsoft Fabric item type
+title: "[Fabric item]: "
+labels:
+  - enhancement
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this form to request support for an additional Microsoft Fabric item type. Do not include tenant data, credentials, tokens, connection strings, or confidential definitions.
+
+  - type: input
+    id: item_type
+    attributes:
+      label: Fabric item type
+      description: Use the item type name returned by the Fabric REST API.
+      placeholder: Eventhouse
+    validations:
+      required: true
+
+  - type: textarea
+    id: scenario
+    attributes:
+      label: Deployment scenario
+      description: Describe the desired user outcome and why declarative deployment is needed.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: lifecycle
+    attributes:
+      label: Required lifecycle operations
+      description: Select every operation needed for the initial implementation.
+      multiple: true
+      options:
+        - Validate
+        - Plan and drift detection
+        - Create
+        - Update
+        - Delete
+        - Recovery and resume
+    validations:
+      required: true
+
+  - type: dropdown
+    id: service_principal
+    attributes:
+      label: Service-principal support
+      description: Indicate whether the Fabric APIs support service-principal authentication.
+      options:
+        - Confirmed
+        - Unknown
+        - Not supported
+    validations:
+      required: true
+
+  - type: textarea
+    id: api_surface
+    attributes:
+      label: Fabric API and definition format
+      description: Link the relevant REST API documentation and describe any definition parts or file formats.
+    validations:
+      required: true
+
+  - type: textarea
+    id: contract
+    attributes:
+      label: Proposed declarative contract
+      description: Provide sanitized deployment.yaml and item.yaml examples when possible.
+
+  - type: textarea
+    id: safety
+    attributes:
+      label: Mutation, permissions, and recovery considerations
+      description: Identify destructive behavior, required permissions, independent safeguards, and ambiguous recovery cases.
+    validations:
+      required: true
+
+  - type: textarea
+    id: validation
+    attributes:
+      label: Validation evidence
+      description: Include sanitized API probes, documented limitations, or a disposable live-test approach.
+
+  - type: checkboxes
+    id: acknowledgements
+    attributes:
+      label: Acknowledgements
+      options:
+        - label: I removed credentials, tenant data, resource identifiers, and confidential Fabric definitions.
+          required: true
+        - label: This is not a security vulnerability. Security reports must use GitHub Security Advisories.
+          required: true
