@@ -49,6 +49,7 @@ const loaded: LoadedManifest = {
   notebookDefinitions: {},
   sparkJobDefinitions: {},
   pipelineDefinitions: {},
+  semanticModelDefinitions: {},
   sparkCustomPoolDefinitions: { pool: poolDefinition },
   manifest: {
     apiVersion: "fabric.deploy/v1alpha1",

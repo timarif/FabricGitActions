@@ -41,7 +41,7 @@
 
 ## Phase 4: production hardening
 
-- [x] Guarded soft deletion for Environment, Notebook, Spark Job Definition, and Data Pipeline items
+- [x] Guarded soft deletion for Environment, Notebook, Spark Job Definition, Data Pipeline, and Semantic Model items
 - [x] Lakehouse deletion with an independent data-loss safeguard
 - [x] OneLake staging for Spark Job JVM executables and JAR libraries
 - [x] Fabric tag catalog creation and additive item assignment
@@ -64,9 +64,10 @@
 
 ## Phase 6: Power BI
 
-- [ ] Semantic Model definition deployment
+- [x] Semantic Model TMSL/TMDL definition deployment implementation
+- [x] Semantic Model live Fabric create/no-op/update validation
 - [ ] Power BI report deployment and Semantic Model binding
-- [ ] Guarded deletion and live validation
+- [ ] Power BI report guarded deletion and live validation
 
 ## Later phases
 

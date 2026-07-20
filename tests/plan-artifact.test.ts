@@ -34,6 +34,7 @@ function createPlan() {
     notebookDefinitions: {},
     sparkJobDefinitions: {},
     pipelineDefinitions: {},
+    semanticModelDefinitions: {},
     sparkCustomPoolDefinitions: {},
     manifest: {
       apiVersion: "fabric.deploy/v1alpha1",

@@ -1,0 +1,20 @@
+{
+  "compatibilityLevel": 1702,
+  "model": {
+    "annotations": [],
+    "culture": "en-US",
+    "dataAccessOptions": {
+      "legacyRedirects": true,
+      "returnErrorValuesAsNull": true
+    },
+    "defaultPowerBIDataSourceVersion": "powerBI_V3",
+    "discourageImplicitMeasures": true,
+    "expressions": [],
+    "functions": [],
+    "perspectives": [],
+    "relationships": [],
+    "roles": [],
+    "sourceQueryCulture": "en-US",
+    "tables": []
+  }
+}

@@ -4,6 +4,7 @@ import type { FetchLike } from "../src/fabric/auth";
 import { FabricClient } from "../src/fabric/client";
 import {
   hashObservedDeletionItem,
+  isDeletableFabricItemType,
   ItemDeletionAdapter,
 } from "../src/fabric/item-deletion";
 
@@ -24,6 +25,12 @@ function createAdapter(fetchImpl: FetchLike): ItemDeletionAdapter {
 }
 
 describe("generic Fabric item deletion adapter", () => {
+  it("treats Semantic Model as a generic soft-deletable item type", () => {
+    expect(isDeletableFabricItemType("SemanticModel")).toBe(
+      true,
+    );
+  });
+
   it("plans an already-absent item as a no-op in its exact folder", async () => {
     let requestedUrl = "";
     const adapter = createAdapter(

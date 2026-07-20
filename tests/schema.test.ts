@@ -27,5 +27,18 @@ describe("published deployment schema", () => {
     delete comparable.$schema;
     delete comparable.title;
     expect(comparable).toEqual(deploymentSchema);
+    expect(
+      (
+        (
+          published.properties as Record<string, unknown>
+        ).items as {
+          items: {
+            properties: {
+              type: { enum: string[] };
+            };
+          };
+        }
+      ).items.properties.type.enum,
+    ).toContain("SemanticModel");
   });
 });

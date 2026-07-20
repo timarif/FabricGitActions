@@ -41,6 +41,7 @@ function planWithNetworkProtection() {
     notebookDefinitions: {},
     sparkJobDefinitions: {},
     pipelineDefinitions: {},
+    semanticModelDefinitions: {},
     sparkCustomPoolDefinitions: {},
     manifest: {
       apiVersion: "fabric.deploy/v1alpha1",
@@ -536,6 +537,7 @@ describe("network protection checkpoint", () => {
       notebookDefinitions: {},
       sparkJobDefinitions: {},
       pipelineDefinitions: {},
+      semanticModelDefinitions: {},
       sparkCustomPoolDefinitions: {},
       manifest: {
         apiVersion: "fabric.deploy/v1alpha1",

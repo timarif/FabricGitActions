@@ -58,6 +58,7 @@ runtime_version: 1.3
   notebookDefinitions: {},
   sparkJobDefinitions: {},
   pipelineDefinitions: {},
+  semanticModelDefinitions: {},
   sparkCustomPoolDefinitions: {},
   manifest: {
     apiVersion: "fabric.deploy/v1alpha1",

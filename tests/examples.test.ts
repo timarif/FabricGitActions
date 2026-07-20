@@ -48,6 +48,12 @@ const examples: ExampleCase[] = [
     itemCount: 1,
   },
   {
+    name: "Semantic Model",
+    manifestPath: "semantic-model/fabric/deployment.yaml",
+    options: { workspaceIdOverride: WORKSPACE_ID },
+    itemCount: 1,
+  },
+  {
     name: "managed workspace",
     manifestPath: "workspace/fabric/deployment.yaml",
     options: {

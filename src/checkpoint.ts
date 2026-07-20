@@ -951,6 +951,7 @@ function isCheckpoint(value: unknown): value is ApplyCheckpoint {
         [
           "metadata-submitting",
           "metadata-updated",
+          "definition-submitting",
           "definition-staged",
           "published",
           "marker-cleaned",
@@ -965,12 +966,16 @@ function isCheckpoint(value: unknown): value is ApplyCheckpoint {
         (intent.resolvedBindingsHash === undefined) &&
       (intent.stagedDeploymentMarker === undefined ||
         /^[a-f0-9]{64}$/.test(intent.stagedDeploymentMarker)) &&
+      (intent.preservedAuxiliaryHash === undefined ||
+        /^[a-f0-9]{64}$/.test(intent.preservedAuxiliaryHash)) &&
       (intent.publishState === undefined ||
         typeof intent.publishState === "string") &&
       (intent.targetVersion === undefined ||
         typeof intent.targetVersion === "string") &&
       (intent.phase === undefined ||
-        intent.stagedDefinitionHash !== undefined)
+        intent.stagedDefinitionHash !== undefined) &&
+      (intent.phase !== "definition-submitting" ||
+        intent.preservedAuxiliaryHash !== undefined)
     );
   }
 

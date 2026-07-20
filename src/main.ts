@@ -29,6 +29,7 @@ import { NetworkProtectionAdapter } from "./fabric/network-protection";
 import { NotebookAdapter } from "./fabric/notebook";
 import { OneLakeArtifactStager } from "./fabric/onelake-artifacts";
 import { PipelineAdapter } from "./fabric/pipeline";
+import { SemanticModelAdapter } from "./fabric/semantic-model";
 import { SparkCustomPoolAdapter } from "./fabric/spark-custom-pool";
 import { assertSparkJobArtifactEndpoints } from "./fabric/spark-job-artifacts";
 import { SparkJobAdapter } from "./fabric/spark-job";
@@ -210,6 +211,7 @@ export async function run(): Promise<void> {
     let notebookAdapter: NotebookAdapter | undefined;
     let sparkJobAdapter: SparkJobAdapter | undefined;
     let pipelineAdapter: PipelineAdapter | undefined;
+    let semanticModelAdapter: SemanticModelAdapter | undefined;
     let sparkCustomPoolAdapter: SparkCustomPoolAdapter | undefined;
     let tagAdapter: FabricTagAdapter | undefined;
     let workspaceAdapter: WorkspaceAdapter | undefined;
@@ -250,6 +252,7 @@ export async function run(): Promise<void> {
       notebookAdapter = new NotebookAdapter(client);
       sparkJobAdapter = new SparkJobAdapter(client);
       pipelineAdapter = new PipelineAdapter(client);
+      semanticModelAdapter = new SemanticModelAdapter(client);
       sparkCustomPoolAdapter = new SparkCustomPoolAdapter(client);
       tagAdapter = new FabricTagAdapter(client);
       workspaceAdapter = new WorkspaceAdapter(client);
@@ -367,6 +370,7 @@ export async function run(): Promise<void> {
         !notebookAdapter ||
         !sparkJobAdapter ||
         !pipelineAdapter ||
+        !semanticModelAdapter ||
         !sparkCustomPoolAdapter ||
         !tagAdapter ||
         !lakehouseTablesAdapter ||
@@ -385,6 +389,7 @@ export async function run(): Promise<void> {
         notebook: notebookAdapter,
         sparkJob: sparkJobAdapter,
         pipeline: pipelineAdapter,
+        semanticModel: semanticModelAdapter,
         sparkCustomPool: sparkCustomPoolAdapter,
         tags: tagAdapter,
         lakehouseTables: lakehouseTablesAdapter,
@@ -504,6 +509,7 @@ export async function run(): Promise<void> {
         !notebookAdapter ||
         !sparkJobAdapter ||
         !pipelineAdapter ||
+        !semanticModelAdapter ||
         !sparkCustomPoolAdapter ||
         !tagAdapter ||
         !workspaceAdapter
@@ -524,6 +530,7 @@ export async function run(): Promise<void> {
         notebookAdapter,
         sparkJobAdapter,
         pipelineAdapter,
+        semanticModelAdapter,
         sparkCustomPoolAdapter,
         tagAdapter,
         workspaceAdapter,

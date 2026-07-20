@@ -16,6 +16,10 @@ import { compareCanonicalStrings, sha256, stableJson } from "./hash";
 import { loadEnvironmentDefinition } from "./fabric/definition";
 import { loadNotebookDefinition } from "./fabric/notebook-definition";
 import { loadPipelineDefinition } from "./fabric/pipeline-definition";
+import {
+  loadSemanticModelDefinition,
+  semanticModelPlatformLogicalId,
+} from "./fabric/semantic-model-definition";
 import { loadLakehouseTablesDefinition } from "./fabric/lakehouse-tables-definition";
 import { loadSparkCustomPoolDefinition } from "./fabric/spark-custom-pool-definition";
 import { normalizeNetworkProtection } from "./fabric/network-protection";
@@ -273,6 +277,20 @@ export function loadManifest(
         ),
       ]),
   );
+  const semanticModelDefinitions = Object.fromEntries(
+    manifest.items
+      .filter(
+        (item) =>
+          item.type === "SemanticModel" &&
+          item.desiredState !== "absent",
+      )
+      .map((item) => [
+        item.logicalId,
+        loadSemanticModelDefinition(
+          itemContent.directories[item.logicalId] ?? "",
+        ),
+      ]),
+  );
   const lakehouseTablesDefinitions = Object.fromEntries(
     manifest.items
       .filter(
@@ -313,6 +331,15 @@ export function loadManifest(
     itemDefinitions,
     pipelineDefinitions,
   );
+  validateSemanticModelPlatformMetadata(
+    manifest,
+    itemDefinitions,
+    semanticModelDefinitions,
+  );
+  validateUniqueSemanticModelPlatformLogicalIds(
+    manifest,
+    semanticModelDefinitions,
+  );
   assertItemContentUnchanged(
     manifest,
     manifestDirectory,
@@ -346,6 +373,8 @@ export function loadManifest(
             ) ?? null,
           capturedPipelineDefinition:
             pipelineDefinitions[item.logicalId] ?? null,
+          capturedSemanticModelDefinition:
+            semanticModelDefinitions[item.logicalId] ?? null,
           capturedSparkCustomPoolDefinition:
             sparkCustomPoolDefinitions[item.logicalId] ?? null,
           capturedLakehouseTablesDefinition:
@@ -369,6 +398,7 @@ export function loadManifest(
     sparkJobDefinitions,
     sparkJobArtifactSources,
     pipelineDefinitions,
+    semanticModelDefinitions,
     sparkCustomPoolDefinitions,
     lakehouseTablesDefinitions,
   };
@@ -461,6 +491,33 @@ function validatePipelinePlatformMetadata(
   }
 }
 
+function validateSemanticModelPlatformMetadata(
+  manifest: DeploymentManifest,
+  definitions: LoadedManifest["itemDefinitions"],
+  semanticModelDefinitions: LoadedManifest["semanticModelDefinitions"],
+): void {
+  for (const item of manifest.items) {
+    if (item.type !== "SemanticModel") {
+      continue;
+    }
+    const desired = definitions[item.logicalId];
+    const fabricDefinition =
+      semanticModelDefinitions[item.logicalId];
+    const platformPart = fabricDefinition?.parts.find(
+      (part) => part.path === ".platform",
+    );
+    if (!desired || !platformPart) {
+      continue;
+    }
+    validatePlatformMetadata(
+      item.logicalId,
+      "SemanticModel",
+      desired,
+      platformPart.payload,
+    );
+  }
+}
+
 function validateSparkJobPlatformMetadata(
   manifest: DeploymentManifest,
   definitions: LoadedManifest["itemDefinitions"],
@@ -546,7 +603,8 @@ function validatePlatformMetadata(
     | "SparkCustomPool"
     | "Notebook"
     | "SparkJobDefinition"
-    | "DataPipeline",
+    | "DataPipeline"
+    | "SemanticModel",
   desired: LoadedManifest["itemDefinitions"][string],
   payload: string,
 ): void {
@@ -605,6 +663,106 @@ function validatePlatformMetadata(
       `${type} item '${logicalId}' .platform description must match item.yaml.`,
     );
   }
+
+  // Semantic Models must use the official v2 .platform structure with a
+  // config block that carries the item's stable logical identity UUID.
+  if (type === "SemanticModel") {
+    validateSemanticModelPlatformV2(
+      logicalId,
+      platform as Record<string, unknown>,
+    );
+  }
+}
+
+/** UUID pattern used to validate .platform config.logicalId values. */
+const PLATFORM_LOGICAL_ID_PATTERN =
+  /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$/;
+
+/**
+ * Validates the v2 config block required for Semantic Model `.platform` files.
+ * Other item types may use older structures without a config block.
+ */
+function validateSemanticModelPlatformV2(
+  logicalId: string,
+  platform: Record<string, unknown>,
+): void {
+  const expectedSchema =
+    "https://developer.microsoft.com/json-schemas/fabric/gitIntegration/platformProperties/2.0.0/schema.json";
+  if (platform.$schema !== expectedSchema) {
+    throw new Error(
+      `SemanticModel item '${logicalId}' .platform '$schema' must be '${expectedSchema}'.`,
+    );
+  }
+  const config = platform.config;
+  if (
+    config === null ||
+    typeof config !== "object" ||
+    Array.isArray(config)
+  ) {
+    throw new Error(
+      `SemanticModel item '${logicalId}' .platform must include a 'config' object (v2 format required).`,
+    );
+  }
+  const configObj = config as Record<string, unknown>;
+  const topLevelVersion = platform.version;
+  const configVersion = configObj.version;
+  if (
+    (topLevelVersion !== undefined &&
+      topLevelVersion !== "2.0") ||
+    (configVersion !== undefined &&
+      configVersion !== "2.0") ||
+    (topLevelVersion !== "2.0" &&
+      configVersion !== "2.0")
+  ) {
+    throw new Error(
+      `SemanticModel item '${logicalId}' .platform must declare version "2.0" at the top level or in config.version.`,
+    );
+  }
+  if (
+    typeof configObj.logicalId !== "string" ||
+    !PLATFORM_LOGICAL_ID_PATTERN.test(configObj.logicalId)
+  ) {
+    throw new Error(
+      `SemanticModel item '${logicalId}' .platform config.logicalId must be a valid UUID.`,
+    );
+  }
+}
+
+/**
+ * Detects duplicate `.platform` logical IDs among desired Semantic Model
+ * definitions. Two items sharing the same logical ID would overwrite each
+ * other's identity, which is always a misconfiguration.
+ */
+function validateUniqueSemanticModelPlatformLogicalIds(
+  manifest: DeploymentManifest,
+  semanticModelDefinitions: LoadedManifest["semanticModelDefinitions"],
+): void {
+  const logicalIds = new Map<string, string>(); // logicalId -> item logicalId
+  for (const item of manifest.items) {
+    if (
+      item.type !== "SemanticModel" ||
+      item.desiredState === "absent"
+    ) {
+      continue;
+    }
+    const definition = semanticModelDefinitions[item.logicalId];
+    if (!definition) {
+      continue;
+    }
+    const platformLogicalId = semanticModelPlatformLogicalId(definition);
+    if (platformLogicalId === undefined) {
+      continue;
+    }
+    const existing = logicalIds.get(platformLogicalId);
+    if (existing) {
+      throw new Error(
+        `SemanticModel items '${existing}' and '${item.logicalId}' ` +
+          `declare the same .platform config.logicalId '${platformLogicalId}'. ` +
+          `Each Semantic Model must have a unique logical identity.`,
+      );
+    }
+    logicalIds.set(platformLogicalId, item.logicalId);
+  }
 }
 
 function containsProperty(value: unknown, propertyName: string): boolean {
@@ -635,7 +793,8 @@ function validateUniqueDesiredIdentities(
     | "SparkCustomPool"
     | "Notebook"
     | "SparkJobDefinition"
-    | "DataPipeline",
+    | "DataPipeline"
+    | "SemanticModel",
     Map<string, string>
   >([
     ["Lakehouse", new Map()],
@@ -644,6 +803,7 @@ function validateUniqueDesiredIdentities(
     ["Notebook", new Map()],
     ["SparkJobDefinition", new Map()],
     ["DataPipeline", new Map()],
+    ["SemanticModel", new Map()],
   ]);
   for (const item of manifest.items) {
     if (
@@ -652,7 +812,8 @@ function validateUniqueDesiredIdentities(
       item.type !== "SparkCustomPool" &&
       item.type !== "Notebook" &&
       item.type !== "SparkJobDefinition" &&
-      item.type !== "DataPipeline"
+      item.type !== "DataPipeline" &&
+      item.type !== "SemanticModel"
     ) {
       continue;
     }

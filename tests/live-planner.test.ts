@@ -26,6 +26,7 @@ describe("online Fabric planning", () => {
       notebookDefinitions: {},
       sparkJobDefinitions: {},
       pipelineDefinitions: {},
+      semanticModelDefinitions: {},
       sparkCustomPoolDefinitions: {},
       manifest: {
         apiVersion: "fabric.deploy/v1alpha1",
@@ -63,6 +64,7 @@ describe("online Fabric planning", () => {
       notebook: { plan: fail },
       sparkJob: { plan: fail },
       pipeline: { plan: fail },
+      semanticModel: { plan: fail },
       sparkCustomPool: { plan: fail },
     });
 
@@ -95,6 +97,7 @@ describe("online Fabric planning", () => {
       notebookDefinitions: {},
       sparkJobDefinitions: {},
       pipelineDefinitions: {},
+      semanticModelDefinitions: {},
       sparkCustomPoolDefinitions: {},
       manifest: {
         apiVersion: "fabric.deploy/v1alpha1",
@@ -136,6 +139,7 @@ describe("online Fabric planning", () => {
       notebook: { plan: fail },
       sparkJob: { plan: fail },
       pipeline: { plan: fail },
+      semanticModel: { plan: fail },
       sparkCustomPool: { plan: fail },
     });
 
@@ -199,6 +203,7 @@ describe("online Fabric planning", () => {
       },
       sparkJobDefinitions: {},
       pipelineDefinitions: {},
+      semanticModelDefinitions: {},
       sparkCustomPoolDefinitions: {
         pool: {
           nodeFamily: "MemoryOptimized",
@@ -301,6 +306,9 @@ describe("online Fabric planning", () => {
       notebook: notebookAdapter,
       sparkJob: sparkJobAdapter,
       pipeline: pipelineAdapter,
+      semanticModel: { plan: async () => {
+        throw new Error("Semantic Model adapter should not be called.");
+      } },
       sparkCustomPool: sparkCustomPoolAdapter,
     });
 
@@ -366,6 +374,7 @@ describe("online Fabric planning", () => {
         },
       },
       pipelineDefinitions: {},
+      semanticModelDefinitions: {},
       sparkCustomPoolDefinitions: {},
       manifest: {
         apiVersion: "fabric.deploy/v1alpha1",
@@ -428,6 +437,7 @@ describe("online Fabric planning", () => {
           },
         },
         pipeline: { plan: fail },
+        semanticModel: { plan: fail },
         sparkCustomPool: { plan: fail },
       },
     );
@@ -512,6 +522,7 @@ describe("online Fabric planning", () => {
         ],
       },
       pipelineDefinitions: {},
+      semanticModelDefinitions: {},
       sparkCustomPoolDefinitions: {},
       manifest: {
         apiVersion: "fabric.deploy/v1alpha1",
@@ -566,6 +577,7 @@ describe("online Fabric planning", () => {
         },
       },
       pipeline: { plan: fail },
+      semanticModel: { plan: fail },
       sparkCustomPool: { plan: fail },
       oneLakeArtifacts: {
         dfsEndpoint: "https://onelake.dfs.fabric.microsoft.com",
@@ -669,6 +681,7 @@ describe("online Fabric planning", () => {
         ],
       },
       pipelineDefinitions: {},
+      semanticModelDefinitions: {},
       sparkCustomPoolDefinitions: {},
       manifest: {
         apiVersion: "fabric.deploy/v1alpha1",
@@ -720,6 +733,7 @@ describe("online Fabric planning", () => {
           planUnresolvedReferences: unresolvedPlan,
         },
         pipeline: { plan: fail },
+        semanticModel: { plan: fail },
         sparkCustomPool: { plan: fail },
       },
     );
@@ -779,6 +793,7 @@ describe("online Fabric planning", () => {
           ],
         },
       },
+      semanticModelDefinitions: {},
       sparkCustomPoolDefinitions: {},
       manifest: {
         apiVersion: "fabric.deploy/v1alpha1",
@@ -809,6 +824,7 @@ describe("online Fabric planning", () => {
         notebook: { plan: fail },
         sparkJob: { plan: fail },
         pipeline: { plan: fail },
+        semanticModel: { plan: fail },
         sparkCustomPool: { plan: fail },
       }),
     ).rejects.toThrow(

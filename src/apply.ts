@@ -48,6 +48,16 @@ import {
   pipelineIncludesPlatformPart,
 } from "./fabric/pipeline-definition";
 import type {
+  SemanticModelAdapter,
+  SemanticModelOperationReference,
+} from "./fabric/semantic-model";
+import {
+  hashSemanticModelDefinition,
+  semanticModelIncludesDiagramLayoutPart,
+  semanticModelIncludesPlatformPart,
+  semanticModelIncludesCopilotParts,
+} from "./fabric/semantic-model-definition";
+import type {
   SparkCustomPoolAdapter,
   SparkCustomPoolOperationReference,
 } from "./fabric/spark-custom-pool";
@@ -137,6 +147,10 @@ export interface ApplyPlanOptions {
   >;
   pipelineAdapter?: Pick<
     PipelineAdapter,
+    "create" | "update" | "verify" | "resumeCreate" | "plan"
+  >;
+  semanticModelAdapter?: Pick<
+    SemanticModelAdapter,
     "create" | "update" | "verify" | "resumeCreate" | "plan"
   >;
   sparkCustomPoolAdapter?: Pick<
@@ -1309,6 +1323,7 @@ function assertSupportedApplyItem(
     item.type !== "Notebook" &&
     item.type !== "SparkJobDefinition" &&
     item.type !== "DataPipeline" &&
+    item.type !== "SemanticModel" &&
     item.type !== "LakehouseTables" &&
     item.type !== "FabricTag"
   ) {
@@ -1370,6 +1385,15 @@ function assertSupportedApplyItem(
   ) {
     throw new Error(
       `Data Pipeline adapter was not initialized for item '${item.logicalId}'.`,
+    );
+  }
+  if (
+    item.desiredState !== "absent" &&
+    item.type === "SemanticModel" &&
+    !options.semanticModelAdapter
+  ) {
+    throw new Error(
+      `Semantic Model adapter was not initialized for item '${item.logicalId}'.`,
     );
   }
   if (
@@ -1586,7 +1610,8 @@ async function resumePendingOperations(
           approvedItem.type !== "SparkCustomPool" &&
           approvedItem.type !== "Notebook" &&
           approvedItem.type !== "SparkJobDefinition" &&
-          approvedItem.type !== "DataPipeline")
+          approvedItem.type !== "DataPipeline" &&
+          approvedItem.type !== "SemanticModel")
       ) {
         throw new Error(
           `Pending operation item '${logicalId}' is missing or unsupported.`,
@@ -1743,6 +1768,7 @@ async function reconcilePendingCreates(
           approvedItem.type !== "Notebook" &&
           approvedItem.type !== "SparkJobDefinition" &&
           approvedItem.type !== "DataPipeline" &&
+          approvedItem.type !== "SemanticModel" &&
           approvedItem.type !== "FabricTag") ||
         !currentItem
       ) {
@@ -1827,7 +1853,8 @@ async function reconcilePendingUpdates(
           approvedItem.type !== "SparkCustomPool" &&
           approvedItem.type !== "Notebook" &&
           approvedItem.type !== "SparkJobDefinition" &&
-          approvedItem.type !== "DataPipeline") ||
+          approvedItem.type !== "DataPipeline" &&
+          approvedItem.type !== "SemanticModel") ||
         approvedItem.action !== "update" ||
         !currentItem
       ) {
@@ -1867,6 +1894,13 @@ async function reconcilePendingUpdates(
             )) ||
           (approvedItem.type === "DataPipeline" &&
             hasPipelineRecoveryProof(
+              options,
+              approvedItem,
+              live,
+              intent,
+            )) ||
+          (approvedItem.type === "SemanticModel" &&
+            hasSemanticModelRecoveryProof(
               options,
               approvedItem,
               live,
@@ -1915,6 +1949,23 @@ async function reconcilePendingUpdates(
         throw new Error(
           `Update intent for '${logicalId}' cannot be reconciled because current Fabric state is '${live.action}'. Wait for visibility or start a reviewed recovery before retrying.`,
         );
+      }
+      if (
+        approvedItem.type === "SemanticModel" &&
+        intent.preservedAuxiliaryHash !== undefined
+      ) {
+        const liveAuxiliaryHash =
+          "currentAuxiliaryHash" in live
+            ? live.currentAuxiliaryHash
+            : undefined;
+        if (
+          liveAuxiliaryHash !==
+          intent.preservedAuxiliaryHash
+        ) {
+          throw new Error(
+            `Update intent for '${logicalId}' cannot be reconciled because the Semantic Model auxiliary definition parts differ from the checkpointed full-replacement proof.`,
+          );
+        }
       }
       const verified = await verifyDesiredItem(
         options,
@@ -3872,7 +3923,8 @@ async function applyItem(
       | EnvironmentOperationReference
       | NotebookOperationReference
       | SparkJobOperationReference
-      | PipelineOperationReference,
+      | PipelineOperationReference
+      | SemanticModelOperationReference,
   ) => void,
   onCreateSubmitting: () => void,
   onCreateRejected: () => void,
@@ -3889,6 +3941,7 @@ async function applyItem(
     item.type !== "Notebook" &&
     item.type !== "SparkJobDefinition" &&
     item.type !== "DataPipeline" &&
+    item.type !== "SemanticModel" &&
     item.type !== "FabricTag"
   ) {
     throw new Error(
@@ -4179,6 +4232,7 @@ async function resumeCompletedItem(
     item.type !== "Notebook" &&
     item.type !== "SparkJobDefinition" &&
     item.type !== "DataPipeline" &&
+    item.type !== "SemanticModel" &&
     item.type !== "FabricTag"
   ) {
     throw new Error(
@@ -4293,6 +4347,19 @@ async function planDesiredItem(
       requirePipelineDefinition(options, item.logicalId),
     );
   }
+  if (item.type === "SemanticModel") {
+    return requireSemanticModelAdapter(
+      options,
+      item.logicalId,
+    ).plan(
+      options.approvedPlan.workspaceId,
+      desired,
+      requireSemanticModelDefinition(
+        options,
+        item.logicalId,
+      ),
+    );
+  }
   throw new Error(
     `Fabric planning is not implemented for item '${item.logicalId}' of type ${item.type}.`,
   );
@@ -4334,7 +4401,8 @@ async function createDesiredItem(
       | EnvironmentOperationReference
       | NotebookOperationReference
       | SparkJobOperationReference
-      | PipelineOperationReference,
+      | PipelineOperationReference
+      | SemanticModelOperationReference,
   ) => void,
   onCreateSubmitting: () => void,
   onCreateRejected: () => void,
@@ -4416,6 +4484,23 @@ async function createDesiredItem(
       onCreateRejected,
     );
   }
+  if (item.type === "SemanticModel") {
+    return requireSemanticModelAdapter(
+      options,
+      item.logicalId,
+    ).create(
+      options.approvedPlan.workspaceId,
+      desired,
+      requireSemanticModelDefinition(
+        options,
+        item.logicalId,
+      ),
+      onMutationAccepted,
+      onOperationAccepted,
+      onCreateSubmitting,
+      onCreateRejected,
+    );
+  }
   throw new Error(
     `Create is not implemented for item '${item.logicalId}' of type ${item.type}.`,
   );
@@ -4430,7 +4515,8 @@ async function resumeCreateDesiredItem(
     | EnvironmentOperationReference
     | NotebookOperationReference
     | SparkJobOperationReference
-    | PipelineOperationReference,
+    | PipelineOperationReference
+    | SemanticModelOperationReference,
   onMutationAccepted: (physicalId: string) => void,
 ) {
   if (item.type === "Lakehouse") {
@@ -4479,6 +4565,21 @@ async function resumeCreateDesiredItem(
       options.approvedPlan.workspaceId,
       desired,
       requirePipelineDefinition(options, item.logicalId),
+      operation,
+      onMutationAccepted,
+    );
+  }
+  if (item.type === "SemanticModel") {
+    return requireSemanticModelAdapter(
+      options,
+      item.logicalId,
+    ).resumeCreate(
+      options.approvedPlan.workspaceId,
+      desired,
+      requireSemanticModelDefinition(
+        options,
+        item.logicalId,
+      ),
       operation,
       onMutationAccepted,
     );
@@ -4567,6 +4668,23 @@ async function updateDesiredItem(
       onUpdateRejected,
     );
   }
+  if (item.type === "SemanticModel") {
+    return requireSemanticModelAdapter(
+      options,
+      item.logicalId,
+    ).update(
+      options.approvedPlan.workspaceId,
+      physicalId,
+      desired,
+      requireSemanticModelDefinition(
+        options,
+        item.logicalId,
+      ),
+      onMutationAccepted,
+      onUpdateSubmitting,
+      onUpdateRejected,
+    );
+  }
   throw new Error(
     `Update is not implemented for item '${item.logicalId}' of type ${item.type}.`,
   );
@@ -4632,6 +4750,20 @@ async function verifyDesiredItem(
       physicalId,
       desired,
       requirePipelineDefinition(options, item.logicalId),
+    );
+  }
+  if (item.type === "SemanticModel") {
+    return requireSemanticModelAdapter(
+      options,
+      item.logicalId,
+    ).verify(
+      options.approvedPlan.workspaceId,
+      physicalId,
+      desired,
+      requireSemanticModelDefinition(
+        options,
+        item.logicalId,
+      ),
     );
   }
   throw new Error(
@@ -4956,6 +5088,32 @@ function requirePipelineDefinition(
   return definition;
 }
 
+function requireSemanticModelAdapter(
+  options: ApplyPlanOptions,
+  logicalId: string,
+): NonNullable<ApplyPlanOptions["semanticModelAdapter"]> {
+  if (!options.semanticModelAdapter) {
+    throw new Error(
+      `Semantic Model adapter was not initialized for item '${logicalId}'.`,
+    );
+  }
+  return options.semanticModelAdapter;
+}
+
+function requireSemanticModelDefinition(
+  options: ApplyPlanOptions,
+  logicalId: string,
+) {
+  const definition =
+    options.loadedManifest.semanticModelDefinitions[logicalId];
+  if (!definition) {
+    throw new Error(
+      `Semantic Model definition snapshot is missing for '${logicalId}'.`,
+    );
+  }
+  return definition;
+}
+
 function requireSparkCustomPoolAdapter(
   options: ApplyPlanOptions,
   logicalId: string,
@@ -5166,6 +5324,67 @@ function hasPipelineRecoveryProof(
   );
 }
 
+function hasSemanticModelRecoveryProof(
+  options: ApplyPlanOptions,
+  item: PlannedItem,
+  live: {
+    action: PlannedAction;
+    observedStateHash: string;
+    stagedDefinitionHash?: string;
+    managedMetadataMatches?: boolean;
+    currentAuxiliaryHash?: string;
+  },
+  intent?: ApplyCheckpoint["pendingUpdates"][string],
+): boolean {
+  if (item.type !== "SemanticModel") {
+    return false;
+  }
+  if (live.observedStateHash === item.observedStateHash) {
+    return true;
+  }
+  const desiredDefinition = requireSemanticModelDefinition(
+    options,
+    item.logicalId,
+  );
+  const expectedDefinitionHash =
+    intent?.phase === "definition-staged" &&
+    intent.stagedDefinitionHash
+      ? intent.stagedDefinitionHash
+      : hashSemanticModelDefinition(
+          desiredDefinition,
+          semanticModelIncludesPlatformPart(desiredDefinition),
+          semanticModelIncludesDiagramLayoutPart(desiredDefinition),
+          semanticModelIncludesCopilotParts(desiredDefinition),
+        );
+  if (
+    live.managedMetadataMatches === true &&
+    live.stagedDefinitionHash === expectedDefinitionHash
+  ) {
+    // When an effective full replacement was staged, additionally verify that
+    // the preserved auxiliary parts were not silently lost. An ambiguous
+    // accepted replacement with missing preserved parts must be re-applied.
+    if (
+      intent?.preservedAuxiliaryHash !== undefined &&
+      live.currentAuxiliaryHash !== intent.preservedAuxiliaryHash
+    ) {
+      return false;
+    }
+    return true;
+  }
+  if (
+    !intent ||
+    (intent.phase !== "metadata-submitting" &&
+      intent.phase !== "metadata-updated" &&
+      intent.phase !== "definition-submitting")
+  ) {
+    return false;
+  }
+  return (
+    live.managedMetadataMatches === true &&
+    live.stagedDefinitionHash === intent.stagedDefinitionHash
+  );
+}
+
 function hasSparkCustomPoolRecoveryProof(
   item: PlannedItem,
   live: {
@@ -5209,6 +5428,12 @@ function recordPendingUpdate(
       : {}),
     ...(state?.targetVersion
       ? { targetVersion: state.targetVersion }
+      : {}),
+    ...(state?.preservedAuxiliaryHash
+      ? {
+          preservedAuxiliaryHash:
+            state.preservedAuxiliaryHash,
+        }
       : {}),
   };
   writeCheckpoint(options.checkpointFile, checkpoint);

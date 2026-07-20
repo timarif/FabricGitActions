@@ -12,7 +12,8 @@ function createDeployment(
     | "Environment"
     | "Notebook"
     | "SparkJobDefinition"
-    | "DataPipeline",
+    | "DataPipeline"
+    | "SemanticModel",
   itemYaml: string,
 ): { root: string; manifestPath: string; itemDirectory: string } {
   const root = mkdtempSync(path.join(tmpdir(), "fabric-deploy-item-"));

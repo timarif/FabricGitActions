@@ -10,6 +10,7 @@ import { parse } from "yaml";
 
 import { loadEnvironmentDefinition } from "./fabric/definition";
 import { loadNotebookDefinition } from "./fabric/notebook-definition";
+import { loadSemanticModelDefinition } from "./fabric/semantic-model-definition";
 import {
   assertValidSparkCustomPoolItemDefinition,
   loadSparkCustomPoolDefinition,
@@ -177,6 +178,7 @@ function validateDeletionDefinition(
     case "Notebook":
     case "SparkJobDefinition":
     case "DataPipeline":
+    case "SemanticModel":
       return;
     case "FabricTag":
     case "LakehouseTables":
@@ -360,6 +362,10 @@ function validateTypeSpecificDefinition(
       return;
     case "DataPipeline":
       requirePipelineDefinition(item, itemDirectory);
+      return;
+    case "SemanticModel":
+      definitionDirectory(item, itemDirectory);
+      loadSemanticModelDefinition(itemDirectory);
       return;
     default:
       assertNever(item.type);

@@ -130,6 +130,7 @@ describe("logical reference declarations", () => {
   it.each([
     ["Notebook", "Notebook"],
     ["DataPipeline", "DataPipeline"],
+    ["SemanticModel", "SemanticModel"],
     ["Environment", "Environment"],
   ] as const)(
     "rejects declarations on unsupported %s items",

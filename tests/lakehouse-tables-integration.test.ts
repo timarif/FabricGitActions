@@ -114,6 +114,7 @@ function otherAdapters() {
     notebook: { plan: fail },
     sparkJob: { plan: fail },
     pipeline: { plan: fail },
+    semanticModel: { plan: fail },
     sparkCustomPool: { plan: fail },
   };
 }

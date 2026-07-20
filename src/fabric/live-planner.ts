@@ -26,6 +26,7 @@ import {
   type NetworkProtectionAdapter,
 } from "./network-protection";
 import type { PipelineAdapter } from "./pipeline";
+import type { SemanticModelAdapter } from "./semantic-model";
 import type { SparkCustomPoolAdapter } from "./spark-custom-pool";
 import type { SparkJobAdapter } from "./spark-job";
 import type { FabricTagAdapter } from "./tags";
@@ -53,6 +54,7 @@ export interface FabricPlanAdapters {
   sparkJob: Pick<SparkJobAdapter, "plan"> &
     Partial<Pick<SparkJobAdapter, "planUnresolvedReferences">>;
   pipeline: Pick<PipelineAdapter, "plan">;
+  semanticModel: Pick<SemanticModelAdapter, "plan">;
   sparkCustomPool: Pick<SparkCustomPoolAdapter, "plan">;
   tags?: Pick<FabricTagAdapter, "plan" | "planItemAssignment">;
   lakehouseTables?: Pick<LakehouseTablesAdapter, "plan">;
@@ -185,6 +187,7 @@ export async function enrichPlanWithFabric(
       item.type !== "Notebook" &&
       item.type !== "SparkJobDefinition" &&
       item.type !== "DataPipeline" &&
+      item.type !== "SemanticModel" &&
       item.type !== "FabricTag"
     ) {
       plannedItems.set(item.logicalId, {
@@ -466,14 +469,23 @@ export async function enrichPlanWithFabric(
                   adapters.sparkJob,
                   adapters.oneLakeArtifacts,
                 )
-              : await adapters.pipeline.plan(
-                  workspaceId,
-                  desired,
-                  requirePipelineDefinition(
-                    loadedManifest,
-                    item.logicalId,
-                  ),
-                );
+              : item.type === "DataPipeline"
+                ? await adapters.pipeline.plan(
+                    workspaceId,
+                    desired,
+                    requirePipelineDefinition(
+                      loadedManifest,
+                      item.logicalId,
+                    ),
+                  )
+                : await adapters.semanticModel.plan(
+                    workspaceId,
+                    desired,
+                    requireSemanticModelDefinition(
+                      loadedManifest,
+                      item.logicalId,
+                    ),
+                  );
     plannedItems.set(item.logicalId, {
       ...item,
       action: result.action,
@@ -525,6 +537,20 @@ export async function enrichPlanWithFabric(
     if (!definition) {
       throw new Error(
         `The resolved Data Pipeline definition is missing for '${logicalId}'.`,
+      );
+    }
+    return definition;
+  }
+
+  function requireSemanticModelDefinition(
+    loadedManifest: LoadedManifest,
+    logicalId: string,
+  ) {
+    const definition =
+      loadedManifest.semanticModelDefinitions[logicalId];
+    if (!definition) {
+      throw new Error(
+        `The resolved Semantic Model definition is missing for '${logicalId}'.`,
       );
     }
     return definition;

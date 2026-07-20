@@ -441,6 +441,22 @@ describe("deployment workflow metadata", () => {
     expect(reusable).toContain('--header "$authorization_header"');
   });
 
+  it("validates the packaged Semantic Model example in CI", () => {
+    const workflow = loadYaml(".github/workflows/ci.yml");
+    const steps = workflowSteps(workflow, "test");
+    const validation = steps.find(
+      (step) =>
+        step.name === "Validate Semantic Model example",
+    );
+    const withValues = validation?.with as Record<string, string>;
+
+    expect(validation?.uses).toBe("./");
+    expect(withValues.mode).toBe("validate");
+    expect(withValues.manifest).toBe(
+      "examples/semantic-model/fabric/deployment.yaml",
+    );
+  });
+
   it("keeps the GitHub-hosted inbound network live probe read-only", () => {
     const workflow = loadYaml(
       ".github/workflows/live-fabric-plan.yml",

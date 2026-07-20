@@ -249,18 +249,27 @@ GitHub-hosted runner.
 
 ### Phase 6A: Semantic Models
 
-Add Fabric item type `SemanticModel` using:
+Implementation and live Fabric create/no-op/update validation are complete.
+The `SemanticModel` item type uses:
 
-- TMDL definitions: `definition/**`, `definition.pbism`, optional
-  `diagramLayout.json`
-- TMSL definitions: `model.bim`, `definition.pbism`
+- TMDL desired definitions: `definition/definition.pbism`, one or more
+  `definition/definition/**/*.tmdl` files, and optional
+  `definition/diagramLayout.json` and `definition/.platform`
+- TMSL desired definitions: `definition/model.bim`,
+  `definition/definition.pbism`, and optional
+  `definition/diagramLayout.json` and `definition/.platform`
 - Typed `/semanticModels` create, get, get-definition, update-definition,
-  metadata update, and delete APIs
+  metadata update, and generic soft-delete APIs
+- Existing generic `allow-create`, `allow-update`, and `allow-delete`
+  safeguards, approved-plan drift checks, checkpoints, and recovery proofs
 
 TMDL and TMSL are mutually exclusive. Definitions are canonicalized and hashed
-without credentials. External connection credentials, gateway binding, and
-`bindConnection` are not part of the first adapter. Encrypted sensitivity
-labels that prevent definition reads produce a blocked plan.
+without credentials. `.platform` and `diagramLayout.json` are compared only
+when declared by the desired definition. Sensitivity label declarations are
+rejected, and no `sensitivityLabelSettings` payload is emitted.
+
+Report deployment/binding, Semantic Model connection or gateway binding, and
+`bindConnection` are explicitly deferred to the next increment.
 
 ### Phase 6B: Power BI reports
 
@@ -278,8 +287,9 @@ keeps the reference symbolic, while apply materializes
 `semanticmodelid=<physicalId>`. Verification confirms both the definition hash
 and the resolved model binding.
 
-Semantic Model and report deletion require the generic delete safeguard plus
-item-specific approval. Permanent deletion is not enabled by default.
+Semantic Model deletion uses the existing generic delete safeguard and soft
+deletion path; no new mutation flag is added. Report deletion remains part of
+the report increment. Permanent deletion is not enabled.
 
 ## Remaining Fabric item order
 

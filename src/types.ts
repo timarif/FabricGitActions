@@ -13,6 +13,7 @@ export const FABRIC_ITEM_TYPES = [
   "Notebook",
   "SparkJobDefinition",
   "DataPipeline",
+  "SemanticModel",
 ] as const;
 
 export type FabricItemType = (typeof FABRIC_ITEM_TYPES)[number];
@@ -160,6 +161,7 @@ export interface LoadedManifest {
   sparkJobDefinitions: Record<string, FabricDefinition>;
   sparkJobArtifactSources?: Record<string, SparkJobArtifactSource[]>;
   pipelineDefinitions: Record<string, FabricDefinition>;
+  semanticModelDefinitions: Record<string, FabricDefinition>;
   sparkCustomPoolDefinitions: Record<
     string,
     SparkCustomPoolDefinition
@@ -480,6 +482,7 @@ export interface ApplyCheckpointUpdateIntent {
   phase?:
     | "metadata-submitting"
     | "metadata-updated"
+    | "definition-submitting"
     | "definition-staged"
     | "published"
     | "marker-cleaned";
@@ -489,6 +492,13 @@ export interface ApplyCheckpointUpdateIntent {
   targetVersion?: string;
   materializedDefinitionHash?: string;
   resolvedBindingsHash?: string;
+  /**
+   * SHA-256 of every auxiliary part in the effective Semantic Model
+   * full-replacement (`.platform`, `diagramLayout.json`, and `Copilot/**`).
+   * Written before definition dispatch so recovery can prove that both managed
+   * and preserved auxiliary parts survived an ambiguous replacement.
+   */
+  preservedAuxiliaryHash?: string;
 }
 
 export interface ApplyCheckpointDeleteIntent {
@@ -505,6 +515,12 @@ export interface DefinitionItemUpdateRecoveryState {
   stagedDeploymentMarker?: string;
   publishState?: string;
   targetVersion?: string;
+  /**
+   * SHA-256 of every auxiliary part in the effective Semantic Model
+   * full-replacement. Used during recovery to confirm that an ambiguous
+   * `updateDefinition` did not silently lose managed or preserved parts.
+   */
+  preservedAuxiliaryHash?: string;
 }
 
 export interface ApplyCheckpoint {

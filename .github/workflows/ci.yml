@@ -73,6 +73,13 @@ jobs:
           manifest: examples/live-pipeline/fabric/deployment.yaml
           workspace-id: 00000000-0000-0000-0000-000000000001
 
+      - name: Validate Semantic Model example
+        uses: ./
+        with:
+          mode: validate
+          manifest: examples/semantic-model/fabric/deployment.yaml
+          workspace-id: 00000000-0000-0000-0000-000000000001
+
       - name: Validate managed workspace example
         uses: ./
         with:

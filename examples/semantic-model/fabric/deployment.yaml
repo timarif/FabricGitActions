@@ -1,0 +1,10 @@
+apiVersion: fabric.deploy/v1alpha1
+kind: FabricDeployment
+
+metadata:
+  deploymentId: semantic-model
+
+items:
+  - logicalId: salesModel
+    type: SemanticModel
+    path: items/semantic-models/sales

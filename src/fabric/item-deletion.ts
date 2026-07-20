@@ -11,7 +11,8 @@ export type DeletableFabricItemType =
   | "Environment"
   | "Notebook"
   | "SparkJobDefinition"
-  | "DataPipeline";
+  | "DataPipeline"
+  | "SemanticModel";
 
 export interface FabricWorkspaceItem {
   id: string;
@@ -179,7 +180,8 @@ export function isDeletableFabricItemType(
     itemType === "Environment" ||
     itemType === "Notebook" ||
     itemType === "SparkJobDefinition" ||
-    itemType === "DataPipeline"
+    itemType === "DataPipeline" ||
+    itemType === "SemanticModel"
   );
 }
 
@@ -245,5 +247,7 @@ function displayType(itemType: DeletableFabricItemType): string {
       return "Spark Job Definition";
     case "DataPipeline":
       return "Data Pipeline";
+    case "SemanticModel":
+      return "Semantic Model";
   }
 }

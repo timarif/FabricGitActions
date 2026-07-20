@@ -3,7 +3,7 @@
 A GitHub Marketplace action for declarative Microsoft Fabric deployments, with
 an initial focus on Data Engineering workloads.
 
-> **Current status:** Phases 1 through 4 are implemented. Production
+> **Current status:** Phases 1 through 5 are implemented. Production
 > hardening includes deterministic OneLake staging for Spark Job JVM
 > executables and JAR libraries plus managed Fabric tag creation and additive
 > item assignment, Lakehouse schema creation, and guarded soft deletion for
@@ -14,7 +14,9 @@ an initial focus on Data Engineering workloads.
 > network communication policy, outbound cloud connection and gateway rules,
 > guarded managed private endpoint lifecycle support, and preview inbound
 > firewall, Azure resource instance, and External Data Shares bypass policy
-> support. See
+> support. Phase 6A Semantic Model deployment is implemented for TMSL and
+> TMDL definitions, guarded apply/recovery, generic soft deletion, and live
+> Fabric create/no-op/update validation. See
 > [the roadmap](docs/ROADMAP.md).
 
 For sequential environment deployment, see the
@@ -38,6 +40,7 @@ For operational help and release verification, see
 - Workspace custom Spark pool
 - Spark Job Definition
 - Data Pipeline
+- Semantic Model
 
 ## Quickstart
 
@@ -115,7 +118,7 @@ deletion and capacity unassignment are intentionally unsupported.
 Without authentication, `plan` is offline and reports item actions as
 `unknown`. With Fabric authentication configured, Lakehouses, Environments, Notebooks,
 LakehouseTables bundles, Fabric tags, Spark Job Definitions, Data Pipelines,
-and workspace custom Spark pools are
+Semantic Models, and workspace custom Spark pools are
 classified as `create`, `update`, `delete`, `no-op`, or `blocked`; later workload
 adapters remain `unknown`.
 
@@ -391,9 +394,9 @@ the exact approved pre-state or proves that the staged definition marker,
 staged definition hash, and managed item metadata all still match the approved
 deployment. Environment updates additionally checkpoint metadata, definition,
 publish, and marker-cleanup phases so retries can validate the exact
-intermediate state before continuing. Notebook definition updates checkpoint
-their metadata and definition phases and fail closed when an interrupted
-update cannot be proven safe to resume.
+intermediate state before continuing. Notebook, Data Pipeline, and Semantic
+Model definition updates checkpoint their metadata and definition phases and
+fail closed when an interrupted update cannot be proven safe to resume.
 `plan-hash` identifies the freshly generated `plan-file`;
 `approved-plan-hash` identifies the plan authorized for apply.
 
@@ -434,9 +437,9 @@ declared in `dependsOn`.
 
 ### Guarded item deletion
 
-Lakehouse, Environment, Notebook, Spark Job Definition, and Data Pipeline
-items can declare `desiredState: absent`. Deletion intent must be explicit in
-both the deployment manifest and `item.yaml`:
+Lakehouse, Environment, Notebook, Spark Job Definition, Data Pipeline, and
+Semantic Model items can declare `desiredState: absent`. Deletion intent must
+be explicit in both the deployment manifest and `item.yaml`:
 
 ```yaml
 # deployment.yaml
@@ -533,6 +536,7 @@ deletion-only items use only `item.yaml` as described above.
 | Notebook | Exactly one `.py`, `.scala`, `.r`, `.sql`, or `.ipynb` file under `definition/`; optional `.platform` |
 | Spark Job Definition | Exactly one `definition/main.py` or `definition/main.jar`; optional `SparkJobDefinitionV1.json`, `.platform`, and files under `definition/libs/` |
 | Data Pipeline | Valid JSON object at `definition/pipeline-content.json` |
+| Semantic Model | TMSL: `definition/model.bim` plus `definition/definition.pbism`; TMDL: `definition/definition.pbism` plus one or more `definition/definition/**/*.tmdl` files; optional `definition/diagramLayout.json`, `definition/.platform`, and `definition/Copilot/*.json` / `definition/Copilot/*.md` |
 | Workspace custom Spark pool | `definition/pool.yaml` with node family, node size, autoscale, and dynamic executor allocation settings |
 
 ### Lakehouse table DDL
@@ -664,6 +668,52 @@ semantic JSON comparison and optional managed `.platform` metadata. Accepted
 create and definition-update operations are checkpointed and verified through
 Fabric readback before apply completes.
 
+Semantic Models deploy the official `TMSL` or `TMDL` public definition
+formats. TMSL uses `model.bim`; TMDL preserves every declared `.tmdl` part
+under `definition/`; both require `definition.pbism`. The `definition.pbism`
+file must use the documented `definitionProperties/1.x.x/schema.json` schema
+family (for example, `definitionProperties/1.0.0/schema.json`).
+Version `1.0` is TMSL-only; version `4.0` and above supports both TMSL and
+TMDL; versions `2.x`/`3.x` are rejected. JSON parts are compared semantically
+and TMDL line endings are normalized. Fabric normalizes supported
+`definition.pbism` versions during import and removes empty optional TMSL
+collections, so hashing ignores the serialized PBISM version and empty
+`model.bim` arrays while still comparing PBISM settings and every non-empty
+model collection.
+
+Definition updates issue a **full replacement** to `updateDefinition`. To
+prevent the replacement from silently erasing service-managed state, the
+action always fetches the current definition first and preserves any
+**auxiliary parts** the desired definition omits — specifically `.platform`,
+`diagramLayout.json`, and any `Copilot/*.json` or `Copilot/*.md` files. The
+post-update readback verifies the full effective replacement (including
+preserved parts). A recovery checkpoint records the hash of the preserved
+parts; if those parts are missing after an interrupted update, the ambiguous
+state is not silently accepted. Service-synchronized `.platform` display name
+and description fields are verified through item metadata rather than the
+auxiliary preservation hash.
+
+Managed `.platform` must use the **v2 structure**: the downloadable v2
+`gitIntegration/platformProperties/2.0.0` schema, version `"2.0"` either at
+the top level or in `config.version`, and `config.logicalId` as a valid UUID that
+uniquely identifies the item's stable logical identity. No two desired
+Semantic Model definitions in a manifest may share the same `config.logicalId`.
+If both the current service definition and the desired definition carry a
+`.platform` `config.logicalId` and they differ, planning returns `blocked`
+with an actionable message — overwriting an existing logical identity is
+never performed silently. When a desired logical ID is present, discovery can
+resolve a renamed model across the workspace before falling back to folder and
+display-name matching. Sensitivity labels in `.platform` are rejected; manage
+them outside the definition deployment.
+
+Optional `Copilot/` files (`.json` and `.md`) under `definition/` are
+supported as managed auxiliary parts. Declared Copilot files are included in
+the hash comparison, while current Copilot files omitted by the desired
+definition are preserved across updates.
+
+Connection, gateway, and report binding are intentionally deferred to the
+next increment. See [`examples/semantic-model`](examples/semantic-model).
+
 Workspace custom Spark pools use the stable workspace
 `/spark/pools` API. The adapter manages only workspace pools, rejects Starter
 Pool and capacity-level pool collisions, and requires the deployment identity
@@ -736,6 +786,7 @@ The action currently implements:
 - Spark Job Definition V2 mapping, create/update, and read-back verification
 - Immutable OneLake staging for Spark Job JVM executables and JAR libraries
 - Data Pipeline definition mapping, create/update, and read-back verification
+- Semantic Model TMSL/TMDL mapping, create/update, and read-back verification
 - Workspace custom Spark pool mapping, create/update, and read-back verification
 - Fabric tenant/domain tag creation and additive item tag assignment
 - Published Environment definition proof and target-version advancement checks
@@ -743,7 +794,7 @@ The action currently implements:
 - Authenticated create/update/no-op planning
 - Approved-plan integrity and source-commit binding
 - Pre-mutation drift and authorization checks
-- Lakehouse, Environment, Notebook, Spark Job Definition, Data Pipeline, and workspace custom Spark pool create/update/no-op apply
+- Lakehouse, Environment, Notebook, Spark Job Definition, Data Pipeline, Semantic Model, and workspace custom Spark pool create/update/no-op apply
 - Checkpoint and result artifacts
 
 ## Live test workflow

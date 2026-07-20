@@ -336,7 +336,8 @@
               "SparkCustomPool",
               "Notebook",
               "SparkJobDefinition",
-              "DataPipeline"
+              "DataPipeline",
+              "SemanticModel"
             ]
           },
           "path": {

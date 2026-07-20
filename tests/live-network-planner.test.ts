@@ -35,6 +35,7 @@ function loadedManifest(
     notebookDefinitions: {},
     sparkJobDefinitions: {},
     pipelineDefinitions: {},
+    semanticModelDefinitions: {},
     sparkCustomPoolDefinitions: {},
     manifest: {
       apiVersion: "fabric.deploy/v1alpha1",
@@ -61,6 +62,7 @@ function baseAdapters(networkProtectionPlan: PlannedNetworkProtection | undefine
     notebook: unsupportedAdapter(),
     sparkJob: unsupportedAdapter(),
     pipeline: unsupportedAdapter(),
+    semanticModel: unsupportedAdapter(),
     sparkCustomPool: unsupportedAdapter(),
     networkProtection: {
       plan: vi.fn(async () => networkProtectionPlan as PlannedNetworkProtection),
