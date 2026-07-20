@@ -613,7 +613,7 @@ describe("deployment workflow metadata", () => {
     );
     expect(concurrency.group).toBe("marketplace-release");
     expect(actions).toContain(
-      "actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a",
+      "actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373",
     );
     expect(commands).toContain("npm sbom");
     expect(commands).toContain("gh release create");
