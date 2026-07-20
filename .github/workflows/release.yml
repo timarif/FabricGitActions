@@ -20,11 +20,11 @@ jobs:
     environment: marketplace-release
 
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           fetch-depth: 0
 
-      - uses: actions/setup-node@v5
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with:
           node-version: 24
           cache: npm
@@ -96,7 +96,7 @@ jobs:
           echo "sbom=$sbom" >> "$GITHUB_OUTPUT"
 
       - name: Attest release provenance
-        uses: actions/attest-build-provenance@v3
+        uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3
         with:
           subject-path: |
             ${{ steps.evidence.outputs.archive }}
@@ -104,7 +104,7 @@ jobs:
             release/SHA256SUMS
 
       - name: Upload release evidence
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
         with:
           name: marketplace-release-${{ github.ref_name }}
           path: release
@@ -139,7 +139,7 @@ jobs:
               --verify-tag \
               --target "$GITHUB_SHA" \
               --generate-notes \
-              --title "Microsoft Fabric Deploy ${RELEASE_TAG}"
+              --title "Fabric Deploy ${RELEASE_TAG}"
           fi
 
       - name: Update Marketplace major tag
@@ -179,5 +179,5 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git tag --annotate --force "$major_tag" "$GITHUB_SHA" \
-            --message "Microsoft Fabric Deploy ${major_tag}"
+            --message "Fabric Deploy ${major_tag}"
           git push origin "refs/tags/${major_tag}" --force

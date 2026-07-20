@@ -1,3 +1,3 @@
-displayName: tva_GitActionTest_Lakehouse
+displayName: Fabric_Deploy_Lakehouse
 description: Lakehouse deployed by the FabricGitActions Phase 3 live workflow
 desiredState: present

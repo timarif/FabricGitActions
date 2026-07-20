@@ -29,6 +29,7 @@ import { NetworkProtectionAdapter } from "./fabric/network-protection";
 import { NotebookAdapter } from "./fabric/notebook";
 import { OneLakeArtifactStager } from "./fabric/onelake-artifacts";
 import { PipelineAdapter } from "./fabric/pipeline";
+import { ReportAdapter } from "./fabric/report";
 import { SemanticModelAdapter } from "./fabric/semantic-model";
 import { SparkCustomPoolAdapter } from "./fabric/spark-custom-pool";
 import { assertSparkJobArtifactEndpoints } from "./fabric/spark-job-artifacts";
@@ -212,6 +213,7 @@ export async function run(): Promise<void> {
     let sparkJobAdapter: SparkJobAdapter | undefined;
     let pipelineAdapter: PipelineAdapter | undefined;
     let semanticModelAdapter: SemanticModelAdapter | undefined;
+    let reportAdapter: ReportAdapter | undefined;
     let sparkCustomPoolAdapter: SparkCustomPoolAdapter | undefined;
     let tagAdapter: FabricTagAdapter | undefined;
     let workspaceAdapter: WorkspaceAdapter | undefined;
@@ -253,6 +255,7 @@ export async function run(): Promise<void> {
       sparkJobAdapter = new SparkJobAdapter(client);
       pipelineAdapter = new PipelineAdapter(client);
       semanticModelAdapter = new SemanticModelAdapter(client);
+      reportAdapter = new ReportAdapter(client);
       sparkCustomPoolAdapter = new SparkCustomPoolAdapter(client);
       tagAdapter = new FabricTagAdapter(client);
       workspaceAdapter = new WorkspaceAdapter(client);
@@ -371,6 +374,7 @@ export async function run(): Promise<void> {
         !sparkJobAdapter ||
         !pipelineAdapter ||
         !semanticModelAdapter ||
+        !reportAdapter ||
         !sparkCustomPoolAdapter ||
         !tagAdapter ||
         !lakehouseTablesAdapter ||
@@ -390,6 +394,7 @@ export async function run(): Promise<void> {
         sparkJob: sparkJobAdapter,
         pipeline: pipelineAdapter,
         semanticModel: semanticModelAdapter,
+        report: reportAdapter,
         sparkCustomPool: sparkCustomPoolAdapter,
         tags: tagAdapter,
         lakehouseTables: lakehouseTablesAdapter,
@@ -510,6 +515,7 @@ export async function run(): Promise<void> {
         !sparkJobAdapter ||
         !pipelineAdapter ||
         !semanticModelAdapter ||
+        !reportAdapter ||
         !sparkCustomPoolAdapter ||
         !tagAdapter ||
         !workspaceAdapter
@@ -531,6 +537,7 @@ export async function run(): Promise<void> {
         sparkJobAdapter,
         pipelineAdapter,
         semanticModelAdapter,
+        reportAdapter,
         sparkCustomPoolAdapter,
         tagAdapter,
         workspaceAdapter,

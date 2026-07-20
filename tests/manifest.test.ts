@@ -84,7 +84,7 @@ kind: FabricDeployment
 metadata:
   deploymentId: workspace-only
 workspace:
-  displayName: tva-Analytics
+  displayName: Fabric Deploy Analytics
   description: Managed workspace
   capacityId: capacity-1
 items: []
@@ -95,7 +95,7 @@ items: []
     const loaded = loadManifest(manifestPath);
 
     expect(loaded.manifest.workspace).toEqual({
-      displayName: "tva-Analytics",
+      displayName: "Fabric Deploy Analytics",
       description: "Managed workspace",
       capacityId: "capacity-1",
     });

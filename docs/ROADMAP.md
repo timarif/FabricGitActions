@@ -66,8 +66,10 @@
 
 - [x] Semantic Model TMSL/TMDL definition deployment implementation
 - [x] Semantic Model live Fabric create/no-op/update validation
-- [ ] Power BI report deployment and Semantic Model binding
-- [ ] Power BI report guarded deletion and live validation
+- [x] Power BI report deployment and Semantic Model binding
+- [ ] Power BI report deletion with stable identity proof
+- [x] PBIR report live create/no-op/update validation
+- [ ] PBIR-Legacy report live create/no-op/update validation
 
 ## Later phases
 

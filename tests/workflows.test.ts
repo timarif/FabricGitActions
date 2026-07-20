@@ -441,12 +441,36 @@ describe("deployment workflow metadata", () => {
     expect(reusable).toContain('--header "$authorization_header"');
   });
 
-  it("validates the packaged Semantic Model example in CI", () => {
+  it("pins external workflow actions to immutable commits", () => {
+    const workflowDirectory = path.join(
+      process.cwd(),
+      ".github",
+      "workflows",
+    );
+    const workflowFiles = readdirSync(workflowDirectory).filter(
+      (file) => file.endsWith(".yml"),
+    );
+
+    for (const file of workflowFiles) {
+      const source = readFileSync(
+        path.join(workflowDirectory, file),
+        "utf8",
+      );
+      const externalActions = source.matchAll(
+        /uses:\s+[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+@([^\s#]+)/g,
+      );
+      for (const match of externalActions) {
+        expect(match[1], file).toMatch(/^[0-9a-f]{40}$/);
+      }
+    }
+  });
+
+  it("validates the packaged Semantic Model and Report example in CI", () => {
     const workflow = loadYaml(".github/workflows/ci.yml");
     const steps = workflowSteps(workflow, "test");
     const validation = steps.find(
       (step) =>
-        step.name === "Validate Semantic Model example",
+        step.name === "Validate Semantic Model and Report example",
     );
     const withValues = validation?.with as Record<string, string>;
 
@@ -589,7 +613,7 @@ describe("deployment workflow metadata", () => {
     );
     expect(concurrency.group).toBe("marketplace-release");
     expect(actions).toContain(
-      "actions/attest-build-provenance@v3",
+      "actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a",
     );
     expect(commands).toContain("npm sbom");
     expect(commands).toContain("gh release create");

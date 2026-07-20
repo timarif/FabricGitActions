@@ -59,7 +59,7 @@ describe("item definition validation", () => {
   it("enforces Fabric Lakehouse naming rules", () => {
     const invalid = createDeployment(
       "Lakehouse",
-      "displayName: tva-GitActionTest Lakehouse\n",
+      "displayName: Fabric Deploy Lakehouse\n",
     );
 
     expect(() => loadManifest(invalid.manifestPath)).toThrow(

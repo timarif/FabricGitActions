@@ -1,4 +1,4 @@
-displayName: tva_GitActionTest_DDL_Lakehouse
+displayName: Fabric_Deploy_DDL_Lakehouse
 description: Schema-enabled Lakehouse for the Phase 3 table DDL live fixture
 desiredState: present
 enableSchemas: true

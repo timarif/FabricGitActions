@@ -17,10 +17,17 @@ import {
   hashSparkJobDefinition,
   sparkJobIncludesPlatformPart,
 } from "./spark-job-definition";
+import {
+  hashReportDefinition,
+  reportDefinitionFormat,
+  reportIncludesDiagramLayoutPart,
+  reportIncludesPlatformPart,
+} from "./report-definition";
 
 const CONFIG_PATH = "SparkJobDefinitionV1.json";
+const REPORT_PROPERTIES_PATH = "definition.pbir";
 
-const SUPPORTED_TARGETS = [
+const SPARK_SUPPORTED_TARGETS = [
   {
     referenceName: "defaultLakehouse",
     target: "/properties/defaultLakehouseArtifactId",
@@ -35,16 +42,28 @@ const SUPPORTED_TARGETS = [
   },
 ] as const;
 
+const REPORT_SUPPORTED_TARGETS = [
+  {
+    referenceName: "semanticModel",
+    target: "/datasetReference/byConnection/connectionString",
+    targetType: "SemanticModel",
+  },
+] as const;
+
 export type SupportedLogicalReferenceTarget =
-  (typeof SUPPORTED_TARGETS)[number]["target"];
+  | (typeof SPARK_SUPPORTED_TARGETS)[number]["target"]
+  | (typeof REPORT_SUPPORTED_TARGETS)[number]["target"];
 
 export type SparkJobArtifactIdField =
-  (typeof SUPPORTED_TARGETS)[number]["configurationField"];
+  (typeof SPARK_SUPPORTED_TARGETS)[number]["configurationField"];
 
 export interface CanonicalResolvedBinding {
   logicalId: string;
   valueFrom: `items.${string}.id`;
-  targetType: Extract<FabricItemType, "Lakehouse" | "Environment">;
+  targetType: Extract<
+    FabricItemType,
+    "Lakehouse" | "Environment" | "SemanticModel"
+  >;
 }
 
 export type CanonicalResolvedBindingMap = Readonly<
@@ -63,6 +82,12 @@ export interface LogicalReferenceValidationInput {
 
 export interface SparkJobLogicalReferenceMaterialization {
   definition: SparkJobDefinitionSnapshot;
+  materializedDefinitionHash: string;
+  resolvedBindingsHash: string;
+}
+
+export interface ReportLogicalReferenceMaterialization {
+  definition: FabricDefinition;
   materializedDefinitionHash: string;
   resolvedBindingsHash: string;
 }
@@ -87,6 +112,9 @@ export function validateLogicalReferenceDeclarations(
   if (input.item.type === "LakehouseTables") {
     validateLakehouseTablesReference(input);
     return {};
+  }
+  if (input.item.type === "Report") {
+    return validateReportReference(input);
   }
   const declarations =
     Object.keys(input.definition.references ?? {}).length > 0 ||
@@ -157,7 +185,7 @@ export function validateLogicalReferenceDeclarations(
   for (const [referenceName, logicalId] of Object.entries(
     input.definition.references ?? {},
   ).sort(([left], [right]) => compareCanonicalStrings(left, right))) {
-    const supported = SUPPORTED_TARGETS.find(
+    const supported = SPARK_SUPPORTED_TARGETS.find(
       (candidate) => candidate.referenceName === referenceName,
     );
     if (!supported) {
@@ -178,7 +206,7 @@ export function validateLogicalReferenceDeclarations(
   }
 
   for (const binding of input.definition.bindings ?? []) {
-    const supported = SUPPORTED_TARGETS.find(
+    const supported = SPARK_SUPPORTED_TARGETS.find(
       (candidate) => candidate.target === binding.target,
     );
     if (!supported) {
@@ -186,6 +214,7 @@ export function validateLogicalReferenceDeclarations(
         `Item '${input.item.logicalId}' has unsupported binding target '${binding.target}'.`,
       );
     }
+
     const logicalId = parseBindingSource(input.item.logicalId, binding);
     addResolvedBinding(
       input.item,
@@ -197,6 +226,71 @@ export function validateLogicalReferenceDeclarations(
       supported.targetType,
       `binding '${binding.target}'`,
     );
+  }
+
+  function validateReportReference(
+    input: LogicalReferenceValidationInput,
+  ): CanonicalResolvedBindingMap {
+    const graph = indexItemGraph(input.itemGraph);
+    const graphItem = graph.get(input.item.logicalId);
+    if (!graphItem || graphItem.type !== "Report") {
+      throw new Error(
+        `Item '${input.item.logicalId}' is missing or has a conflicting type in the manifest item graph.`,
+      );
+    }
+    const dependencies = new Set(graphItem.dependsOn ?? []);
+    const resolved = new Map<
+      SupportedLogicalReferenceTarget,
+      CanonicalResolvedBinding
+    >();
+    for (const [referenceName, logicalId] of Object.entries(
+      input.definition.references ?? {},
+    ).sort(([left], [right]) => compareCanonicalStrings(left, right))) {
+      const supported = REPORT_SUPPORTED_TARGETS.find(
+        (candidate) => candidate.referenceName === referenceName,
+      );
+      if (!supported) {
+        throw new Error(
+          `Item '${input.item.logicalId}' has unsupported logical reference '${referenceName}'.`,
+        );
+      }
+      addResolvedBinding(
+        input.item,
+        graph,
+        dependencies,
+        resolved,
+        supported.target,
+        logicalId,
+        supported.targetType,
+        `reference '${referenceName}'`,
+      );
+    }
+    for (const binding of input.definition.bindings ?? []) {
+      const supported = REPORT_SUPPORTED_TARGETS.find(
+        (candidate) => candidate.target === binding.target,
+      );
+      if (!supported) {
+        throw new Error(
+          `Item '${input.item.logicalId}' has unsupported binding target '${binding.target}'.`,
+        );
+      }
+      addResolvedBinding(
+        input.item,
+        graph,
+        dependencies,
+        resolved,
+        supported.target,
+        parseBindingSource(input.item.logicalId, binding),
+        supported.targetType,
+        `binding '${binding.target}'`,
+      );
+    }
+    if (resolved.size !== 1) {
+      throw new Error(
+        `Item '${input.item.logicalId}' (Report) must declare exactly one references.semanticModel or supported semantic model binding.`,
+      );
+    }
+    return Object.fromEntries(resolved) as CanonicalResolvedBindingMap;
   }
 
   return Object.fromEntries(
@@ -234,7 +328,7 @@ export function materializeSparkJobDefinitionSnapshot(
   for (const [target, binding] of Object.entries(bindings).sort(
     ([left], [right]) => compareCanonicalStrings(left, right),
   )) {
-    const supported = SUPPORTED_TARGETS.find(
+    const supported = SPARK_SUPPORTED_TARGETS.find(
       (candidate) => candidate.target === target,
     );
     if (!supported || !isCanonicalResolvedBinding(binding)) {
@@ -242,6 +336,7 @@ export function materializeSparkJobDefinitionSnapshot(
         `Unsupported or malformed resolved logical binding '${target}'.`,
       );
     }
+
     if (binding.targetType !== supported.targetType) {
       throw new Error(
         `Resolved logical binding '${target}' must target item type '${supported.targetType}'.`,
@@ -272,6 +367,78 @@ export function materializeSparkJobDefinitionSnapshot(
     ...snapshot,
     format: snapshot.format ?? "SparkJobDefinitionV2",
     parts: clonedParts,
+  };
+}
+
+export function materializeReportDefinitionWithProof(
+  snapshot: FabricDefinition,
+  bindings: CanonicalResolvedBindingMap,
+  physicalIds: Readonly<Record<string, string>>,
+): ReportLogicalReferenceMaterialization {
+  const entries = Object.entries(bindings);
+  if (entries.length !== 1) {
+    throw new Error(
+      "Report definition requires exactly one resolved Semantic Model binding.",
+    );
+  }
+  const [target, binding] = entries[0]!;
+  const supported = REPORT_SUPPORTED_TARGETS.find(
+    (candidate) => candidate.target === target,
+  );
+  if (
+    !supported ||
+    !isCanonicalResolvedBinding(binding) ||
+    binding.targetType !== "SemanticModel"
+  ) {
+    throw new Error(
+      `Unsupported or malformed resolved Report logical binding '${target}'.`,
+    );
+  }
+  const physicalId = physicalIds[binding.logicalId];
+  if (typeof physicalId !== "string" || physicalId.trim() === "") {
+    throw new Error(
+      `Physical ID is missing for logicalId '${binding.logicalId}' required by '${target}'.`,
+    );
+  }
+  reportDefinitionFormat(snapshot);
+  const propertyParts = snapshot.parts.filter(
+    (part) => part.path === REPORT_PROPERTIES_PATH,
+  );
+  if (propertyParts.length !== 1) {
+    throw new Error(
+      "Report definition requires exactly one definition.pbir part.",
+    );
+  }
+  const definition: FabricDefinition = {
+    ...snapshot,
+    format: reportDefinitionFormat(snapshot),
+    parts: snapshot.parts
+      .map((part) =>
+        part.path === REPORT_PROPERTIES_PATH
+          ? materializeReportPropertiesPart(part, physicalId)
+          : { ...part },
+      )
+      .sort((left, right) =>
+        compareCanonicalStrings(left.path, right.path),
+      ),
+  };
+  return {
+    definition,
+    materializedDefinitionHash: hashReportDefinition(
+      definition,
+      reportIncludesPlatformPart(definition),
+      reportIncludesDiagramLayoutPart(definition),
+    ),
+    resolvedBindingsHash: sha256(
+      stableJson([
+        {
+          target,
+          logicalId: binding.logicalId,
+          targetType: binding.targetType,
+          physicalId,
+        },
+      ]),
+    ),
   };
 }
 
@@ -381,7 +548,7 @@ function addResolvedBinding(
   >,
   target: SupportedLogicalReferenceTarget,
   logicalId: string,
-  targetType: "Lakehouse" | "Environment",
+  targetType: "Lakehouse" | "Environment" | "SemanticModel",
   declaration: string,
 ): void {
   if (resolved.has(target)) {
@@ -440,8 +607,93 @@ function isCanonicalResolvedBinding(
     binding.logicalId.length > 0 &&
     binding.valueFrom === `items.${binding.logicalId}.id` &&
     (binding.targetType === "Lakehouse" ||
-      binding.targetType === "Environment")
+      binding.targetType === "Environment" ||
+      binding.targetType === "SemanticModel")
   );
+}
+
+function materializeReportPropertiesPart(
+  part: FabricDefinitionPart,
+  semanticModelId: string,
+): FabricDefinitionPart {
+  if (part.payloadType !== "InlineBase64") {
+    throw new Error(
+      `'${REPORT_PROPERTIES_PATH}' must use payloadType 'InlineBase64'.`,
+    );
+  }
+  const properties = parseStrictJsonObject(
+    part.payload,
+    REPORT_PROPERTIES_PATH,
+  );
+  const datasetReference = properties.datasetReference;
+  if (
+    datasetReference === null ||
+    typeof datasetReference !== "object" ||
+    Array.isArray(datasetReference)
+  ) {
+    throw new Error(
+      "Report definition.pbir must include a datasetReference object.",
+    );
+  }
+  const reference = datasetReference as Record<string, unknown>;
+  if (Object.hasOwn(reference, "byPath")) {
+    throw new Error(
+      "Report definition.pbir datasetReference.byPath is not supported for REST deployment; use byConnection.",
+    );
+  }
+  const byConnection = reference.byConnection;
+  if (
+    byConnection === null ||
+    typeof byConnection !== "object" ||
+    Array.isArray(byConnection)
+  ) {
+    throw new Error(
+      "Report definition.pbir must include datasetReference.byConnection.",
+    );
+  }
+  return {
+    ...part,
+    payload: Buffer.from(
+      stableJson({
+        ...properties,
+        datasetReference: {
+          ...reference,
+          byConnection: {
+            connectionString: `semanticmodelid=${semanticModelId}`,
+          },
+        },
+      }),
+      "utf8",
+    ).toString("base64"),
+  };
+}
+
+function parseStrictJsonObject(
+  payload: string,
+  partPath: string,
+): Record<string, unknown> {
+  if (!isCanonicalBase64(payload)) {
+    throw new Error(
+      `'${partPath}' must contain canonical base64 data.`,
+    );
+  }
+  let parsed: unknown;
+  try {
+    const json = new TextDecoder("utf-8", { fatal: true }).decode(
+      Buffer.from(payload, "base64"),
+    );
+    parsed = JSON.parse(json);
+  } catch {
+    throw new Error(`'${partPath}' must contain valid UTF-8 JSON.`);
+  }
+  if (
+    parsed === null ||
+    typeof parsed !== "object" ||
+    Array.isArray(parsed)
+  ) {
+    throw new Error(`'${partPath}' must contain a JSON object.`);
+  }
+  return parsed as Record<string, unknown>;
 }
 
 function materializeConfigurationPart(

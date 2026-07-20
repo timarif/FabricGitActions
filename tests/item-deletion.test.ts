@@ -31,6 +31,10 @@ describe("generic Fabric item deletion adapter", () => {
     );
   });
 
+  it("does not permit name-based Report deletion", () => {
+    expect(isDeletableFabricItemType("Report")).toBe(false);
+  });
+
   it("plans an already-absent item as a no-op in its exact folder", async () => {
     let requestedUrl = "";
     const adapter = createAdapter(

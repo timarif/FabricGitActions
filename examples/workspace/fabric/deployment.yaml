@@ -6,7 +6,7 @@ metadata:
 
 workspace:
   displayName: ${var.WORKSPACE_NAME}
-  description: Managed by the Microsoft Fabric Deploy action
+  description: Managed by the Fabric Deploy action
   capacityId: ${var.FABRIC_CAPACITY_ID}
 
 items: []

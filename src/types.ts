@@ -14,6 +14,7 @@ export const FABRIC_ITEM_TYPES = [
   "SparkJobDefinition",
   "DataPipeline",
   "SemanticModel",
+  "Report",
 ] as const;
 
 export type FabricItemType = (typeof FABRIC_ITEM_TYPES)[number];
@@ -162,6 +163,7 @@ export interface LoadedManifest {
   sparkJobArtifactSources?: Record<string, SparkJobArtifactSource[]>;
   pipelineDefinitions: Record<string, FabricDefinition>;
   semanticModelDefinitions: Record<string, FabricDefinition>;
+  reportDefinitions?: Record<string, FabricDefinition>;
   sparkCustomPoolDefinitions: Record<
     string,
     SparkCustomPoolDefinition
@@ -493,8 +495,8 @@ export interface ApplyCheckpointUpdateIntent {
   materializedDefinitionHash?: string;
   resolvedBindingsHash?: string;
   /**
-   * SHA-256 of every auxiliary part in the effective Semantic Model
-   * full-replacement (`.platform`, `diagramLayout.json`, and `Copilot/**`).
+   * SHA-256 of every auxiliary part in an effective full-replacement
+   * definition (for example Semantic Model or Report optional parts).
    * Written before definition dispatch so recovery can prove that both managed
    * and preserved auxiliary parts survived an ambiguous replacement.
    */
@@ -516,8 +518,8 @@ export interface DefinitionItemUpdateRecoveryState {
   publishState?: string;
   targetVersion?: string;
   /**
-   * SHA-256 of every auxiliary part in the effective Semantic Model
-   * full-replacement. Used during recovery to confirm that an ambiguous
+   * SHA-256 of every auxiliary part in the effective full-replacement.
+   * Used during recovery to confirm that an ambiguous
    * `updateDefinition` did not silently lose managed or preserved parts.
    */
   preservedAuxiliaryHash?: string;

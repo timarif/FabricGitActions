@@ -13,7 +13,7 @@ rebuilds it and fails if the generated file differs.
 4. Create and push an annotated immutable tag matching the package version:
 
    ```bash
-   git tag -a v1.2.3 -m "Microsoft Fabric Deploy v1.2.3"
+   git tag -a v1.2.3 -m "Fabric Deploy v1.2.3"
    git push origin v1.2.3
    ```
 
@@ -53,7 +53,7 @@ Verify GitHub provenance with the GitHub CLI:
 
 ```bash
 gh attestation verify fabric-deploy-v1.2.3.tar.gz \
-  --repo OWNER/REPOSITORY
+  --repo timarif/FabricGitActions
 ```
 
 Consumers should pin an immutable version for maximum reproducibility. The

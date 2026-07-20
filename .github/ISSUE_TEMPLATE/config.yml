@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/timarif/FabricGitActions/security/advisories/new
+    about: Report vulnerabilities privately through GitHub Security Advisories.
+  - name: Microsoft Fabric support
+    url: https://support.fabric.microsoft.com/
+    about: Use Microsoft support for tenant, capacity, licensing, or service incidents.

@@ -1,4 +1,4 @@
-displayName: tva-GitActionTest Logical References Spark Job
+displayName: Fabric Deploy Logical References Spark Job
 description: Spark Job deployed with logical Lakehouse and Environment references
 desiredState: present
 

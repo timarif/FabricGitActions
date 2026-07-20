@@ -1,0 +1,46 @@
+name: Bug report
+description: Report a reproducible problem in Fabric Deploy
+title: "[Bug]: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Remove tenant data, credentials, tokens, connection strings, and confidential definitions before submitting.
+  - type: input
+    id: version
+    attributes:
+      label: Action version
+      description: Use an immutable tag such as v1.2.3 or a commit SHA.
+    validations:
+      required: true
+  - type: dropdown
+    id: mode
+    attributes:
+      label: Deployment mode
+      options:
+        - validate
+        - plan
+        - apply
+    validations:
+      required: true
+  - type: textarea
+    id: description
+    attributes:
+      label: Problem
+      description: Describe the expected and actual behavior.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Minimal reproduction
+      description: Provide a sanitized manifest, workflow fragment, and reproduction steps.
+    validations:
+      required: true
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Sanitized diagnostics
+      description: Include relevant HTTP status, error code, request ID, and logs.

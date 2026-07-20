@@ -92,7 +92,7 @@ describe("deployment planner", () => {
       manifest: {
         ...loadedManifest.manifest,
         workspace: {
-          displayName: "tva-Analytics",
+          displayName: "Fabric Deploy Analytics",
           description: "Managed workspace",
           capacityId: "capacity-1",
         },
@@ -110,7 +110,7 @@ describe("deployment planner", () => {
 
     expect(plan.workspaceId).toMatch(/^pending:[a-f0-9]{64}$/);
     expect(plan.workspace).toMatchObject({
-      displayName: "tva-Analytics",
+      displayName: "Fabric Deploy Analytics",
       action: "unknown",
     });
     expect(plan.stages).toEqual([]);

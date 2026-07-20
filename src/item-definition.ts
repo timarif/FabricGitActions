@@ -10,6 +10,7 @@ import { parse } from "yaml";
 
 import { loadEnvironmentDefinition } from "./fabric/definition";
 import { loadNotebookDefinition } from "./fabric/notebook-definition";
+import { loadReportDefinition } from "./fabric/report-definition";
 import { loadSemanticModelDefinition } from "./fabric/semantic-model-definition";
 import {
   assertValidSparkCustomPoolItemDefinition,
@@ -183,6 +184,7 @@ function validateDeletionDefinition(
     case "FabricTag":
     case "LakehouseTables":
     case "SparkCustomPool":
+    case "Report":
       throw new Error(
         `Item '${item.logicalId}' of type ${item.type} does not support desiredState: absent.`,
       );
@@ -366,6 +368,10 @@ function validateTypeSpecificDefinition(
     case "SemanticModel":
       definitionDirectory(item, itemDirectory);
       loadSemanticModelDefinition(itemDirectory);
+      return;
+    case "Report":
+      definitionDirectory(item, itemDirectory);
+      loadReportDefinition(itemDirectory);
       return;
     default:
       assertNever(item.type);

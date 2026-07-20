@@ -104,7 +104,7 @@ describe("network protection live planning", () => {
 
   it("blocks network protection when the managed workspace is pending creation and no explicit workspaceId is set", async () => {
     const loaded = loadedManifest({
-      workspace: { displayName: "tva-Analytics" },
+      workspace: { displayName: "Fabric Deploy Analytics" },
       networkProtection: {
         ...desiredNetworkProtection,
         inboundFirewallRules: {
@@ -184,7 +184,7 @@ describe("network protection live planning", () => {
 
   it("does not block network protection with an independent explicit workspaceId, even while the managed workspace is pending creation", async () => {
     const loaded = loadedManifest({
-      workspace: { displayName: "tva-Analytics" },
+      workspace: { displayName: "Fabric Deploy Analytics" },
       networkProtection: {
         ...desiredNetworkProtection,
         workspaceId: INDEPENDENT_WORKSPACE_ID,
@@ -226,7 +226,7 @@ describe("network protection live planning", () => {
 
   it("blocks network protection when the managed workspace plan itself is blocked", async () => {
     const loaded = loadedManifest({
-      workspace: { displayName: "tva-Analytics" },
+      workspace: { displayName: "Fabric Deploy Analytics" },
       networkProtection: desiredNetworkProtection,
     });
     const plan = buildPlan(loaded, { mode: "plan", environment: "dev" });

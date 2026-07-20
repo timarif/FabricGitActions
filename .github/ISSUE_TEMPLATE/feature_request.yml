@@ -1,0 +1,23 @@
+name: Feature request
+description: Propose a Fabric workload or deployment capability
+title: "[Feature]: "
+labels:
+  - enhancement
+body:
+  - type: textarea
+    id: scenario
+    attributes:
+      label: Deployment scenario
+      description: Describe the user outcome and Fabric workload involved.
+    validations:
+      required: true
+  - type: textarea
+    id: contract
+    attributes:
+      label: Proposed declarative contract
+      description: Show sanitized manifest or item.yaml examples when possible.
+  - type: textarea
+    id: safety
+    attributes:
+      label: Mutation and recovery considerations
+      description: Identify destructive operations, permissions, and expected safeguards.

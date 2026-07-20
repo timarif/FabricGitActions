@@ -51,7 +51,7 @@ jobs:
       create-count: ${{ steps.fabric-plan.outputs.create-count }}
 
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
 
       - name: Build deployment variables
         id: deployment-vars
@@ -101,7 +101,7 @@ jobs:
           echo "attempt=${GITHUB_RUN_ATTEMPT}" >> "$GITHUB_OUTPUT"
 
       - name: Upload approved plan
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
         with:
           name: ${{ steps.plan-artifact.outputs.name }}
           path: approved-plan/fabric-plan.json
@@ -115,10 +115,10 @@ jobs:
     environment: fabric-live-apply
 
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
 
       - name: Download approved plan
-        uses: actions/download-artifact@v5
+        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
         with:
           name: ${{ needs.plan.outputs.approved-plan-artifact }}
           path: approved-plan
@@ -148,7 +148,7 @@ jobs:
 
       - name: Download prior apply artifacts
         if: ${{ steps.prior-attempt.outputs.number != '' }}
-        uses: actions/download-artifact@v5
+        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
         with:
           name: fabric-apply-result-${{ github.run_id }}-${{ steps.prior-attempt.outputs.number }}
           path: prior-apply
@@ -188,7 +188,7 @@ jobs:
 
       - name: Upload apply artifacts
         if: ${{ always() }}
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
         with:
           name: fabric-apply-result-${{ github.run_id }}-${{ github.run_attempt }}
           path: |

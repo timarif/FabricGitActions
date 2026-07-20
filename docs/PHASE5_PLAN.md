@@ -273,8 +273,8 @@ Report deployment/binding, Semantic Model connection or gateway binding, and
 
 ### Phase 6B: Power BI reports
 
-Add Fabric item type `Report` using PBIR first and PBIR-Legacy as an alternate
-format. A report declares:
+Implementation is complete for Fabric item type `Report` using PBIR first and
+PBIR-Legacy as an alternate format. A report declares:
 
 ```yaml
 references:
@@ -288,8 +288,25 @@ keeps the reference symbolic, while apply materializes
 and the resolved model binding.
 
 Semantic Model deletion uses the existing generic delete safeguard and soft
-deletion path; no new mutation flag is added. Report deletion remains part of
-the report increment. Permanent deletion is not enabled.
+deletion path; no new mutation flag is added. Report deletion is deferred until
+planning can bind the target through stable identity proof rather than mutable
+display name and folder metadata. Permanent deletion is not enabled.
+
+The implementation validates official definition paths, rejects mixed layouts,
+unsafe/case-colliding paths, malformed JSON, unsupported payload types,
+`byPath`, and sensitivity-label declarations. Definitions require the
+`definitionProperties/2.x.x` `definition.pbir` schema so no legacy secondary
+physical-ID fields can conflict with the materialized connection.
+Full-replacement updates
+preserve omitted `.platform` and `semanticModelDiagramLayout.json` auxiliary
+parts but do not retain obsolete cross-format core or omitted StaticResources
+content. Source hashing masks the environment-specific Semantic Model ID;
+materialized definition and resolved-binding proofs protect planning, apply,
+and checkpoint recovery.
+
+PBIR live create/no-op/update round-trip validation is complete. Live validation
+remains required for PBIR-Legacy, `semanticModelDiagramLayout.json`,
+`reportExtensions.json`, StaticResources, and encrypted-label blocking.
 
 ## Remaining Fabric item order
 

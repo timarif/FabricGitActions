@@ -1,6 +1,6 @@
 # Support
 
-Microsoft Fabric Deploy is a community-maintained GitHub Action. Support is
+Fabric Deploy is a community-maintained GitHub Action. Support is
 provided through this repository without a guaranteed response or resolution
 time.
 

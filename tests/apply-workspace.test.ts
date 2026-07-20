@@ -23,7 +23,7 @@ import type {
 import { applyManagedWorkspace } from "../src/workspace-apply";
 
 const desired: DesiredWorkspace = {
-  displayName: "tva-Analytics",
+  displayName: "Fabric Deploy Analytics",
   description: "Managed workspace",
   capacityId: "capacity-1",
 };
@@ -154,7 +154,7 @@ function adapter() {
         );
         return {
           id: "workspace-created",
-          displayName: "tva-Analytics",
+          displayName: "Fabric Deploy Analytics",
           type: "Workspace" as const,
           description: "Managed workspace",
           capacityId: "capacity-1",
@@ -164,7 +164,7 @@ function adapter() {
     ),
     resumeCreate: vi.fn(async () => ({
       id: "workspace-created",
-      displayName: "tva-Analytics",
+      displayName: "Fabric Deploy Analytics",
       type: "Workspace" as const,
       description: "Managed workspace",
       capacityId: "capacity-1",
@@ -181,7 +181,7 @@ function adapter() {
         callbacks.onMetadataUpdateAccepted?.(workspaceId);
         return {
           id: workspaceId,
-          displayName: "tva-Analytics",
+          displayName: "Fabric Deploy Analytics",
           type: "Workspace" as const,
           description: "Managed workspace",
           capacityId: "capacity-1",
@@ -192,7 +192,7 @@ function adapter() {
     resumeUpdate: vi.fn(
       async (workspaceId: string) => ({
         id: workspaceId,
-        displayName: "tva-Analytics",
+        displayName: "Fabric Deploy Analytics",
         type: "Workspace" as const,
         description: "Managed workspace",
         capacityId: "capacity-1",
@@ -201,7 +201,7 @@ function adapter() {
     ),
     verify: vi.fn(async (workspaceId: string) => ({
       id: workspaceId,
-      displayName: "tva-Analytics",
+      displayName: "Fabric Deploy Analytics",
       type: "Workspace" as const,
       description: "Managed workspace",
       capacityId: "capacity-1",

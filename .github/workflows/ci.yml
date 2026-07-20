@@ -14,9 +14,9 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
 
-      - uses: actions/setup-node@v5
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with:
           node-version: 24
           cache: npm
@@ -73,7 +73,7 @@ jobs:
           manifest: examples/live-pipeline/fabric/deployment.yaml
           workspace-id: 00000000-0000-0000-0000-000000000001
 
-      - name: Validate Semantic Model example
+      - name: Validate Semantic Model and Report example
         uses: ./
         with:
           mode: validate

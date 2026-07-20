@@ -26,6 +26,7 @@ import {
   type NetworkProtectionAdapter,
 } from "./network-protection";
 import type { PipelineAdapter } from "./pipeline";
+import type { ReportAdapter } from "./report";
 import type { SemanticModelAdapter } from "./semantic-model";
 import type { SparkCustomPoolAdapter } from "./spark-custom-pool";
 import type { SparkJobAdapter } from "./spark-job";
@@ -42,6 +43,7 @@ import {
 import type { WorkspaceAdapter } from "./workspace";
 import {
   materializeSparkJobDefinitionWithProof,
+  materializeReportDefinitionWithProof,
   validateLogicalReferenceDeclarations,
 } from "./logical-references";
 
@@ -55,6 +57,8 @@ export interface FabricPlanAdapters {
     Partial<Pick<SparkJobAdapter, "planUnresolvedReferences">>;
   pipeline: Pick<PipelineAdapter, "plan">;
   semanticModel: Pick<SemanticModelAdapter, "plan">;
+  report?: Pick<ReportAdapter, "plan"> &
+    Partial<Pick<ReportAdapter, "planUnresolvedReferences">>;
   sparkCustomPool: Pick<SparkCustomPoolAdapter, "plan">;
   tags?: Pick<FabricTagAdapter, "plan" | "planItemAssignment">;
   lakehouseTables?: Pick<LakehouseTablesAdapter, "plan">;
@@ -156,7 +160,8 @@ export async function enrichPlanWithFabric(
       (item) =>
         item.type !== "FabricTag" &&
         item.type !== "SparkJobDefinition" &&
-        item.type !== "LakehouseTables",
+        item.type !== "LakehouseTables" &&
+        item.type !== "Report",
     ),
     ...plan.items.filter(
       (item) => item.type === "LakehouseTables",
@@ -164,6 +169,7 @@ export async function enrichPlanWithFabric(
     ...plan.items.filter(
       (item) => item.type === "SparkJobDefinition",
     ),
+    ...plan.items.filter((item) => item.type === "Report"),
   ];
   for (const item of planningOrder) {
     if (item.type === "LakehouseTables") {
@@ -188,6 +194,7 @@ export async function enrichPlanWithFabric(
       item.type !== "SparkJobDefinition" &&
       item.type !== "DataPipeline" &&
       item.type !== "SemanticModel" &&
+      item.type !== "Report" &&
       item.type !== "FabricTag"
     ) {
       plannedItems.set(item.logicalId, {
@@ -478,14 +485,23 @@ export async function enrichPlanWithFabric(
                       item.logicalId,
                     ),
                   )
-                : await adapters.semanticModel.plan(
+                : item.type === "SemanticModel"
+                  ? await adapters.semanticModel.plan(
                     workspaceId,
                     desired,
                     requireSemanticModelDefinition(
                       loadedManifest,
                       item.logicalId,
                     ),
-                  );
+                  )
+                  : await planReport(
+                      workspaceId,
+                      item,
+                      desired,
+                      loadedManifest,
+                      plannedItems,
+                      adapters.report,
+                    );
     plannedItems.set(item.logicalId, {
       ...item,
       action: result.action,
@@ -552,6 +568,20 @@ export async function enrichPlanWithFabric(
       throw new Error(
         `The resolved Semantic Model definition is missing for '${logicalId}'.`,
       );
+    }
+
+    function requireReportDefinition(
+      loadedManifest: LoadedManifest,
+      logicalId: string,
+    ) {
+      const definition =
+        loadedManifest.reportDefinitions?.[logicalId];
+      if (!definition) {
+        throw new Error(
+          `The resolved Report definition is missing for '${logicalId}'.`,
+        );
+      }
+      return definition;
     }
     return definition;
   }
@@ -802,6 +832,9 @@ function validateManifestLogicalReferences(
   loadedManifest: LoadedManifest,
 ): void {
   for (const item of loadedManifest.manifest.items) {
+    if (item.desiredState === "absent") {
+      continue;
+    }
     const definition =
       loadedManifest.itemDefinitions[item.logicalId];
     if (!definition) {
@@ -815,6 +848,97 @@ function validateManifestLogicalReferences(
       itemGraph: loadedManifest.manifest.items,
     });
   }
+}
+
+async function planReport(
+  workspaceId: string,
+  item: PlannedItem,
+  desired: NonNullable<
+    LoadedManifest["itemDefinitions"][string]
+  >,
+  loadedManifest: LoadedManifest,
+  plannedItems: ReadonlyMap<string, PlannedItem>,
+  adapter: FabricPlanAdapters["report"],
+) {
+  const sourceDefinition =
+    loadedManifest.reportDefinitions?.[item.logicalId];
+  const manifestItem = loadedManifest.manifest.items.find(
+    (candidate) => candidate.logicalId === item.logicalId,
+  );
+  if (!sourceDefinition || !manifestItem) {
+    throw new Error(
+      `The resolved Report definition or manifest item is missing for '${item.logicalId}'.`,
+    );
+  }
+  if (!adapter) {
+    return {
+      action: "blocked" as const,
+      reason: `Report adapter was not initialized for '${item.logicalId}'.`,
+      observedStateHash: sha256(stableJson(null)),
+    };
+  }
+  const bindings = validateLogicalReferenceDeclarations({
+    item: manifestItem,
+    definition: desired,
+    itemGraph: loadedManifest.manifest.items,
+  });
+  const binding = Object.values(bindings)[0];
+  if (!binding) {
+    throw new Error(
+      `Report '${desired.displayName}' is missing its Semantic Model binding.`,
+    );
+  }
+  const dependency = plannedItems.get(binding.logicalId);
+  if (
+    dependency?.physicalId &&
+    (dependency.action === "update" ||
+      dependency.action === "no-op")
+  ) {
+    const materialized = materializeReportDefinitionWithProof(
+      sourceDefinition,
+      bindings,
+      { [binding.logicalId]: dependency.physicalId },
+    );
+    return {
+      ...(await adapter.plan(
+        workspaceId,
+        desired,
+        materialized.definition,
+      )),
+      materializedDefinitionHash:
+        materialized.materializedDefinitionHash,
+      resolvedBindingsHash: materialized.resolvedBindingsHash,
+    };
+  }
+  if (dependency?.action === "create") {
+    if (!adapter.planUnresolvedReferences) {
+      return {
+        action: "blocked" as const,
+        reason: `Report '${desired.displayName}' requires the physical ID of newly created Semantic Model '${binding.logicalId}'; replan after it exists.`,
+        observedStateHash: sha256(stableJson(null)),
+      };
+    }
+    const unresolved = await adapter.planUnresolvedReferences(
+      workspaceId,
+      desired,
+      sourceDefinition,
+      [binding.logicalId],
+    );
+    if (
+      unresolved.action !== "create" &&
+      unresolved.action !== "blocked"
+    ) {
+      throw new Error(
+        `Report '${desired.displayName}' returned unsafe action '${unresolved.action}' before its Semantic Model ID was available.`,
+      );
+    }
+    return unresolved;
+  }
+  return {
+    action: "blocked" as const,
+    reason: `Report '${desired.displayName}' cannot resolve Semantic Model '${binding.logicalId}' because its current plan action is '${dependency?.action ?? "missing"}'.`,
+    observedStateHash: sha256(stableJson(null)),
+  };
 }
 
 async function planSparkJob(

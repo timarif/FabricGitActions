@@ -1,0 +1,5 @@
+displayName: Fabric Deploy Sales Report
+description: Minimal PBIR report bound to the example Semantic Model
+
+references:
+  semanticModel: salesModel

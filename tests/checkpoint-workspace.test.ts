@@ -32,7 +32,7 @@ function managedPlan() {
       kind: "FabricDeployment",
       metadata: { deploymentId: "workspace-only" },
       workspace: {
-        displayName: "tva-Analytics",
+        displayName: "Fabric Deploy Analytics",
       },
       items: [],
     },

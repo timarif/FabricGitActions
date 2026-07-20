@@ -1,7 +1,11 @@
-# Microsoft Fabric Deploy Action
+# Fabric Deploy Action
 
 A GitHub Marketplace action for declarative Microsoft Fabric deployments, with
 an initial focus on Data Engineering workloads.
+
+> [!IMPORTANT]
+> Fabric Deploy is an independent community project. It is not an official
+> Microsoft product and is not supported by Microsoft.
 
 > **Current status:** Phases 1 through 5 are implemented. Production
 > hardening includes deterministic OneLake staging for Spark Job JVM
@@ -14,9 +18,11 @@ an initial focus on Data Engineering workloads.
 > network communication policy, outbound cloud connection and gateway rules,
 > guarded managed private endpoint lifecycle support, and preview inbound
 > firewall, Azure resource instance, and External Data Shares bypass policy
-> support. Phase 6A Semantic Model deployment is implemented for TMSL and
-> TMDL definitions, guarded apply/recovery, generic soft deletion, and live
-> Fabric create/no-op/update validation. See
+> support. Phase 6 adds guarded Semantic Model and Power BI Report deployment,
+> symbolic Report-to-SemanticModel binding, and
+> definition read-back verification. Semantic Model and PBIR Report live
+> create/no-op/update validation is complete; PBIR-Legacy live validation
+> remains required. See
 > [the roadmap](docs/ROADMAP.md).
 
 For sequential environment deployment, see the
@@ -41,6 +47,7 @@ For operational help and release verification, see
 - Spark Job Definition
 - Data Pipeline
 - Semantic Model
+- Power BI Report
 
 ## Quickstart
 
@@ -49,9 +56,9 @@ permissions:
   contents: read
 
 steps:
-  - uses: actions/checkout@v5
+  - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
 
-  - uses: your-organization/fabric-deploy@v1
+  - uses: timarif/FabricGitActions@v1
     with:
       mode: plan
       manifest: fabric/deployment.yaml
@@ -70,7 +77,7 @@ the top level instead of supplying only an ID:
 
 ```yaml
 workspace:
-  displayName: tva-Analytics
+  displayName: Fabric Deploy Analytics
   description: Managed by Fabric Deploy
   capacityId: ${var.FABRIC_CAPACITY_ID}
 
@@ -90,7 +97,7 @@ items in the same approved apply.
 
 ```yaml
 - id: provision
-  uses: your-organization/fabric-deploy@v1
+  uses: timarif/FabricGitActions@v1
   with:
     mode: apply
     manifest: fabric/deployment.yaml
@@ -118,7 +125,7 @@ deletion and capacity unassignment are intentionally unsupported.
 Without authentication, `plan` is offline and reports item actions as
 `unknown`. With Fabric authentication configured, Lakehouses, Environments, Notebooks,
 LakehouseTables bundles, Fabric tags, Spark Job Definitions, Data Pipelines,
-Semantic Models, and workspace custom Spark pools are
+Semantic Models, Power BI Reports, and workspace custom Spark pools are
 classified as `create`, `update`, `delete`, `no-op`, or `blocked`; later workload
 adapters remain `unknown`.
 
@@ -308,9 +315,9 @@ permissions:
   id-token: write
 
 steps:
-  - uses: actions/checkout@v5
+  - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
 
-  - uses: your-organization/fabric-deploy@v1
+  - uses: timarif/FabricGitActions@v1
     with:
       mode: plan
       manifest: fabric/deployment.yaml
@@ -338,7 +345,7 @@ that exact file to a separate apply job:
 
 ```yaml
 - id: deploy
-  uses: your-organization/fabric-deploy@v1
+  uses: timarif/FabricGitActions@v1
   with:
     mode: apply
     manifest: fabric/deployment.yaml
@@ -537,6 +544,7 @@ deletion-only items use only `item.yaml` as described above.
 | Spark Job Definition | Exactly one `definition/main.py` or `definition/main.jar`; optional `SparkJobDefinitionV1.json`, `.platform`, and files under `definition/libs/` |
 | Data Pipeline | Valid JSON object at `definition/pipeline-content.json` |
 | Semantic Model | TMSL: `definition/model.bim` plus `definition/definition.pbism`; TMDL: `definition/definition.pbism` plus one or more `definition/definition/**/*.tmdl` files; optional `definition/diagramLayout.json`, `definition/.platform`, and `definition/Copilot/*.json` / `definition/Copilot/*.md` |
+| Report | PBIR: `definition/definition.pbir`, `definition/definition/report.json`, `definition/definition/version.json`, and supported pages/visuals/bookmarks; PBIR-Legacy: `definition/definition.pbir` plus root `definition/report.json`; optional `definition/StaticResources/**`, `definition/semanticModelDiagramLayout.json`, and `definition/.platform` |
 | Workspace custom Spark pool | `definition/pool.yaml` with node family, node size, autoscale, and dynamic executor allocation settings |
 
 ### Lakehouse table DDL
@@ -711,8 +719,56 @@ supported as managed auxiliary parts. Declared Copilot files are included in
 the hash comparison, while current Copilot files omitted by the desired
 definition are preserved across updates.
 
-Connection, gateway, and report binding are intentionally deferred to the
-next increment. See [`examples/semantic-model`](examples/semantic-model).
+Power BI Reports deploy the official `PBIR` format or the alternate
+`PBIR-Legacy` format. The layouts are mutually exclusive. Every Report
+requires `definition.pbir`; PBIR also requires `definition/report.json` and
+`definition/version.json`, while PBIR-Legacy requires root `report.json`.
+`definition.pbir` must use the official `definitionProperties/2.x.x` schema;
+the older 1.x shape is rejected because it duplicates the physical binding
+across legacy fields instead of representing it solely by `connectionString`.
+Supported PBIR page, visual, bookmark, report-extension, and
+`StaticResources/**` parts are retained exactly by path. JSON definition parts
+are compared semantically; binary/static-resource payloads are not normalized.
+Unsafe traversal, unsupported paths or payload types, malformed JSON,
+case-colliding paths, mixed formats, `byPath` references, and sensitivity-label
+declarations fail closed.
+
+A Report binds symbolically to a manifest Semantic Model:
+
+```yaml
+items:
+  - logicalId: salesReport
+    type: Report
+    path: items/reports/sales
+    dependsOn: [salesModel]
+```
+
+```yaml
+# items/reports/sales/item.yaml
+displayName: Sales Report
+references:
+  semanticModel: salesModel
+```
+
+The explicit binding equivalent is
+`/datasetReference/byConnection/connectionString` sourced from
+`items.salesModel.id`. Immediately before planning comparison, create, update,
+or verification, the action writes exactly
+`semanticmodelid=<physicalId>` into `definition.pbir`. The source content hash
+excludes that environment-specific ID while the approved logical reference,
+materialized definition hash, and resolved-ID proof protect plan/apply and
+checkpoint recovery. A new Report may wait for a Semantic Model created in an
+earlier stage of the same apply. An existing Report blocks until the model ID
+is available for reviewed comparison.
+
+Report definition updates are full replacements. Omitted `.platform` and
+`semanticModelDiagramLayout.json` parts are preserved and proven through
+readback; obsolete PBIR/PBIR-Legacy core parts and omitted
+`StaticResources/**` are not silently retained. `updateMetadata` is true only
+when desired explicitly manages `.platform`. Sensitivity label settings are
+never emitted. See [`examples/semantic-model`](examples/semantic-model).
+
+Semantic Model connection and gateway binding remain outside this increment.
 
 Workspace custom Spark pools use the stable workspace
 `/spark/pools` API. The adapter manages only workspace pools, rejects Starter
@@ -787,6 +843,7 @@ The action currently implements:
 - Immutable OneLake staging for Spark Job JVM executables and JAR libraries
 - Data Pipeline definition mapping, create/update, and read-back verification
 - Semantic Model TMSL/TMDL mapping, create/update, and read-back verification
+- Report PBIR/PBIR-Legacy mapping, symbolic Semantic Model binding, create/update, and read-back verification
 - Workspace custom Spark pool mapping, create/update, and read-back verification
 - Fabric tenant/domain tag creation and additive item tag assignment
 - Published Environment definition proof and target-version advancement checks
@@ -794,7 +851,7 @@ The action currently implements:
 - Authenticated create/update/no-op planning
 - Approved-plan integrity and source-commit binding
 - Pre-mutation drift and authorization checks
-- Lakehouse, Environment, Notebook, Spark Job Definition, Data Pipeline, Semantic Model, and workspace custom Spark pool create/update/no-op apply
+- Lakehouse, Environment, Notebook, Spark Job Definition, Data Pipeline, Semantic Model, Report, and workspace custom Spark pool create/update/no-op apply
 - Checkpoint and result artifacts
 
 ## Live test workflow
@@ -818,3 +875,7 @@ prior attempt's checkpoint when the original plan is reused. Full-workflow
 reruns also require the prior checkpoint whenever the fresh plan still contains
 creates. Required checkpoint restoration fails closed if the artifact is
 unavailable.
+
+## License
+
+Licensed under the [Apache License 2.0](LICENSE).

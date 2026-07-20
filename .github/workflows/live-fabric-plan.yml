@@ -18,7 +18,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
 
       - name: Plan against Fabric
         if: ${{ inputs.probe_inbound_firewall == false }}
@@ -88,7 +88,7 @@ jobs:
           ' live-output/inbound-firewall-plan.json
 
       - name: Upload live plan
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
         with:
           name: live-fabric-plan
           path: live-output

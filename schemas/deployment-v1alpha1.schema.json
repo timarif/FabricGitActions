@@ -337,7 +337,8 @@
               "Notebook",
               "SparkJobDefinition",
               "DataPipeline",
-              "SemanticModel"
+              "SemanticModel",
+              "Report"
             ]
           },
           "path": {

@@ -1,6 +1,6 @@
-name: Microsoft Fabric Deploy
+name: Fabric Deploy
 description: Plan and deploy Microsoft Fabric workspaces and data engineering workloads.
-author: Microsoft Fabric community
+author: timarif
 
 branding:
   icon: upload-cloud

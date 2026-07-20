@@ -43,6 +43,15 @@ import type {
   PipelineAdapter,
   PipelineOperationReference,
 } from "./fabric/pipeline";
+import type {
+  ReportAdapter,
+  ReportOperationReference,
+} from "./fabric/report";
+import {
+  hashReportDefinition,
+  reportIncludesDiagramLayoutPart,
+  reportIncludesPlatformPart,
+} from "./fabric/report-definition";
 import {
   hashPipelineDefinition,
   pipelineIncludesPlatformPart,
@@ -86,7 +95,9 @@ import {
 } from "./fabric/spark-job-definition";
 import {
   materializeSparkJobDefinitionWithProof,
+  materializeReportDefinitionWithProof,
   validateLogicalReferenceDeclarations,
+  type ReportLogicalReferenceMaterialization,
   type SparkJobLogicalReferenceMaterialization,
 } from "./fabric/logical-references";
 import { FabricOperationFailedError } from "./fabric/client";
@@ -151,6 +162,10 @@ export interface ApplyPlanOptions {
   >;
   semanticModelAdapter?: Pick<
     SemanticModelAdapter,
+    "create" | "update" | "verify" | "resumeCreate" | "plan"
+  >;
+  reportAdapter?: Pick<
+    ReportAdapter,
     "create" | "update" | "verify" | "resumeCreate" | "plan"
   >;
   sparkCustomPoolAdapter?: Pick<
@@ -735,6 +750,9 @@ function validateApplyLogicalReferences(
   loadedManifest: LoadedManifest,
 ): void {
   for (const item of loadedManifest.manifest.items) {
+    if (item.desiredState === "absent") {
+      continue;
+    }
     const definition =
       loadedManifest.itemDefinitions[item.logicalId];
     if (!definition) {
@@ -1196,6 +1214,17 @@ function preflightBeforeRecovery(
         );
         continue;
       }
+      if (hasSymbolicReportBinding(approvedItem)) {
+        assertSymbolicReportPreflightState(
+          options,
+          checkpoint,
+          approvedItem,
+          currentItem,
+          completed,
+          pendingItem !== undefined,
+        );
+        continue;
+      }
       if (completed) {
         assertCheckpointedItemSourceUnchanged(approvedItem, currentItem);
         if (!isCompletedItemCurrentNoOp(
@@ -1269,6 +1298,18 @@ function preflightPlan(
         assertApplyActionAuthorized(options, approvedItem);
         continue;
       }
+      if (hasSymbolicReportBinding(approvedItem)) {
+        assertSymbolicReportPreflightState(
+          options,
+          checkpoint,
+          approvedItem,
+          currentItem,
+          completed,
+          pendingItem !== undefined,
+        );
+        assertApplyActionAuthorized(options, approvedItem);
+        continue;
+      }
       if (completed) {
         assertCheckpointedItemSourceUnchanged(approvedItem, currentItem);
         assertTagAssignmentAuthorized(options, approvedItem);
@@ -1324,6 +1365,7 @@ function assertSupportedApplyItem(
     item.type !== "SparkJobDefinition" &&
     item.type !== "DataPipeline" &&
     item.type !== "SemanticModel" &&
+    item.type !== "Report" &&
     item.type !== "LakehouseTables" &&
     item.type !== "FabricTag"
   ) {
@@ -1394,6 +1436,15 @@ function assertSupportedApplyItem(
   ) {
     throw new Error(
       `Semantic Model adapter was not initialized for item '${item.logicalId}'.`,
+    );
+  }
+  if (
+    item.desiredState !== "absent" &&
+    item.type === "Report" &&
+    !options.reportAdapter
+  ) {
+    throw new Error(
+      `Report adapter was not initialized for item '${item.logicalId}'.`,
     );
   }
   if (
@@ -1611,7 +1662,8 @@ async function resumePendingOperations(
           approvedItem.type !== "Notebook" &&
           approvedItem.type !== "SparkJobDefinition" &&
           approvedItem.type !== "DataPipeline" &&
-          approvedItem.type !== "SemanticModel")
+          approvedItem.type !== "SemanticModel" &&
+          approvedItem.type !== "Report")
       ) {
         throw new Error(
           `Pending operation item '${logicalId}' is missing or unsupported.`,
@@ -1769,6 +1821,7 @@ async function reconcilePendingCreates(
           approvedItem.type !== "SparkJobDefinition" &&
           approvedItem.type !== "DataPipeline" &&
           approvedItem.type !== "SemanticModel" &&
+          approvedItem.type !== "Report" &&
           approvedItem.type !== "FabricTag") ||
         !currentItem
       ) {
@@ -1854,7 +1907,8 @@ async function reconcilePendingUpdates(
           approvedItem.type !== "Notebook" &&
           approvedItem.type !== "SparkJobDefinition" &&
           approvedItem.type !== "DataPipeline" &&
-          approvedItem.type !== "SemanticModel") ||
+          approvedItem.type !== "SemanticModel" &&
+          approvedItem.type !== "Report") ||
         approvedItem.action !== "update" ||
         !currentItem
       ) {
@@ -1906,6 +1960,13 @@ async function reconcilePendingUpdates(
               live,
               intent,
             )) ||
+          (approvedItem.type === "Report" &&
+            hasReportRecoveryProof(
+              options,
+              approvedItem,
+              live,
+              intent,
+            )) ||
           (approvedItem.type === "SparkCustomPool" &&
             hasSparkCustomPoolRecoveryProof(
               approvedItem,
@@ -1951,7 +2012,8 @@ async function reconcilePendingUpdates(
         );
       }
       if (
-        approvedItem.type === "SemanticModel" &&
+        (approvedItem.type === "SemanticModel" ||
+          approvedItem.type === "Report") &&
         intent.preservedAuxiliaryHash !== undefined
       ) {
         const liveAuxiliaryHash =
@@ -1963,7 +2025,7 @@ async function reconcilePendingUpdates(
           intent.preservedAuxiliaryHash
         ) {
           throw new Error(
-            `Update intent for '${logicalId}' cannot be reconciled because the Semantic Model auxiliary definition parts differ from the checkpointed full-replacement proof.`,
+            `Update intent for '${logicalId}' cannot be reconciled because the auxiliary definition parts differ from the checkpointed full-replacement proof.`,
           );
         }
       }
@@ -2393,6 +2455,81 @@ function hasSymbolicSparkJobArtifactTarget(
     item.type === "SparkJobDefinition" &&
     item.sparkJobArtifacts?.targetBinding === "symbolic"
   );
+}
+
+function hasSymbolicReportBinding(item: PlannedItem): boolean {
+  return (
+    item.type === "Report" &&
+    item.action === "create" &&
+    item.materializedDefinitionHash === undefined &&
+    item.resolvedBindingsHash === undefined
+  );
+}
+
+function assertSymbolicReportPreflightState(
+  options: ApplyPlanOptions,
+  checkpoint: ApplyCheckpoint,
+  approvedItem: PlannedItem,
+  currentItem: PlannedItem,
+  completed: ApplyCheckpoint["completedItems"][string] | undefined,
+  hasPendingItem: boolean,
+): void {
+  assertCheckpointedItemSourceUnchanged(
+    approvedItem,
+    currentItem,
+  );
+  const hasMaterializedDefinition =
+    currentItem.materializedDefinitionHash !== undefined;
+  const hasResolvedBindings =
+    currentItem.resolvedBindingsHash !== undefined;
+  if (hasMaterializedDefinition !== hasResolvedBindings) {
+    throw new Error(
+      `Report '${approvedItem.logicalId}' has incomplete materialization proof.`,
+    );
+  }
+  if (hasMaterializedDefinition) {
+    const expected = requireReportRuntimeDefinition(
+      { ...options, checkpoint },
+      approvedItem.logicalId,
+    );
+    if (
+      currentItem.materializedDefinitionHash !==
+        expected.materializedDefinitionHash ||
+      currentItem.resolvedBindingsHash !==
+        expected.resolvedBindingsHash
+    ) {
+      throw new Error(
+        `Report '${approvedItem.logicalId}' materialized with a different Semantic Model ID after approval.`,
+      );
+    }
+  }
+  if (completed) {
+    if (
+      currentItem.action !== "no-op" ||
+      currentItem.physicalId !== completed.physicalId
+    ) {
+      throw new Error(
+        `Checkpointed Report '${approvedItem.logicalId}' is not a no-op for physical ID '${completed.physicalId}'.`,
+      );
+    }
+    return;
+  }
+  if (hasPendingItem) {
+    if (
+      currentItem.action !== "create" &&
+      currentItem.action !== "no-op"
+    ) {
+      throw new Error(
+        `Pending Report '${approvedItem.logicalId}' has unsafe current action '${currentItem.action}'.`,
+      );
+    }
+    return;
+  }
+  assertItemHasNotDrifted(approvedItem, {
+    ...currentItem,
+    materializedDefinitionHash: undefined,
+    resolvedBindingsHash: undefined,
+  });
 }
 
 function assertSymbolicSparkJobArtifactPreflightState(
@@ -3924,7 +4061,8 @@ async function applyItem(
       | NotebookOperationReference
       | SparkJobOperationReference
       | PipelineOperationReference
-      | SemanticModelOperationReference,
+      | SemanticModelOperationReference
+      | ReportOperationReference,
   ) => void,
   onCreateSubmitting: () => void,
   onCreateRejected: () => void,
@@ -3942,6 +4080,7 @@ async function applyItem(
     item.type !== "SparkJobDefinition" &&
     item.type !== "DataPipeline" &&
     item.type !== "SemanticModel" &&
+    item.type !== "Report" &&
     item.type !== "FabricTag"
   ) {
     throw new Error(
@@ -4233,6 +4372,7 @@ async function resumeCompletedItem(
     item.type !== "SparkJobDefinition" &&
     item.type !== "DataPipeline" &&
     item.type !== "SemanticModel" &&
+    item.type !== "Report" &&
     item.type !== "FabricTag"
   ) {
     throw new Error(
@@ -4360,6 +4500,25 @@ async function planDesiredItem(
       ),
     );
   }
+  if (item.type === "Report") {
+    const materialized = requireReportRuntimeDefinition(
+      options,
+      item.logicalId,
+    );
+    return {
+      ...(await requireReportAdapter(
+        options,
+        item.logicalId,
+      ).plan(
+        options.approvedPlan.workspaceId,
+        desired,
+        materialized.definition,
+      )),
+      materializedDefinitionHash:
+        materialized.materializedDefinitionHash,
+      resolvedBindingsHash: materialized.resolvedBindingsHash,
+    };
+  }
   throw new Error(
     `Fabric planning is not implemented for item '${item.logicalId}' of type ${item.type}.`,
   );
@@ -4402,7 +4561,8 @@ async function createDesiredItem(
       | NotebookOperationReference
       | SparkJobOperationReference
       | PipelineOperationReference
-      | SemanticModelOperationReference,
+      | SemanticModelOperationReference
+      | ReportOperationReference,
   ) => void,
   onCreateSubmitting: () => void,
   onCreateRejected: () => void,
@@ -4501,6 +4661,17 @@ async function createDesiredItem(
       onCreateRejected,
     );
   }
+  if (item.type === "Report") {
+    return requireReportAdapter(options, item.logicalId).create(
+      options.approvedPlan.workspaceId,
+      desired,
+      requireReportDefinition(options, item.logicalId),
+      onMutationAccepted,
+      onOperationAccepted,
+      onCreateSubmitting,
+      onCreateRejected,
+    );
+  }
   throw new Error(
     `Create is not implemented for item '${item.logicalId}' of type ${item.type}.`,
   );
@@ -4516,7 +4687,8 @@ async function resumeCreateDesiredItem(
     | NotebookOperationReference
     | SparkJobOperationReference
     | PipelineOperationReference
-    | SemanticModelOperationReference,
+    | SemanticModelOperationReference
+    | ReportOperationReference,
   onMutationAccepted: (physicalId: string) => void,
 ) {
   if (item.type === "Lakehouse") {
@@ -4584,6 +4756,18 @@ async function resumeCreateDesiredItem(
       onMutationAccepted,
     );
   }
+  if (item.type === "Report") {
+    return requireReportAdapter(
+      options,
+      item.logicalId,
+    ).resumeCreate(
+      options.approvedPlan.workspaceId,
+      desired,
+      requireReportDefinition(options, item.logicalId),
+      operation,
+      onMutationAccepted,
+    );
+  }
   throw new Error(
     `Create resume is not implemented for item '${item.logicalId}' of type ${item.type}.`,
   );
@@ -4605,6 +4789,17 @@ async function updateDesiredItem(
       options.approvedPlan.workspaceId,
       physicalId,
       desired,
+      onMutationAccepted,
+      onUpdateSubmitting,
+      onUpdateRejected,
+    );
+  }
+  if (item.type === "Report") {
+    return requireReportAdapter(options, item.logicalId).update(
+      options.approvedPlan.workspaceId,
+      physicalId,
+      desired,
+      requireReportDefinition(options, item.logicalId),
       onMutationAccepted,
       onUpdateSubmitting,
       onUpdateRejected,
@@ -4764,6 +4959,14 @@ async function verifyDesiredItem(
         options,
         item.logicalId,
       ),
+    );
+  }
+  if (item.type === "Report") {
+    return requireReportAdapter(options, item.logicalId).verify(
+      options.approvedPlan.workspaceId,
+      physicalId,
+      desired,
+      requireReportDefinition(options, item.logicalId),
     );
   }
   throw new Error(
@@ -5001,16 +5204,23 @@ function logicalReferenceCheckpointProof(
   options: ApplyPlanOptions,
   item: PlannedItem,
 ): Pick<
-  SparkJobLogicalReferenceMaterialization,
+  SparkJobLogicalReferenceMaterialization &
+    ReportLogicalReferenceMaterialization,
   "materializedDefinitionHash" | "resolvedBindingsHash"
 > | Record<string, never> {
-  if (item.type !== "SparkJobDefinition") {
+  if (
+    item.type !== "SparkJobDefinition" &&
+    item.type !== "Report"
+  ) {
     return {};
   }
-  const materialized = requireSparkJobRuntimeDefinition(
-    options,
-    item.logicalId,
-  );
+  const materialized =
+    item.type === "Report"
+      ? requireReportRuntimeDefinition(options, item.logicalId)
+      : requireSparkJobRuntimeDefinition(
+          options,
+          item.logicalId,
+        );
   return materialized.materializedDefinitionHash &&
     materialized.resolvedBindingsHash
     ? {
@@ -5026,6 +5236,7 @@ function assertLogicalReferenceCheckpointProof(
   logicalId: string,
   materialized:
     | SparkJobLogicalReferenceMaterialization
+    | ReportLogicalReferenceMaterialization
     | undefined,
 ): void {
   const checkpoint = options.checkpoint;
@@ -5112,6 +5323,96 @@ function requireSemanticModelDefinition(
     );
   }
   return definition;
+}
+
+function requireReportAdapter(
+  options: ApplyPlanOptions,
+  logicalId: string,
+): NonNullable<ApplyPlanOptions["reportAdapter"]> {
+  if (!options.reportAdapter) {
+    throw new Error(
+      `Report adapter was not initialized for item '${logicalId}'.`,
+    );
+  }
+  return options.reportAdapter;
+}
+
+function requireReportRuntimeDefinition(
+  options: ApplyPlanOptions,
+  logicalId: string,
+): ReportLogicalReferenceMaterialization {
+  const sourceDefinition =
+    options.loadedManifest.reportDefinitions?.[logicalId];
+  const item = options.loadedManifest.manifest.items.find(
+    (candidate) => candidate.logicalId === logicalId,
+  );
+  const desired =
+    options.loadedManifest.itemDefinitions[logicalId];
+  if (!sourceDefinition || !item || !desired) {
+    throw new Error(
+      `Report definition or declarations are missing for '${logicalId}'.`,
+    );
+  }
+  const bindings = validateLogicalReferenceDeclarations({
+    item,
+    definition: desired,
+    itemGraph: options.loadedManifest.manifest.items,
+  });
+  const binding = Object.values(bindings)[0];
+  if (!binding || binding.targetType !== "SemanticModel") {
+    throw new Error(
+      `Report '${logicalId}' has no valid Semantic Model binding.`,
+    );
+  }
+  const completed = options.checkpoint
+    ? getCompletedItem(options.checkpoint, binding.logicalId)
+    : undefined;
+  const approvedDependency = options.approvedPlan.items.find(
+    (candidate) => candidate.logicalId === binding.logicalId,
+  );
+  const currentDependency = options.currentPlan.items.find(
+    (candidate) => candidate.logicalId === binding.logicalId,
+  );
+  if (
+    !approvedDependency ||
+    approvedDependency.type !== "SemanticModel" ||
+    (currentDependency &&
+      currentDependency.type !== "SemanticModel")
+  ) {
+    throw new Error(
+      `Report '${logicalId}' has an invalid Semantic Model dependency '${binding.logicalId}'.`,
+    );
+  }
+  const physicalId =
+    completed?.physicalId ??
+    approvedDependency.physicalId ??
+    currentDependency?.physicalId;
+  if (!physicalId) {
+    throw new Error(
+      `Report '${logicalId}' cannot materialize Semantic Model '${binding.logicalId}' because its physical ID is not available.`,
+    );
+  }
+  const materialized = materializeReportDefinitionWithProof(
+    sourceDefinition,
+    bindings,
+    { [binding.logicalId]: physicalId },
+  );
+  assertLogicalReferenceCheckpointProof(
+    options,
+    logicalId,
+    materialized,
+  );
+  return materialized;
+}
+
+function requireReportDefinition(
+  options: ApplyPlanOptions,
+  logicalId: string,
+): FabricDefinition {
+  return requireReportRuntimeDefinition(
+    options,
+    logicalId,
+  ).definition;
 }
 
 function requireSparkCustomPoolAdapter(
@@ -5363,6 +5664,63 @@ function hasSemanticModelRecoveryProof(
     // When an effective full replacement was staged, additionally verify that
     // the preserved auxiliary parts were not silently lost. An ambiguous
     // accepted replacement with missing preserved parts must be re-applied.
+    if (
+      intent?.preservedAuxiliaryHash !== undefined &&
+      live.currentAuxiliaryHash !== intent.preservedAuxiliaryHash
+    ) {
+      return false;
+    }
+    return true;
+  }
+  if (
+    !intent ||
+    (intent.phase !== "metadata-submitting" &&
+      intent.phase !== "metadata-updated" &&
+      intent.phase !== "definition-submitting")
+  ) {
+    return false;
+  }
+  return (
+    live.managedMetadataMatches === true &&
+    live.stagedDefinitionHash === intent.stagedDefinitionHash
+  );
+}
+
+function hasReportRecoveryProof(
+  options: ApplyPlanOptions,
+  item: PlannedItem,
+  live: {
+    action: PlannedAction;
+    observedStateHash: string;
+    stagedDefinitionHash?: string;
+    managedMetadataMatches?: boolean;
+    currentAuxiliaryHash?: string;
+  },
+  intent?: ApplyCheckpoint["pendingUpdates"][string],
+): boolean {
+  if (item.type !== "Report") {
+    return false;
+  }
+  if (live.observedStateHash === item.observedStateHash) {
+    return true;
+  }
+  const desiredDefinition = requireReportDefinition(
+    options,
+    item.logicalId,
+  );
+  const expectedDefinitionHash =
+    intent?.phase === "definition-staged" &&
+    intent.stagedDefinitionHash
+      ? intent.stagedDefinitionHash
+      : hashReportDefinition(
+          desiredDefinition,
+          reportIncludesPlatformPart(desiredDefinition),
+          reportIncludesDiagramLayoutPart(desiredDefinition),
+        );
+  if (
+    live.managedMetadataMatches === true &&
+    live.stagedDefinitionHash === expectedDefinitionHash
+  ) {
     if (
       intent?.preservedAuxiliaryHash !== undefined &&
       live.currentAuxiliaryHash !== intent.preservedAuxiliaryHash

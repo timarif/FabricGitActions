@@ -104,7 +104,7 @@ describe("online Fabric planning", () => {
         kind: "FabricDeployment",
         metadata: { deploymentId: "managed-workspace" },
         workspace: {
-          displayName: "tva-Analytics",
+          displayName: "Fabric Deploy Analytics",
           capacityId: "capacity-1",
         },
         items: [

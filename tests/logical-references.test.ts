@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import type { FabricDefinition } from "../src/fabric/definition";
 import {
   hashMaterializedSparkJobDefinition,
+  materializeReportDefinitionWithProof,
   materializeSparkJobDefinitionSnapshot,
   validateLogicalReferenceDeclarations,
 } from "../src/fabric/logical-references";
@@ -28,6 +29,17 @@ const sparkJob: DeploymentItem = {
   dependsOn: ["bronze", "sparkEnvironment"],
 };
 const itemGraph = [lakehouse, environment, sparkJob];
+const semanticModel: DeploymentItem = {
+  logicalId: "salesModel",
+  type: "SemanticModel",
+  path: "items/model",
+};
+const report: DeploymentItem = {
+  logicalId: "salesReport",
+  type: "Report",
+  path: "items/report",
+  dependsOn: ["salesModel"],
+};
 
 function validate(
   definition: Pick<ItemDefinition, "references" | "bindings">,
@@ -226,6 +238,136 @@ describe("logical reference declarations", () => {
         ],
       }),
     ).toThrow("declares '/properties/environmentArtifactId' more than once");
+  });
+
+  it("canonicalizes the Report Semantic Model reference and explicit binding", () => {
+    const graph = [semanticModel, report];
+    const reference = validate(
+      { references: { semanticModel: "salesModel" } },
+      report,
+      graph,
+    );
+    expect(reference).toEqual({
+      "/datasetReference/byConnection/connectionString": {
+        logicalId: "salesModel",
+        valueFrom: "items.salesModel.id",
+        targetType: "SemanticModel",
+      },
+    });
+    expect(
+      validate(
+        {
+          bindings: [
+            {
+              target:
+                "/datasetReference/byConnection/connectionString",
+              valueFrom: "item.salesModel.id",
+            },
+          ],
+        },
+        report,
+        graph,
+      ),
+    ).toEqual(reference);
+  });
+
+  it("rejects invalid Report targets, types, dependencies, and duplicates", () => {
+    expect(() =>
+      validate({}, report, [semanticModel, report]),
+    ).toThrow("must declare exactly one");
+    expect(() =>
+      validate(
+        { references: { semanticModel: "bronze" } },
+        { ...report, dependsOn: ["bronze"] },
+        [lakehouse, { ...report, dependsOn: ["bronze"] }],
+      ),
+    ).toThrow("requires type 'SemanticModel'");
+    expect(() =>
+      validate(
+        { references: { semanticModel: "salesModel" } },
+        { ...report, dependsOn: [] },
+        [semanticModel, { ...report, dependsOn: [] }],
+      ),
+    ).toThrow("dependsOn does not include it");
+    expect(() =>
+      validate(
+        {
+          references: { semanticModel: "salesModel" },
+          bindings: [
+            {
+              target:
+                "/datasetReference/byConnection/connectionString",
+              valueFrom: "items.salesModel.id",
+            },
+          ],
+        },
+        report,
+        [semanticModel, report],
+      ),
+    ).toThrow("more than once");
+  });
+});
+
+describe("Report logical reference materialization", () => {
+  it("materializes exactly the approved semanticmodelid connection string and proof", () => {
+    const source: FabricDefinition = {
+      format: "PBIR",
+      parts: [
+        {
+          path: "definition.pbir",
+          payload: Buffer.from(
+            JSON.stringify({
+              $schema:
+                "https://developer.microsoft.com/json-schemas/fabric/item/report/definitionProperties/2.0.0/schema.json",
+              version: "4.0",
+              datasetReference: {
+                byConnection: {
+                  connectionString: "semanticmodelid=source",
+                },
+              },
+            }),
+          ).toString("base64"),
+          payloadType: "InlineBase64",
+        },
+        {
+          path: "definition/report.json",
+          payload: Buffer.from("{}").toString("base64"),
+          payloadType: "InlineBase64",
+        },
+        {
+          path: "definition/version.json",
+          payload: Buffer.from("{}").toString("base64"),
+          payloadType: "InlineBase64",
+        },
+      ],
+    };
+    const materialized = materializeReportDefinitionWithProof(
+      source,
+      validate(
+        { references: { semanticModel: "salesModel" } },
+        report,
+        [semanticModel, report],
+      ),
+      { salesModel: "model-physical-id" },
+    );
+    const properties = JSON.parse(
+      Buffer.from(
+        materialized.definition.parts.find(
+          (part) => part.path === "definition.pbir",
+        )!.payload,
+        "base64",
+      ).toString("utf8"),
+    );
+
+    expect(
+      properties.datasetReference.byConnection.connectionString,
+    ).toBe("semanticmodelid=model-physical-id");
+    expect(materialized.materializedDefinitionHash).toMatch(
+      /^[0-9a-f]{64}$/,
+    );
+    expect(materialized.resolvedBindingsHash).toMatch(
+      /^[0-9a-f]{64}$/,
+    );
   });
 });
 
