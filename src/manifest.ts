@@ -887,6 +887,7 @@ function validateUniqueDesiredIdentities(
 ): void {
   const identities = new Map<
     | "Lakehouse"
+    | "Eventhouse"
     | "Environment"
     | "SparkCustomPool"
     | "Notebook"
@@ -897,6 +898,7 @@ function validateUniqueDesiredIdentities(
     Map<string, string>
   >([
     ["Lakehouse", new Map()],
+    ["Eventhouse", new Map()],
     ["Environment", new Map()],
     ["SparkCustomPool", new Map()],
     ["Notebook", new Map()],
@@ -908,6 +910,7 @@ function validateUniqueDesiredIdentities(
   for (const item of manifest.items) {
     if (
       item.type !== "Lakehouse" &&
+      item.type !== "Eventhouse" &&
       item.type !== "Environment" &&
       item.type !== "SparkCustomPool" &&
       item.type !== "Notebook" &&

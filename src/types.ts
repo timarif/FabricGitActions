@@ -6,6 +6,7 @@ import type { FabricTagScope } from "./fabric/tags";
 
 export const FABRIC_ITEM_TYPES = [
   "Lakehouse",
+  "Eventhouse",
   "LakehouseTables",
   "FabricTag",
   "Environment",
@@ -39,6 +40,7 @@ export interface ItemDefinition {
   desiredState?: DesiredState;
   folderId?: string;
   enableSchemas?: true;
+  minimumConsumptionUnits?: number;
   scope?: FabricTagScope;
   tags?: string[];
   references?: Record<string, string>;

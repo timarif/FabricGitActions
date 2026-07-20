@@ -330,6 +330,7 @@
             "type": "string",
             "enum": [
               "Lakehouse",
+              "Eventhouse",
               "LakehouseTables",
               "FabricTag",
               "Environment",

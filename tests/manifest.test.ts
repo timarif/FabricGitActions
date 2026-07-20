@@ -321,6 +321,48 @@ items:
     ).toThrow("resolve to the same folder and displayName");
   });
 
+  it("rejects duplicate desired Eventhouse identities", () => {
+    const root = mkdtempSync(path.join(tmpdir(), "fabric-deploy-"));
+    const manifestPath = createFixture(
+      root,
+      `
+apiVersion: fabric.deploy/v1alpha1
+kind: FabricDeployment
+metadata:
+  deploymentId: eventhouse-identities
+workspace:
+  id: workspace-1
+items:
+  - logicalId: firstEventhouse
+    type: Eventhouse
+    path: items/eventhouses/first
+  - logicalId: secondEventhouse
+    type: Eventhouse
+    path: items/eventhouses/second
+`,
+      [
+        "items/eventhouses/first",
+        "items/eventhouses/second",
+      ],
+    );
+    for (const name of ["first", "second"]) {
+      writeFileSync(
+        path.join(
+          root,
+          "items/eventhouses",
+          name,
+          "item.yaml",
+        ),
+        "displayName: Shared-Eventhouse\n",
+        "utf8",
+      );
+    }
+
+    expect(() => loadManifest(manifestPath)).toThrow(
+      "Eventhouse items 'firstEventhouse' and 'secondEventhouse' resolve to the same folder and displayName",
+    );
+  });
+
   it("rejects duplicate desired Environment identities", () => {
     const root = mkdtempSync(path.join(tmpdir(), "fabric-deploy-"));
     const manifestPath = createFixture(

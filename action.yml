@@ -1,5 +1,5 @@
 name: Fabric Deploy
-description: Plan and deploy Microsoft Fabric workspaces and data engineering workloads.
+description: Plan and deploy Microsoft Fabric workspaces, items, and workspace controls.
 author: timarif
 
 branding:

@@ -308,11 +308,47 @@ PBIR live create/no-op/update round-trip validation is complete. Live validation
 remains required for PBIR-Legacy, `semanticModelDiagramLayout.json`,
 `reportExtensions.json`, StaticResources, and encrypted-label blocking.
 
+## Phase 7: Real-Time Intelligence
+
+### Phase 7A: Eventhouse
+
+Implementation and disposable live validation are complete for Fabric item
+type `Eventhouse`. The first increment manages metadata and the create-only
+`creationPayload.minimumConsumptionUnits` setting directly from `item.yaml`,
+without a definition directory.
+
+Authenticated planning uses folder-scoped nonrecursive discovery, rejects
+ambiguous identities, reads the full Eventhouse properties, and binds the
+physical ID, display name, normalized description, folder, and minimum
+consumption units into the observed-state hash. Computed query/ingestion URIs
+and child database IDs remain unmanaged.
+
+Create supports synchronous `201` and accepted `202` responses with checkpointed
+LRO recovery. Metadata update supports only `displayName` and `description`.
+Because Fabric does not expose a post-create update API for minimum consumption,
+any drift from the desired value is blocked and requires an intentional future
+replacement workflow. Deletion is not enabled in this increment.
+
+Live validation confirmed create, no-op discovery, description update, a second
+no-op, immutable minimum-consumption blocking, and exact hard cleanup. The REST
+create also produced one default child KQL Database. Child IDs remain computed
+state and are intentionally excluded from Eventhouse drift hashes.
+
+Supported minimum values are `0`, `2.25`, `4.25`, `8.5`, `13`, `18`, `26`,
+`34`, `50`, or any number from `51` through `322`. Eventhouse names are limited
+to alphanumeric characters, underscores, periods, and hyphens.
+
+### Phase 7B: KQL Database
+
+KQL Database is next. Its create payload must resolve a declared logical
+Eventhouse dependency to `parentEventhouseItemId`, wait for the parent physical
+ID, and verify the relationship through the Eventhouse child database list.
+
 ## Remaining Fabric item order
 
 | Phase | Item family | Initial order and constraints |
 | --- | --- | --- |
-| 7 | Real-Time Intelligence | Eventhouse, KQL Database, Eventstream, KQL Queryset, KQL Dashboard, then newer ontology and graph artifacts. Defer items without service-principal support. |
+| 7 | Real-Time Intelligence | Eventhouse implementation and live validation complete; next KQL Database, Eventstream, KQL Queryset, KQL Dashboard, then newer ontology and graph artifacts. Defer items without service-principal support. |
 | 8 | Warehouse and databases | Warehouse metadata, guarded T-SQL DDL companion, Fabric SQL Database, then service-principal-compatible mirrored catalog variants. |
 | 9 | Data Factory | Copy Job, mounted factory integration, then dbt job support after preview validation. |
 | 10 | Platform and application items | Variable Library, GraphQL API, User Data Function, Snowflake Database, and Azure Databricks storage/catalog items. User Data Functions require a separate code-execution safeguard. |

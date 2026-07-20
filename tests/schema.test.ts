@@ -40,5 +40,18 @@ describe("published deployment schema", () => {
         }
       ).items.properties.type.enum,
     ).toContain("SemanticModel");
+    expect(
+      (
+        (
+          published.properties as Record<string, unknown>
+        ).items as {
+          items: {
+            properties: {
+              type: { enum: string[] };
+            };
+          };
+        }
+      ).items.properties.type.enum,
+    ).toContain("Eventhouse");
   });
 });

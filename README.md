@@ -1,13 +1,14 @@
 # Fabric Deploy Action
 
-A GitHub Marketplace action for declarative Microsoft Fabric deployments, with
-an initial focus on Data Engineering workloads.
+A GitHub Marketplace action for declarative Microsoft Fabric deployments,
+covering core Data Engineering, Power BI, network protection, and Eventhouse
+workloads.
 
 > [!IMPORTANT]
 > Fabric Deploy is an independent community project. It is not an official
 > Microsoft product and is not supported by Microsoft.
 
-> **Current status:** Phases 1 through 5 are implemented. Production
+> **Current status:** Phases 1 through 6 are implemented. Production
 > hardening includes deterministic OneLake staging for Spark Job JVM
 > executables and JAR libraries plus managed Fabric tag creation and additive
 > item assignment, Lakehouse schema creation, and guarded soft deletion for
@@ -22,7 +23,9 @@ an initial focus on Data Engineering workloads.
 > symbolic Report-to-SemanticModel binding, and
 > definition read-back verification. Semantic Model and PBIR Report live
 > create/no-op/update validation is complete; PBIR-Legacy live validation
-> remains required. See
+> remains required. Phase 7 begins Real-Time Intelligence support with guarded
+> Eventhouse metadata and minimum-consumption deployment; disposable live
+> create/no-op/update, immutable-drift, and cleanup validation is complete. See
 > [the roadmap](docs/ROADMAP.md).
 
 For sequential environment deployment, see the
@@ -35,10 +38,11 @@ For operational help and release verification, see
 [`SUPPORT.md`](SUPPORT.md), [`SECURITY.md`](SECURITY.md), and the
 [release guide](docs/RELEASING.md).
 
-## Initial workload scope
+## Supported workload scope
 
 - Workspace
 - Lakehouse
+- Eventhouse
 - Lakehouse table DDL
 - Fabric tags and item tag assignment
 - Environment
@@ -338,7 +342,7 @@ with:
   client-secret: ${{ secrets.FABRIC_CLIENT_SECRET }}
 ```
 
-## Guarded core data engineering apply
+## Guarded item apply
 
 Generate an authenticated plan, preserve it as an immutable artifact, then pass
 that exact file to a separate apply job:
@@ -404,6 +408,9 @@ publish, and marker-cleanup phases so retries can validate the exact
 intermediate state before continuing. Notebook, Data Pipeline, and Semantic
 Model definition updates checkpoint their metadata and definition phases and
 fail closed when an interrupted update cannot be proven safe to resume.
+Eventhouse creates use the same accepted-operation recovery path, while
+metadata updates are verified by a fresh GET. Immutable minimum-consumption
+drift is blocked during planning rather than silently ignored.
 `plan-hash` identifies the freshly generated `plan-file`;
 `approved-plan-hash` identifies the plan authorized for apply.
 
@@ -442,6 +449,21 @@ references:
 References and item-ID bindings must target known logical IDs and must also be
 declared in `dependsOn`.
 
+An Eventhouse is metadata-first and does not use a `definition/` directory:
+
+```yaml
+displayName: Telemetry-Events
+description: Real-time telemetry
+minimumConsumptionUnits: 2.25
+```
+
+`minimumConsumptionUnits` defaults to `0`. Supported values are `0`, `2.25`,
+`4.25`, `8.5`, `13`, `18`, `26`, `34`, `50`, or any number from `51` through
+`322`. Fabric exposes this setting only during creation, so a different value
+on an existing Eventhouse produces a blocked plan. Only `displayName` and
+`description` are updateable. Eventhouse deletion is intentionally unsupported
+in this increment. See [`examples/eventhouse`](examples/eventhouse).
+
 ### Guarded item deletion
 
 Lakehouse, Environment, Notebook, Spark Job Definition, Data Pipeline, and
@@ -476,7 +498,7 @@ Dependencies between absent items run in reverse order so dependents are
 deleted before their dependencies. A present item cannot depend on an absent
 item. Lakehouse deletion additionally requires
 `allow-lakehouse-data-loss: "true"` so a generic delete approval cannot remove
-Lakehouse data. FabricTag, LakehouseTables, and workspace custom Spark pool
+Lakehouse data. Eventhouse, FabricTag, LakehouseTables, and workspace custom Spark pool
 deletion remain unsupported.
 
 See [`examples/deletion`](examples/deletion) for a Lakehouse and dependent
@@ -537,6 +559,7 @@ deletion-only items use only `item.yaml` as described above.
 | Type | Required definition |
 | --- | --- |
 | Lakehouse | `item.yaml` |
+| Eventhouse | `item.yaml` with optional `minimumConsumptionUnits`; no `definition/` directory |
 | LakehouseTables | `definition/tables.yaml` plus every declared `definition/tables/*.sql` file |
 | FabricTag | `item.yaml`; no `definition/` directory |
 | Environment | `definition/environment.yml`; optional `Sparkcompute.yml`, `.platform`, and custom libraries |
@@ -837,6 +860,7 @@ The action currently implements:
 - Transient GET retries with `Retry-After`
 - Long-running-operation polling and result retrieval
 - Lakehouse list/get/create/update/read-back verification
+- Eventhouse list/get/create/update/LRO recovery and read-back verification, with immutable minimum-consumption drift blocking
 - Environment definition mapping, create/update, publish, and read-back verification
 - Notebook source/ipynb mapping, create/update, and read-back verification
 - Spark Job Definition V2 mapping, create/update, and read-back verification
@@ -851,7 +875,7 @@ The action currently implements:
 - Authenticated create/update/no-op planning
 - Approved-plan integrity and source-commit binding
 - Pre-mutation drift and authorization checks
-- Lakehouse, Environment, Notebook, Spark Job Definition, Data Pipeline, Semantic Model, Report, and workspace custom Spark pool create/update/no-op apply
+- Lakehouse, Eventhouse, Environment, Notebook, Spark Job Definition, Data Pipeline, Semantic Model, Report, and workspace custom Spark pool create/update/no-op apply
 - Checkpoint and result artifacts
 
 ## Live test workflow
