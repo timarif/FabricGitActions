@@ -71,6 +71,15 @@
 - [x] PBIR report live create/no-op/update validation
 - [ ] PBIR-Legacy report live create/no-op/update validation
 
+## Phase 7: Real-Time Intelligence
+
+- [x] Eventhouse manifest validation and authenticated discovery
+- [x] Eventhouse guarded create/update/no-op apply and LRO recovery
+- [x] Eventhouse immutable minimum-consumption drift blocking
+- [x] Eventhouse disposable live create/no-op/update validation
+- [ ] KQL Database deployment using a logical Eventhouse parent reference
+- [ ] Eventstream, KQL Queryset, and KQL Dashboard adapters
+
 ## Later phases
 
 See [the Fabric platform expansion plan](PHASE5_PLAN.md) for the prioritized

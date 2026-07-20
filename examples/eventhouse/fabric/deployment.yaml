@@ -1,0 +1,10 @@
+apiVersion: fabric.deploy/v1alpha1
+kind: FabricDeployment
+
+metadata:
+  deploymentId: eventhouse-example
+
+items:
+  - logicalId: telemetryEventhouse
+    type: Eventhouse
+    path: items/eventhouses/telemetry

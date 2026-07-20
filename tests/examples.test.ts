@@ -36,6 +36,12 @@ const examples: ExampleCase[] = [
     itemCount: 1,
   },
   {
+    name: "Eventhouse",
+    manifestPath: "eventhouse/fabric/deployment.yaml",
+    options: { workspaceIdOverride: WORKSPACE_ID },
+    itemCount: 1,
+  },
+  {
     name: "Phase 3",
     manifestPath: "live-phase3/fabric/deployment.yaml",
     options: { workspaceIdOverride: WORKSPACE_ID },

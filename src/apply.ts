@@ -21,6 +21,10 @@ import type {
   EnvironmentAdapter,
   EnvironmentOperationReference,
 } from "./fabric/environment";
+import type {
+  EventhouseAdapter,
+  EventhouseOperationReference,
+} from "./fabric/eventhouse";
 import {
   isDeletableFabricItemType,
   type ItemDeletionAdapter,
@@ -138,6 +142,10 @@ export interface ApplyPlanOptions {
   loadedManifest: LoadedManifest;
   lakehouseAdapter: Pick<
     LakehouseAdapter,
+    "create" | "update" | "verify" | "resumeCreate" | "plan"
+  >;
+  eventhouseAdapter?: Pick<
+    EventhouseAdapter,
     "create" | "update" | "verify" | "resumeCreate" | "plan"
   >;
   environmentAdapter?: Pick<
@@ -1359,6 +1367,7 @@ function assertSupportedApplyItem(
 ): void {
   if (
     item.type !== "Lakehouse" &&
+    item.type !== "Eventhouse" &&
     item.type !== "Environment" &&
     item.type !== "SparkCustomPool" &&
     item.type !== "Notebook" &&
@@ -1657,6 +1666,7 @@ async function resumePendingOperations(
       if (
         !approvedItem ||
         (approvedItem.type !== "Lakehouse" &&
+          approvedItem.type !== "Eventhouse" &&
           approvedItem.type !== "Environment" &&
           approvedItem.type !== "SparkCustomPool" &&
           approvedItem.type !== "Notebook" &&
@@ -1815,6 +1825,7 @@ async function reconcilePendingCreates(
       if (
         !approvedItem ||
         (approvedItem.type !== "Lakehouse" &&
+          approvedItem.type !== "Eventhouse" &&
           approvedItem.type !== "Environment" &&
           approvedItem.type !== "SparkCustomPool" &&
           approvedItem.type !== "Notebook" &&
@@ -1902,6 +1913,7 @@ async function reconcilePendingUpdates(
       if (
         !approvedItem ||
         (approvedItem.type !== "Lakehouse" &&
+          approvedItem.type !== "Eventhouse" &&
           approvedItem.type !== "Environment" &&
           approvedItem.type !== "SparkCustomPool" &&
           approvedItem.type !== "Notebook" &&
@@ -4057,6 +4069,7 @@ async function applyItem(
   onOperationAccepted: (
     operation:
       | LakehouseOperationReference
+      | EventhouseOperationReference
       | EnvironmentOperationReference
       | NotebookOperationReference
       | SparkJobOperationReference
@@ -4074,6 +4087,7 @@ async function applyItem(
 ): Promise<ApplyItemResult> {
   if (
     item.type !== "Lakehouse" &&
+    item.type !== "Eventhouse" &&
     item.type !== "Environment" &&
     item.type !== "SparkCustomPool" &&
     item.type !== "Notebook" &&
@@ -4366,6 +4380,7 @@ async function resumeCompletedItem(
   }
   if (
     item.type !== "Lakehouse" &&
+    item.type !== "Eventhouse" &&
     item.type !== "Environment" &&
     item.type !== "SparkCustomPool" &&
     item.type !== "Notebook" &&
@@ -4431,6 +4446,12 @@ async function planDesiredItem(
   }
   if (item.type === "Lakehouse") {
     return options.lakehouseAdapter.plan(
+      options.approvedPlan.workspaceId,
+      desired,
+    );
+  }
+  if (item.type === "Eventhouse") {
+    return requireEventhouseAdapter(options, item.logicalId).plan(
       options.approvedPlan.workspaceId,
       desired,
     );
@@ -4557,6 +4578,7 @@ async function createDesiredItem(
   onOperationAccepted: (
     operation:
       | LakehouseOperationReference
+      | EventhouseOperationReference
       | EnvironmentOperationReference
       | NotebookOperationReference
       | SparkJobOperationReference
@@ -4578,6 +4600,19 @@ async function createDesiredItem(
   }
   if (item.type === "Lakehouse") {
     return options.lakehouseAdapter.create(
+      options.approvedPlan.workspaceId,
+      desired,
+      onMutationAccepted,
+      onOperationAccepted,
+      onCreateSubmitting,
+      onCreateRejected,
+    );
+  }
+  if (item.type === "Eventhouse") {
+    return requireEventhouseAdapter(
+      options,
+      item.logicalId,
+    ).create(
       options.approvedPlan.workspaceId,
       desired,
       onMutationAccepted,
@@ -4683,6 +4718,7 @@ async function resumeCreateDesiredItem(
   desired: ItemDefinition,
   operation:
     | LakehouseOperationReference
+    | EventhouseOperationReference
     | EnvironmentOperationReference
     | NotebookOperationReference
     | SparkJobOperationReference
@@ -4693,6 +4729,17 @@ async function resumeCreateDesiredItem(
 ) {
   if (item.type === "Lakehouse") {
     return options.lakehouseAdapter.resumeCreate(
+      options.approvedPlan.workspaceId,
+      desired,
+      operation,
+      onMutationAccepted,
+    );
+  }
+  if (item.type === "Eventhouse") {
+    return requireEventhouseAdapter(
+      options,
+      item.logicalId,
+    ).resumeCreate(
       options.approvedPlan.workspaceId,
       desired,
       operation,
@@ -4786,6 +4833,19 @@ async function updateDesiredItem(
 ) {
   if (item.type === "Lakehouse") {
     return options.lakehouseAdapter.update(
+      options.approvedPlan.workspaceId,
+      physicalId,
+      desired,
+      onMutationAccepted,
+      onUpdateSubmitting,
+      onUpdateRejected,
+    );
+  }
+  if (item.type === "Eventhouse") {
+    return requireEventhouseAdapter(
+      options,
+      item.logicalId,
+    ).update(
       options.approvedPlan.workspaceId,
       physicalId,
       desired,
@@ -4904,6 +4964,16 @@ async function verifyDesiredItem(
       desired,
     );
   }
+  if (item.type === "Eventhouse") {
+    return requireEventhouseAdapter(
+      options,
+      item.logicalId,
+    ).verify(
+      options.approvedPlan.workspaceId,
+      physicalId,
+      desired,
+    );
+  }
   if (item.type === "Environment") {
     return requireEnvironmentAdapter(options, item.logicalId).verify(
       options.approvedPlan.workspaceId,
@@ -5015,6 +5085,18 @@ function requireEnvironmentAdapter(
     );
   }
   return options.environmentAdapter;
+}
+
+function requireEventhouseAdapter(
+  options: ApplyPlanOptions,
+  logicalId: string,
+): NonNullable<ApplyPlanOptions["eventhouseAdapter"]> {
+  if (!options.eventhouseAdapter) {
+    throw new Error(
+      `Eventhouse adapter was not initialized for item '${logicalId}'.`,
+    );
+  }
+  return options.eventhouseAdapter;
 }
 
 function requireEnvironmentDefinition(

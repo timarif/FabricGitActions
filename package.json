@@ -2,7 +2,7 @@
   "name": "fabric-deploy-action",
   "version": "0.1.0",
   "private": true,
-  "description": "GitHub Action for planning and deploying Microsoft Fabric data engineering items.",
+  "description": "GitHub Action for planning and deploying Microsoft Fabric workspaces, items, and workspace controls.",
   "author": "Tim Arif and contributors",
   "license": "Apache-2.0",
   "repository": {
@@ -18,7 +18,8 @@
     "microsoft-fabric",
     "deployment",
     "data-engineering",
-    "power-bi"
+    "power-bi",
+    "real-time-intelligence"
   ],
   "engines": {
     "node": ">=24"

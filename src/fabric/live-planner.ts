@@ -11,6 +11,7 @@ import type {
   PlannedNetworkProtection,
 } from "../types";
 import type { EnvironmentAdapter } from "./environment";
+import type { EventhouseAdapter } from "./eventhouse";
 import {
   isDeletableFabricItemType,
   type ItemDeletionAdapter,
@@ -51,6 +52,7 @@ export interface FabricPlanAdapters {
   workspace?: Pick<WorkspaceAdapter, "plan">;
   deletion?: Pick<ItemDeletionAdapter, "plan">;
   lakehouse: Pick<LakehouseAdapter, "plan">;
+  eventhouse?: Pick<EventhouseAdapter, "plan">;
   environment: Pick<EnvironmentAdapter, "plan">;
   notebook: Pick<NotebookAdapter, "plan">;
   sparkJob: Pick<SparkJobAdapter, "plan"> &
@@ -188,6 +190,7 @@ export async function enrichPlanWithFabric(
     }
     if (
       item.type !== "Lakehouse" &&
+      item.type !== "Eventhouse" &&
       item.type !== "Environment" &&
       item.type !== "SparkCustomPool" &&
       item.type !== "Notebook" &&
@@ -438,6 +441,11 @@ export async function enrichPlanWithFabric(
           })
       : item.type === "Lakehouse"
         ? await adapters.lakehouse.plan(workspaceId, desired)
+        : item.type === "Eventhouse"
+          ? await requireEventhouseAdapter(
+              adapters,
+              item.logicalId,
+            ).plan(workspaceId, desired)
         : item.type === "Environment"
           ? await adapters.environment.plan(
               workspaceId,
@@ -610,6 +618,18 @@ export async function enrichPlanWithFabric(
       );
     }
     return adapters.tags;
+  }
+
+  function requireEventhouseAdapter(
+    adapters: FabricPlanAdapters,
+    logicalId: string,
+  ): NonNullable<FabricPlanAdapters["eventhouse"]> {
+    if (!adapters.eventhouse) {
+      throw new Error(
+        `Eventhouse adapter is missing for '${logicalId}'.`,
+      );
+    }
+    return adapters.eventhouse;
   }
 
   const orderedItems = plan.items.map((item) => {

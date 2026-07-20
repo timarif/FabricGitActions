@@ -15,6 +15,7 @@ import {
 import { FabricClient } from "./fabric/client";
 import { parseFabricEndpoints } from "./fabric/config";
 import { EnvironmentAdapter } from "./fabric/environment";
+import { EventhouseAdapter } from "./fabric/eventhouse";
 import { ItemDeletionAdapter } from "./fabric/item-deletion";
 import { LakehouseAdapter } from "./fabric/lakehouse";
 import { LakehouseTablesAdapter } from "./fabric/lakehouse-tables";
@@ -207,6 +208,7 @@ export async function run(): Promise<void> {
       ]);
     }
     let lakehouseAdapter: LakehouseAdapter | undefined;
+    let eventhouseAdapter: EventhouseAdapter | undefined;
     let environmentAdapter: EnvironmentAdapter | undefined;
     let itemDeletionAdapter: ItemDeletionAdapter | undefined;
     let notebookAdapter: NotebookAdapter | undefined;
@@ -248,6 +250,7 @@ export async function run(): Promise<void> {
         tokenProvider,
       });
       lakehouseAdapter = new LakehouseAdapter(client);
+      eventhouseAdapter = new EventhouseAdapter(client);
       lakehouseTablesAdapter = new LakehouseTablesAdapter(client);
       environmentAdapter = new EnvironmentAdapter(client);
       itemDeletionAdapter = new ItemDeletionAdapter(client);
@@ -369,6 +372,7 @@ export async function run(): Promise<void> {
         !workspaceAdapter ||
         !itemDeletionAdapter ||
         !lakehouseAdapter ||
+        !eventhouseAdapter ||
         !environmentAdapter ||
         !notebookAdapter ||
         !sparkJobAdapter ||
@@ -389,6 +393,7 @@ export async function run(): Promise<void> {
         workspace: workspaceAdapter,
         deletion: itemDeletionAdapter,
         lakehouse: lakehouseAdapter,
+        eventhouse: eventhouseAdapter,
         environment: environmentAdapter,
         notebook: notebookAdapter,
         sparkJob: sparkJobAdapter,
@@ -509,6 +514,7 @@ export async function run(): Promise<void> {
         !checkpointFile ||
         !resultFile ||
         !lakehouseAdapter ||
+        !eventhouseAdapter ||
         !environmentAdapter ||
         !itemDeletionAdapter ||
         !notebookAdapter ||
@@ -531,6 +537,7 @@ export async function run(): Promise<void> {
         currentPlan: plan,
         loadedManifest,
         lakehouseAdapter,
+        eventhouseAdapter,
         environmentAdapter,
         itemDeletionAdapter,
         notebookAdapter,

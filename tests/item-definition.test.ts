@@ -1,4 +1,9 @@
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -9,6 +14,7 @@ import { loadManifest } from "../src/manifest";
 function createDeployment(
   type:
     | "Lakehouse"
+    | "Eventhouse"
     | "Environment"
     | "Notebook"
     | "SparkJobDefinition"
@@ -74,6 +80,77 @@ describe("item definition validation", () => {
       loadManifest(valid.manifestPath).itemDefinitions.target
         ?.displayName,
     ).toHaveLength(123);
+  });
+
+  it("loads an Eventhouse item definition", () => {
+    const fixture = createDeployment(
+      "Eventhouse",
+      "displayName: telemetry-prod\ndescription: Real-time telemetry\nminimumConsumptionUnits: 2.25\n",
+    );
+
+    expect(
+      loadManifest(fixture.manifestPath).itemDefinitions.target,
+    ).toEqual({
+      displayName: "telemetry-prod",
+      description: "Real-time telemetry",
+      minimumConsumptionUnits: 2.25,
+    });
+  });
+
+  it("validates Eventhouse names and minimum consumption units", () => {
+    const invalidName = createDeployment(
+      "Eventhouse",
+      "displayName: Telemetry House\n",
+    );
+    expect(() => loadManifest(invalidName.manifestPath)).toThrow(
+      "can contain only letters, numbers, underscores, periods, and hyphens",
+    );
+
+    const invalidMinimum = createDeployment(
+      "Eventhouse",
+      "displayName: Telemetry\nminimumConsumptionUnits: 50.5\n",
+    );
+    expect(() => loadManifest(invalidMinimum.manifestPath)).toThrow(
+      "minimumConsumptionUnits must be one of",
+    );
+
+    const rangedMinimum = createDeployment(
+      "Eventhouse",
+      "displayName: Telemetry\nminimumConsumptionUnits: 51.5\n",
+    );
+    expect(
+      loadManifest(rangedMinimum.manifestPath).itemDefinitions.target
+        ?.minimumConsumptionUnits,
+    ).toBe(51.5);
+  });
+
+  it("rejects unsupported Eventhouse definitions and deletion", () => {
+    const withDefinition = createDeployment(
+      "Eventhouse",
+      "displayName: Telemetry\n",
+    );
+    mkdirSync(
+      path.join(withDefinition.itemDirectory, "definition"),
+    );
+    expect(() => loadManifest(withDefinition.manifestPath)).toThrow(
+      "does not support a definition directory",
+    );
+
+    const absent = createDeployment(
+      "Eventhouse",
+      "displayName: Telemetry\ndesiredState: absent\n",
+    );
+    writeFileSync(
+      absent.manifestPath,
+      readFileSync(absent.manifestPath, "utf8").replace(
+        "path: items/item",
+        "path: items/item\n    desiredState: absent",
+      ),
+      "utf8",
+    );
+    expect(() => loadManifest(absent.manifestPath)).toThrow(
+      "does not support desiredState: absent",
+    );
   });
 
   it("requires an Environment definition directory", () => {
@@ -347,6 +424,17 @@ items:
 
     expect(() => loadManifest(fixture.manifestPath)).toThrow(
       "can use enableSchemas only when type is Lakehouse",
+    );
+  });
+
+  it("restricts minimumConsumptionUnits to Eventhouse items", () => {
+    const fixture = createDeployment(
+      "Lakehouse",
+      "displayName: Bronze\nminimumConsumptionUnits: 2.25\n",
+    );
+
+    expect(() => loadManifest(fixture.manifestPath)).toThrow(
+      "can use minimumConsumptionUnits only when type is Eventhouse",
     );
   });
 });

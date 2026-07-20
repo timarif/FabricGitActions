@@ -33,6 +33,11 @@ const itemDefinitionSchema = {
     desiredState: { enum: ["present", "absent"] },
     folderId: { type: "string", minLength: 1 },
     enableSchemas: { const: true },
+    minimumConsumptionUnits: {
+      type: "number",
+      minimum: 0,
+      maximum: 322,
+    },
     scope: {
       oneOf: [
         {
@@ -163,6 +168,7 @@ function validateDeletionDefinition(
   if (
     definition.description !== undefined ||
     definition.enableSchemas !== undefined ||
+    definition.minimumConsumptionUnits !== undefined ||
     definition.scope !== undefined ||
     definition.tags !== undefined ||
     definition.references !== undefined ||
@@ -181,6 +187,7 @@ function validateDeletionDefinition(
     case "DataPipeline":
     case "SemanticModel":
       return;
+    case "Eventhouse":
     case "FabricTag":
     case "LakehouseTables":
     case "SparkCustomPool":
@@ -310,6 +317,14 @@ function validateTypeSpecificDefinition(
       `Item '${item.logicalId}' can use scope only when type is FabricTag.`,
     );
   }
+  if (
+    item.type !== "Eventhouse" &&
+    definition.minimumConsumptionUnits !== undefined
+  ) {
+    throw new Error(
+      `Item '${item.logicalId}' can use minimumConsumptionUnits only when type is Eventhouse.`,
+    );
+  }
 
   switch (item.type) {
     case "Lakehouse":
@@ -322,6 +337,24 @@ function validateTypeSpecificDefinition(
           `Item '${item.logicalId}' Lakehouse displayName must begin with a letter, contain only letters, numbers, and underscores, and be at most 123 characters.`,
         );
       }
+      return;
+    case "Eventhouse":
+      if (!/^[A-Za-z0-9_.-]+$/.test(definition.displayName)) {
+        throw new Error(
+          `Item '${item.logicalId}' Eventhouse displayName can contain only letters, numbers, underscores, periods, and hyphens.`,
+        );
+      }
+      if (
+        definition.minimumConsumptionUnits !== undefined &&
+        !isSupportedMinimumConsumptionUnits(
+          definition.minimumConsumptionUnits,
+        )
+      ) {
+        throw new Error(
+          `Item '${item.logicalId}' minimumConsumptionUnits must be one of 0, 2.25, 4.25, 8.5, 13, 18, 26, 34, 50, or any number from 51 through 322.`,
+        );
+      }
+      assertNoDefinitionDirectory(item, itemDirectory);
       return;
     case "LakehouseTables":
       definitionDirectory(item, itemDirectory);
@@ -386,6 +419,34 @@ function definitionDirectory(item: DeploymentItem, itemDirectory: string): strin
     );
   }
   return directory;
+}
+
+function assertNoDefinitionDirectory(
+  item: DeploymentItem,
+  itemDirectory: string,
+): void {
+  const directory = path.join(itemDirectory, "definition");
+  if (existsSync(directory)) {
+    throw new Error(
+      `Item '${item.logicalId}' (${item.type}) does not support a definition directory; configure minimumConsumptionUnits in item.yaml.`,
+    );
+  }
+}
+
+function isSupportedMinimumConsumptionUnits(value: number): boolean {
+  return (
+    Number.isFinite(value) &&
+    (value === 0 ||
+      value === 2.25 ||
+      value === 4.25 ||
+      value === 8.5 ||
+      value === 13 ||
+      value === 18 ||
+      value === 26 ||
+      value === 34 ||
+      value === 50 ||
+      (value >= 51 && value <= 322))
+  );
 }
 
 function requireSparkJobDefinition(

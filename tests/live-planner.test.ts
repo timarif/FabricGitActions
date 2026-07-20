@@ -6,6 +6,78 @@ import { rehashPlan } from "../src/planner";
 import type { LoadedManifest } from "../src/types";
 
 describe("online Fabric planning", () => {
+  it("dispatches Eventhouse discovery to the Eventhouse adapter", async () => {
+    const loaded: LoadedManifest = {
+      manifestPath: "deployment.yaml",
+      manifestDirectory: ".",
+      sourceHash: "source",
+      resolvedHash: "resolved",
+      itemContentHashes: { eventhouse: "content" },
+      itemDirectories: { eventhouse: "items/eventhouse" },
+      itemDefinitions: {
+        eventhouse: {
+          displayName: "Telemetry",
+          minimumConsumptionUnits: 2.25,
+        },
+      },
+      environmentDefinitions: {},
+      notebookDefinitions: {},
+      sparkJobDefinitions: {},
+      pipelineDefinitions: {},
+      semanticModelDefinitions: {},
+      sparkCustomPoolDefinitions: {},
+      manifest: {
+        apiVersion: "fabric.deploy/v1alpha1",
+        kind: "FabricDeployment",
+        metadata: { deploymentId: "eventhouse-plan" },
+        workspace: { id: "workspace" },
+        items: [
+          {
+            logicalId: "eventhouse",
+            type: "Eventhouse",
+            path: "items/eventhouse",
+          },
+        ],
+      },
+    };
+    const offline = buildPlan(loaded, {
+      mode: "plan",
+      environment: "dev",
+    });
+    const fail = vi.fn(async () => {
+      throw new Error("Unrelated adapter should not be called.");
+    });
+    const eventhouse = vi.fn(async () => ({
+      action: "blocked" as const,
+      reason: "minimum consumption is immutable",
+      physicalId: "eh-1",
+      observedStateHash: "a".repeat(64),
+    }));
+
+    const online = await enrichPlanWithFabric(offline, loaded, {
+      lakehouse: { plan: fail },
+      eventhouse: { plan: eventhouse },
+      environment: { plan: fail },
+      notebook: { plan: fail },
+      sparkJob: { plan: fail },
+      pipeline: { plan: fail },
+      semanticModel: { plan: fail },
+      sparkCustomPool: { plan: fail },
+    });
+
+    expect(eventhouse).toHaveBeenCalledWith(
+      "workspace",
+      loaded.itemDefinitions.eventhouse,
+    );
+    expect(fail).not.toHaveBeenCalled();
+    expect(online.items[0]).toMatchObject({
+      type: "Eventhouse",
+      action: "blocked",
+      physicalId: "eh-1",
+      observedStateHash: "a".repeat(64),
+    });
+  });
+
   it("plans supported absent items through exact deletion discovery", async () => {
     const loaded: LoadedManifest = {
       manifestPath: "deployment.yaml",
