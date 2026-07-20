@@ -1,8 +1,18 @@
-import { describe, expect, it, vi } from "vitest";
+import {
+  describe,
+  expect,
+  it,
+  type Mock,
+  vi,
+} from "vitest";
 
 import type { FabricDefinition } from "../src/fabric/definition";
-import { enrichPlanWithFabric } from "../src/fabric/live-planner";
+import {
+  enrichPlanWithFabric,
+  type FabricPlanAdapters,
+} from "../src/fabric/live-planner";
 import { reportBindingConnectionString } from "../src/fabric/report-definition";
+import type { ReportAdapter } from "../src/fabric/report";
 import { buildPlan } from "../src/planner";
 import type { LoadedManifest } from "../src/types";
 
@@ -91,6 +101,13 @@ const loaded: LoadedManifest = {
   },
 };
 
+interface ReportMocks {
+  plan: Mock<ReportAdapter["plan"]>;
+  planUnresolvedReferences: Mock<
+    ReportAdapter["planUnresolvedReferences"]
+  >;
+}
+
 function baseAdapters(
   semanticPlan: () => Promise<{
     action: "create" | "no-op";
@@ -98,11 +115,8 @@ function baseAdapters(
     observedStateHash: string;
     physicalId?: string;
   }>,
-  report: {
-    plan: ReturnType<typeof vi.fn>;
-    planUnresolvedReferences: ReturnType<typeof vi.fn>;
-  },
-) {
+  report: ReportMocks,
+): FabricPlanAdapters {
   const unused = {
     plan: vi.fn(async () => {
       throw new Error("Unexpected adapter call.");
@@ -122,10 +136,12 @@ function baseAdapters(
 
 describe("Report live planning", () => {
   it("keeps a new Report symbolic while its Semantic Model is created in the same plan", async () => {
-    const report = {
-      plan: vi.fn(),
-      planUnresolvedReferences: vi.fn(async () => ({
-        action: "create" as const,
+    const report: ReportMocks = {
+      plan: vi.fn<ReportAdapter["plan"]>(),
+      planUnresolvedReferences: vi.fn<
+        ReportAdapter["planUnresolvedReferences"]
+      >(async () => ({
+        action: "create",
         reason: "wait",
         observedStateHash: "absent",
       })),
@@ -166,7 +182,7 @@ describe("Report live planning", () => {
   });
 
   it("materializes and proves the binding when the Semantic Model ID is available", async () => {
-    const report = {
+    const report: ReportMocks = {
       plan: vi.fn(
         async (
           _workspace: string,
@@ -184,7 +200,9 @@ describe("Report live planning", () => {
           };
         },
       ),
-      planUnresolvedReferences: vi.fn(),
+      planUnresolvedReferences: vi.fn<
+        ReportAdapter["planUnresolvedReferences"]
+      >(),
     };
     const enriched = await enrichPlanWithFabric(
       buildPlan(loaded, {
@@ -219,10 +237,12 @@ describe("Report live planning", () => {
   });
 
   it("blocks an existing Report until a newly created Semantic Model ID is reviewable", async () => {
-    const report = {
-      plan: vi.fn(),
-      planUnresolvedReferences: vi.fn(async () => ({
-        action: "blocked" as const,
+    const report: ReportMocks = {
+      plan: vi.fn<ReportAdapter["plan"]>(),
+      planUnresolvedReferences: vi.fn<
+        ReportAdapter["planUnresolvedReferences"]
+      >(async () => ({
+        action: "blocked",
         reason: "existing report requires replan",
         observedStateHash: "metadata-only",
         physicalId: "report-existing",
