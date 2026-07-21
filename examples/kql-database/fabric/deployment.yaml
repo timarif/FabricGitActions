@@ -1,0 +1,15 @@
+apiVersion: fabric.deploy/v1alpha1
+kind: FabricDeployment
+
+metadata:
+  deploymentId: kql-database-example
+
+items:
+  - logicalId: telemetryEventhouse
+    type: Eventhouse
+    path: items/eventhouses/telemetry
+
+  - logicalId: telemetryDatabase
+    type: KQLDatabase
+    path: items/kql-databases/telemetry
+    dependsOn: [telemetryEventhouse]

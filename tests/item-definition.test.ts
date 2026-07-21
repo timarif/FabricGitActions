@@ -15,6 +15,7 @@ function createDeployment(
   type:
     | "Lakehouse"
     | "Eventhouse"
+    | "KQLDatabase"
     | "Environment"
     | "Notebook"
     | "SparkJobDefinition"
@@ -25,7 +26,23 @@ function createDeployment(
   const root = mkdtempSync(path.join(tmpdir(), "fabric-deploy-item-"));
   const itemDirectory = path.join(root, "items/item");
   mkdirSync(itemDirectory, { recursive: true });
-  writeFileSync(path.join(itemDirectory, "item.yaml"), itemYaml, "utf8");
+  writeFileSync(
+    path.join(itemDirectory, "item.yaml"),
+    type === "KQLDatabase" &&
+    !itemYaml.includes("desiredState: absent")
+      ? `${itemYaml.trimEnd()}\nreferences:\n  eventhouse: eventhouse\n`
+      : itemYaml,
+    "utf8",
+  );
+  if (type === "KQLDatabase") {
+    const eventhouseDirectory = path.join(root, "items/eventhouse");
+    mkdirSync(eventhouseDirectory, { recursive: true });
+    writeFileSync(
+      path.join(eventhouseDirectory, "item.yaml"),
+      "displayName: ParentEventhouse\n",
+      "utf8",
+    );
+  }
   const manifestPath = path.join(root, "deployment.yaml");
   writeFileSync(
     manifestPath,
@@ -37,9 +54,13 @@ metadata:
 workspace:
   id: workspace-1
 items:
-  - logicalId: target
+${type === "KQLDatabase" ? `  - logicalId: eventhouse
+    type: Eventhouse
+    path: items/eventhouse
+` : ""}  - logicalId: target
     type: ${type}
     path: items/item
+${type === "KQLDatabase" ? "    dependsOn: [eventhouse]\n" : ""}
 `,
     "utf8",
   );
@@ -150,6 +171,67 @@ describe("item definition validation", () => {
     );
     expect(() => loadManifest(absent.manifestPath)).toThrow(
       "does not support desiredState: absent",
+    );
+  });
+
+  it("loads and validates a ReadWrite KQL Database definition", () => {
+    const fixture = createDeployment(
+      "KQLDatabase",
+      "displayName: telemetry.database\ndescription: Telemetry data\ndatabaseType: ReadWrite\n",
+    );
+
+    expect(
+      loadManifest(fixture.manifestPath).itemDefinitions.target,
+    ).toEqual({
+      displayName: "telemetry.database",
+      description: "Telemetry data",
+      databaseType: "ReadWrite",
+      references: { eventhouse: "eventhouse" },
+    });
+
+    const invalidName = createDeployment(
+      "KQLDatabase",
+      "displayName: Telemetry Database\n",
+    );
+    expect(() => loadManifest(invalidName.manifestPath)).toThrow(
+      "can contain only letters, numbers, underscores, periods, and hyphens",
+    );
+  });
+
+  it("rejects KQL Database definitions, deletion, and properties on other item types", () => {
+    const withDefinition = createDeployment(
+      "KQLDatabase",
+      "displayName: TelemetryDB\n",
+    );
+    mkdirSync(
+      path.join(withDefinition.itemDirectory, "definition"),
+    );
+    expect(() => loadManifest(withDefinition.manifestPath)).toThrow(
+      "does not support a definition directory",
+    );
+
+    const absent = createDeployment(
+      "KQLDatabase",
+      "displayName: TelemetryDB\ndesiredState: absent\n",
+    );
+    writeFileSync(
+      absent.manifestPath,
+      readFileSync(absent.manifestPath, "utf8").replace(
+        "path: items/item",
+        "path: items/item\n    desiredState: absent",
+      ),
+      "utf8",
+    );
+    expect(() => loadManifest(absent.manifestPath)).toThrow(
+      "does not support desiredState: absent",
+    );
+
+    const otherType = createDeployment(
+      "Lakehouse",
+      "displayName: Bronze\ndatabaseType: ReadWrite\n",
+    );
+    expect(() => loadManifest(otherType.manifestPath)).toThrow(
+      "can use databaseType only when type is KQLDatabase",
     );
   });
 

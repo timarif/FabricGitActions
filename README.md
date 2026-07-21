@@ -1,8 +1,8 @@
 # Fabric Deploy Action
 
 A GitHub Marketplace action for declarative Microsoft Fabric deployments,
-covering core Data Engineering, Power BI, network protection, and Eventhouse
-workloads.
+covering core Data Engineering, Power BI, network protection, Eventhouse, and
+KQL Database workloads.
 
 > [!IMPORTANT]
 > Fabric Deploy is an independent community project. It is not an official
@@ -24,8 +24,9 @@ workloads.
 > definition read-back verification. Semantic Model and PBIR Report live
 > create/no-op/update validation is complete; PBIR-Legacy live validation
 > remains required. Phase 7 begins Real-Time Intelligence support with guarded
-> Eventhouse metadata and minimum-consumption deployment; disposable live
-> create/no-op/update, immutable-drift, and cleanup validation is complete. See
+> Eventhouse metadata and minimum-consumption deployment plus ReadWrite KQL
+> Database deployment through a logical Eventhouse parent binding. Eventhouse
+> and KQL Database disposable live validation is complete. See
 > [the roadmap](docs/ROADMAP.md).
 
 For sequential environment deployment, see the
@@ -43,6 +44,7 @@ For operational help and release verification, see
 - Workspace
 - Lakehouse
 - Eventhouse
+- KQL Database
 - Lakehouse table DDL
 - Fabric tags and item tag assignment
 - Environment
@@ -410,7 +412,10 @@ Model definition updates checkpoint their metadata and definition phases and
 fail closed when an interrupted update cannot be proven safe to resume.
 Eventhouse creates use the same accepted-operation recovery path, while
 metadata updates are verified by a fresh GET. Immutable minimum-consumption
-drift is blocked during planning rather than silently ignored.
+drift is blocked during planning rather than silently ignored. KQL Database
+creates checkpoint the exact resolved Eventhouse ID before dispatch and resume
+accepted operations only when the materialization proof still matches.
+Immutable parent Eventhouse and database type drift is blocked.
 `plan-hash` identifies the freshly generated `plan-file`;
 `approved-plan-hash` identifies the plan authorized for apply.
 
@@ -464,6 +469,36 @@ on an existing Eventhouse produces a blocked plan. Only `displayName` and
 `description` are updateable. Eventhouse deletion is intentionally unsupported
 in this increment. See [`examples/eventhouse`](examples/eventhouse).
 
+A ReadWrite KQL Database declares its parent Eventhouse by logical ID and does
+not use a `definition/` directory:
+
+```yaml
+# deployment.yaml
+- logicalId: telemetryDatabase
+  type: KQLDatabase
+  path: items/kql-databases/telemetry
+  dependsOn: [telemetryEventhouse]
+```
+
+```yaml
+# item.yaml
+displayName: Telemetry-Database
+description: ReadWrite telemetry database
+databaseType: ReadWrite
+references:
+  eventhouse: telemetryEventhouse
+```
+
+`databaseType` defaults to `ReadWrite`. Planning resolves
+`references.eventhouse` to the exact physical
+`creationPayload.parentEventhouseItemId`. A new database can remain symbolic
+while its Eventhouse is created earlier in the same approved apply, and the
+resolved ID is checkpointed before mutation. Existing databases are blocked
+when the desired parent or database type differs because Fabric does not
+support changing either property after creation. Definition-based schema
+management, Shortcut databases, and deletion are intentionally deferred. See
+[`examples/kql-database`](examples/kql-database).
+
 ### Guarded item deletion
 
 Lakehouse, Environment, Notebook, Spark Job Definition, Data Pipeline, and
@@ -498,8 +533,8 @@ Dependencies between absent items run in reverse order so dependents are
 deleted before their dependencies. A present item cannot depend on an absent
 item. Lakehouse deletion additionally requires
 `allow-lakehouse-data-loss: "true"` so a generic delete approval cannot remove
-Lakehouse data. Eventhouse, FabricTag, LakehouseTables, and workspace custom Spark pool
-deletion remain unsupported.
+Lakehouse data. Eventhouse, KQL Database, FabricTag, LakehouseTables, and
+workspace custom Spark pool deletion remain unsupported.
 
 See [`examples/deletion`](examples/deletion) for a Lakehouse and dependent
 Data Pipeline retirement manifest.
@@ -560,6 +595,7 @@ deletion-only items use only `item.yaml` as described above.
 | --- | --- |
 | Lakehouse | `item.yaml` |
 | Eventhouse | `item.yaml` with optional `minimumConsumptionUnits`; no `definition/` directory |
+| KQLDatabase | `item.yaml` with `references.eventhouse` and optional `databaseType: ReadWrite`; no `definition/` directory |
 | LakehouseTables | `definition/tables.yaml` plus every declared `definition/tables/*.sql` file |
 | FabricTag | `item.yaml`; no `definition/` directory |
 | Environment | `definition/environment.yml`; optional `Sparkcompute.yml`, `.platform`, and custom libraries |
@@ -861,6 +897,7 @@ The action currently implements:
 - Long-running-operation polling and result retrieval
 - Lakehouse list/get/create/update/read-back verification
 - Eventhouse list/get/create/update/LRO recovery and read-back verification, with immutable minimum-consumption drift blocking
+- KQL Database list/get/create/update/LRO recovery and read-back verification, with symbolic Eventhouse binding and immutable parent/type drift blocking
 - Environment definition mapping, create/update, publish, and read-back verification
 - Notebook source/ipynb mapping, create/update, and read-back verification
 - Spark Job Definition V2 mapping, create/update, and read-back verification
@@ -875,7 +912,7 @@ The action currently implements:
 - Authenticated create/update/no-op planning
 - Approved-plan integrity and source-commit binding
 - Pre-mutation drift and authorization checks
-- Lakehouse, Eventhouse, Environment, Notebook, Spark Job Definition, Data Pipeline, Semantic Model, Report, and workspace custom Spark pool create/update/no-op apply
+- Lakehouse, Eventhouse, KQL Database, Environment, Notebook, Spark Job Definition, Data Pipeline, Semantic Model, Report, and workspace custom Spark pool create/update/no-op apply
 - Checkpoint and result artifacts
 
 ## Live test workflow

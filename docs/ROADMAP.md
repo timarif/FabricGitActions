@@ -77,7 +77,10 @@
 - [x] Eventhouse guarded create/update/no-op apply and LRO recovery
 - [x] Eventhouse immutable minimum-consumption drift blocking
 - [x] Eventhouse disposable live create/no-op/update validation
-- [ ] KQL Database deployment using a logical Eventhouse parent reference
+- [x] KQL Database manifest validation and logical Eventhouse parent binding
+- [x] KQL Database guarded create/update/no-op apply and LRO recovery
+- [x] KQL Database immutable parent and database-type drift blocking
+- [x] KQL Database disposable live create/no-op/update validation
 - [ ] Eventstream, KQL Queryset, and KQL Dashboard adapters
 
 ## Later phases

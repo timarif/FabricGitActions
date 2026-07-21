@@ -38,6 +38,9 @@ const itemDefinitionSchema = {
       minimum: 0,
       maximum: 322,
     },
+    databaseType: {
+      const: "ReadWrite",
+    },
     scope: {
       oneOf: [
         {
@@ -169,6 +172,7 @@ function validateDeletionDefinition(
     definition.description !== undefined ||
     definition.enableSchemas !== undefined ||
     definition.minimumConsumptionUnits !== undefined ||
+    definition.databaseType !== undefined ||
     definition.scope !== undefined ||
     definition.tags !== undefined ||
     definition.references !== undefined ||
@@ -188,6 +192,7 @@ function validateDeletionDefinition(
     case "SemanticModel":
       return;
     case "Eventhouse":
+    case "KQLDatabase":
     case "FabricTag":
     case "LakehouseTables":
     case "SparkCustomPool":
@@ -325,6 +330,14 @@ function validateTypeSpecificDefinition(
       `Item '${item.logicalId}' can use minimumConsumptionUnits only when type is Eventhouse.`,
     );
   }
+  if (
+    item.type !== "KQLDatabase" &&
+    definition.databaseType !== undefined
+  ) {
+    throw new Error(
+      `Item '${item.logicalId}' can use databaseType only when type is KQLDatabase.`,
+    );
+  }
 
   switch (item.type) {
     case "Lakehouse":
@@ -352,6 +365,14 @@ function validateTypeSpecificDefinition(
       ) {
         throw new Error(
           `Item '${item.logicalId}' minimumConsumptionUnits must be one of 0, 2.25, 4.25, 8.5, 13, 18, 26, 34, 50, or any number from 51 through 322.`,
+        );
+      }
+      assertNoDefinitionDirectory(item, itemDirectory);
+      return;
+    case "KQLDatabase":
+      if (!/^[A-Za-z0-9_.-]{1,123}$/.test(definition.displayName)) {
+        throw new Error(
+          `Item '${item.logicalId}' KQLDatabase displayName must be at most 123 characters and can contain only letters, numbers, underscores, periods, and hyphens.`,
         );
       }
       assertNoDefinitionDirectory(item, itemDirectory);

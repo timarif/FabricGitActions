@@ -36,6 +36,9 @@
         }
       ]
     },
+    "databaseType": {
+      "const": "ReadWrite"
+    },
     "references": {
       "type": "object",
       "additionalProperties": {

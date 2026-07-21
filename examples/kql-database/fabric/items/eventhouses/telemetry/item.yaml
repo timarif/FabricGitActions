@@ -1,0 +1,4 @@
+displayName: Telemetry-Eventhouse
+description: Parent Eventhouse for real-time telemetry
+desiredState: present
+minimumConsumptionUnits: 2.25

@@ -16,6 +16,7 @@ import { FabricClient } from "./fabric/client";
 import { parseFabricEndpoints } from "./fabric/config";
 import { EnvironmentAdapter } from "./fabric/environment";
 import { EventhouseAdapter } from "./fabric/eventhouse";
+import { KqlDatabaseAdapter } from "./fabric/kql-database";
 import { ItemDeletionAdapter } from "./fabric/item-deletion";
 import { LakehouseAdapter } from "./fabric/lakehouse";
 import { LakehouseTablesAdapter } from "./fabric/lakehouse-tables";
@@ -209,6 +210,7 @@ export async function run(): Promise<void> {
     }
     let lakehouseAdapter: LakehouseAdapter | undefined;
     let eventhouseAdapter: EventhouseAdapter | undefined;
+    let kqlDatabaseAdapter: KqlDatabaseAdapter | undefined;
     let environmentAdapter: EnvironmentAdapter | undefined;
     let itemDeletionAdapter: ItemDeletionAdapter | undefined;
     let notebookAdapter: NotebookAdapter | undefined;
@@ -251,6 +253,7 @@ export async function run(): Promise<void> {
       });
       lakehouseAdapter = new LakehouseAdapter(client);
       eventhouseAdapter = new EventhouseAdapter(client);
+      kqlDatabaseAdapter = new KqlDatabaseAdapter(client);
       lakehouseTablesAdapter = new LakehouseTablesAdapter(client);
       environmentAdapter = new EnvironmentAdapter(client);
       itemDeletionAdapter = new ItemDeletionAdapter(client);
@@ -373,6 +376,7 @@ export async function run(): Promise<void> {
         !itemDeletionAdapter ||
         !lakehouseAdapter ||
         !eventhouseAdapter ||
+        !kqlDatabaseAdapter ||
         !environmentAdapter ||
         !notebookAdapter ||
         !sparkJobAdapter ||
@@ -394,6 +398,7 @@ export async function run(): Promise<void> {
         deletion: itemDeletionAdapter,
         lakehouse: lakehouseAdapter,
         eventhouse: eventhouseAdapter,
+        kqlDatabase: kqlDatabaseAdapter,
         environment: environmentAdapter,
         notebook: notebookAdapter,
         sparkJob: sparkJobAdapter,
@@ -515,6 +520,7 @@ export async function run(): Promise<void> {
         !resultFile ||
         !lakehouseAdapter ||
         !eventhouseAdapter ||
+        !kqlDatabaseAdapter ||
         !environmentAdapter ||
         !itemDeletionAdapter ||
         !notebookAdapter ||
@@ -538,6 +544,7 @@ export async function run(): Promise<void> {
         loadedManifest,
         lakehouseAdapter,
         eventhouseAdapter,
+        kqlDatabaseAdapter,
         environmentAdapter,
         itemDeletionAdapter,
         notebookAdapter,

@@ -888,6 +888,7 @@ function validateUniqueDesiredIdentities(
   const identities = new Map<
     | "Lakehouse"
     | "Eventhouse"
+    | "KQLDatabase"
     | "Environment"
     | "SparkCustomPool"
     | "Notebook"
@@ -899,6 +900,7 @@ function validateUniqueDesiredIdentities(
   >([
     ["Lakehouse", new Map()],
     ["Eventhouse", new Map()],
+    ["KQLDatabase", new Map()],
     ["Environment", new Map()],
     ["SparkCustomPool", new Map()],
     ["Notebook", new Map()],
@@ -911,6 +913,7 @@ function validateUniqueDesiredIdentities(
     if (
       item.type !== "Lakehouse" &&
       item.type !== "Eventhouse" &&
+      item.type !== "KQLDatabase" &&
       item.type !== "Environment" &&
       item.type !== "SparkCustomPool" &&
       item.type !== "Notebook" &&
