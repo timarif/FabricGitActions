@@ -105,6 +105,15 @@ import {
   hashSparkJobDefinition,
   sparkJobIncludesPlatformPart,
 } from "./fabric/spark-job-definition";
+import type {
+  EventstreamAdapter,
+  EventstreamOperationReference,
+} from "./fabric/eventstream";
+import {
+  hashEventstreamDefinition,
+  eventstreamIncludesPlatformPart,
+  eventstreamIncludesPropertiesPart,
+} from "./fabric/eventstream-definition";
 import {
   materializeKqlDatabaseCreationWithProof,
   materializeSparkJobDefinitionWithProof,
@@ -192,6 +201,10 @@ export interface ApplyPlanOptions {
   >;
   reportAdapter?: Pick<
     ReportAdapter,
+    "create" | "update" | "verify" | "resumeCreate" | "plan"
+  >;
+  eventstreamAdapter?: Pick<
+    EventstreamAdapter,
     "create" | "update" | "verify" | "resumeCreate" | "plan"
   >;
   sparkCustomPoolAdapter?: Pick<
@@ -1421,7 +1434,8 @@ function assertSupportedApplyItem(
     item.type !== "SemanticModel" &&
     item.type !== "Report" &&
     item.type !== "LakehouseTables" &&
-    item.type !== "FabricTag"
+    item.type !== "FabricTag" &&
+    item.type !== "Eventstream"
   ) {
     throw new Error(
       `Apply is not implemented for item '${item.logicalId}' of type ${item.type}.`,
@@ -1508,6 +1522,15 @@ function assertSupportedApplyItem(
   ) {
     throw new Error(
       `Report adapter was not initialized for item '${item.logicalId}'.`,
+    );
+  }
+  if (
+    item.desiredState !== "absent" &&
+    item.type === "Eventstream" &&
+    !options.eventstreamAdapter
+  ) {
+    throw new Error(
+      `Eventstream adapter was not initialized for item '${item.logicalId}'.`,
     );
   }
   if (
@@ -1738,7 +1761,8 @@ async function resumePendingOperations(
           approvedItem.type !== "SparkJobDefinition" &&
           approvedItem.type !== "DataPipeline" &&
           approvedItem.type !== "SemanticModel" &&
-          approvedItem.type !== "Report")
+          approvedItem.type !== "Report" &&
+          approvedItem.type !== "Eventstream")
       ) {
         throw new Error(
           `Pending operation item '${logicalId}' is missing or unsupported.`,
@@ -1900,6 +1924,7 @@ async function reconcilePendingCreates(
           approvedItem.type !== "DataPipeline" &&
           approvedItem.type !== "SemanticModel" &&
           approvedItem.type !== "Report" &&
+          approvedItem.type !== "Eventstream" &&
           approvedItem.type !== "FabricTag") ||
         !currentItem
       ) {
@@ -1989,7 +2014,8 @@ async function reconcilePendingUpdates(
           approvedItem.type !== "SparkJobDefinition" &&
           approvedItem.type !== "DataPipeline" &&
           approvedItem.type !== "SemanticModel" &&
-          approvedItem.type !== "Report") ||
+          approvedItem.type !== "Report" &&
+          approvedItem.type !== "Eventstream") ||
         approvedItem.action !== "update" ||
         !currentItem
       ) {
@@ -2052,6 +2078,13 @@ async function reconcilePendingUpdates(
             hasSparkCustomPoolRecoveryProof(
               approvedItem,
               live,
+            )) ||
+          (approvedItem.type === "Eventstream" &&
+            hasEventstreamRecoveryProof(
+              options,
+              approvedItem,
+              live,
+              intent,
             )))
       ) {
         const verified = await updateDesiredItem(
@@ -4241,7 +4274,8 @@ async function applyItem(
       | SparkJobOperationReference
       | PipelineOperationReference
       | SemanticModelOperationReference
-      | ReportOperationReference,
+      | ReportOperationReference
+      | EventstreamOperationReference,
   ) => void,
   onCreateSubmitting: () => void,
   onCreateRejected: () => void,
@@ -4263,7 +4297,8 @@ async function applyItem(
     item.type !== "DataPipeline" &&
     item.type !== "SemanticModel" &&
     item.type !== "Report" &&
-    item.type !== "FabricTag"
+    item.type !== "FabricTag" &&
+    item.type !== "Eventstream"
   ) {
     throw new Error(
       `Apply is not implemented for item '${item.logicalId}' of type ${item.type}.`,
@@ -4558,7 +4593,8 @@ async function resumeCompletedItem(
     item.type !== "DataPipeline" &&
     item.type !== "SemanticModel" &&
     item.type !== "Report" &&
-    item.type !== "FabricTag"
+    item.type !== "FabricTag" &&
+    item.type !== "Eventstream"
   ) {
     throw new Error(
       `Checkpoint resume is not implemented for type ${item.type}.`,
@@ -4735,6 +4771,13 @@ async function planDesiredItem(
       resolvedBindingsHash: materialized.resolvedBindingsHash,
     };
   }
+  if (item.type === "Eventstream") {
+    return requireEventstreamAdapter(options, item.logicalId).plan(
+      options.approvedPlan.workspaceId,
+      desired,
+      requireEventstreamDefinition(options, item.logicalId),
+    );
+  }
   throw new Error(
     `Fabric planning is not implemented for item '${item.logicalId}' of type ${item.type}.`,
   );
@@ -4781,7 +4824,8 @@ async function createDesiredItem(
       | SparkJobOperationReference
       | PipelineOperationReference
       | SemanticModelOperationReference
-      | ReportOperationReference,
+      | ReportOperationReference
+      | EventstreamOperationReference,
   ) => void,
   onCreateSubmitting: () => void,
   onCreateRejected: () => void,
@@ -4934,6 +4978,17 @@ async function createDesiredItem(
       onCreateRejected,
     );
   }
+  if (item.type === "Eventstream") {
+    return requireEventstreamAdapter(options, item.logicalId).create(
+      options.approvedPlan.workspaceId,
+      desired,
+      requireEventstreamDefinition(options, item.logicalId),
+      onMutationAccepted,
+      onOperationAccepted,
+      onCreateSubmitting,
+      onCreateRejected,
+    );
+  }
   throw new Error(
     `Create is not implemented for item '${item.logicalId}' of type ${item.type}.`,
   );
@@ -4953,7 +5008,8 @@ async function resumeCreateDesiredItem(
     | SparkJobOperationReference
     | PipelineOperationReference
     | SemanticModelOperationReference
-    | ReportOperationReference,
+    | ReportOperationReference
+    | EventstreamOperationReference,
   onMutationAccepted: (physicalId: string) => void,
 ) {
   if (item.type === "Lakehouse") {
@@ -5066,6 +5122,18 @@ async function resumeCreateDesiredItem(
       options.approvedPlan.workspaceId,
       desired,
       requireReportDefinition(options, item.logicalId),
+      operation,
+      onMutationAccepted,
+    );
+  }
+  if (item.type === "Eventstream") {
+    return requireEventstreamAdapter(
+      options,
+      item.logicalId,
+    ).resumeCreate(
+      options.approvedPlan.workspaceId,
+      desired,
+      requireEventstreamDefinition(options, item.logicalId),
       operation,
       onMutationAccepted,
     );
@@ -5225,6 +5293,17 @@ async function updateDesiredItem(
       onUpdateRejected,
     );
   }
+  if (item.type === "Eventstream") {
+    return requireEventstreamAdapter(options, item.logicalId).update(
+      options.approvedPlan.workspaceId,
+      physicalId,
+      desired,
+      requireEventstreamDefinition(options, item.logicalId),
+      onMutationAccepted,
+      onUpdateSubmitting,
+      onUpdateRejected,
+    );
+  }
   throw new Error(
     `Update is not implemented for item '${item.logicalId}' of type ${item.type}.`,
   );
@@ -5346,6 +5425,14 @@ async function verifyDesiredItem(
       physicalId,
       desired,
       requireReportDefinition(options, item.logicalId),
+    );
+  }
+  if (item.type === "Eventstream") {
+    return requireEventstreamAdapter(options, item.logicalId).verify(
+      options.approvedPlan.workspaceId,
+      physicalId,
+      desired,
+      requireEventstreamDefinition(options, item.logicalId),
     );
   }
   throw new Error(
@@ -5827,6 +5914,32 @@ function requireReportAdapter(
   return options.reportAdapter;
 }
 
+function requireEventstreamAdapter(
+  options: ApplyPlanOptions,
+  logicalId: string,
+): NonNullable<ApplyPlanOptions["eventstreamAdapter"]> {
+  if (!options.eventstreamAdapter) {
+    throw new Error(
+      `Eventstream adapter was not initialized for item '${logicalId}'.`,
+    );
+  }
+  return options.eventstreamAdapter;
+}
+
+function requireEventstreamDefinition(
+  options: ApplyPlanOptions,
+  logicalId: string,
+) {
+  const definition =
+    options.loadedManifest.eventstreamDefinitions?.[logicalId];
+  if (!definition) {
+    throw new Error(
+      `Eventstream definition snapshot is missing for '${logicalId}'.`,
+    );
+  }
+  return definition;
+}
+
 function requireReportRuntimeDefinition(
   options: ApplyPlanOptions,
   logicalId: string,
@@ -6224,6 +6337,51 @@ function hasReportRecoveryProof(
     (intent.phase !== "metadata-submitting" &&
       intent.phase !== "metadata-updated" &&
       intent.phase !== "definition-submitting")
+  ) {
+    return false;
+  }
+  return (
+    live.managedMetadataMatches === true &&
+    live.stagedDefinitionHash === intent.stagedDefinitionHash
+  );
+}
+
+function hasEventstreamRecoveryProof(
+  options: ApplyPlanOptions,
+  item: PlannedItem,
+  live: {
+    action: PlannedAction;
+    observedStateHash: string;
+    stagedDefinitionHash?: string;
+    managedMetadataMatches?: boolean;
+  },
+  intent?: ApplyCheckpoint["pendingUpdates"][string],
+): boolean {
+  if (item.type !== "Eventstream") {
+    return false;
+  }
+  if (live.observedStateHash === item.observedStateHash) {
+    return true;
+  }
+  const desiredDefinition = requireEventstreamDefinition(
+    options,
+    item.logicalId,
+  );
+  const expectedDefinitionHash = hashEventstreamDefinition(
+    desiredDefinition,
+    eventstreamIncludesPlatformPart(desiredDefinition),
+    eventstreamIncludesPropertiesPart(desiredDefinition),
+  );
+  if (
+    live.managedMetadataMatches === true &&
+    live.stagedDefinitionHash === expectedDefinitionHash
+  ) {
+    return true;
+  }
+  if (
+    !intent ||
+    (intent.phase !== "metadata-submitting" &&
+      intent.phase !== "metadata-updated")
   ) {
     return false;
   }

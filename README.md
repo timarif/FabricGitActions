@@ -26,7 +26,9 @@ KQL Database workloads.
 > remains required. Phase 7 begins Real-Time Intelligence support with guarded
 > Eventhouse metadata and minimum-consumption deployment plus ReadWrite KQL
 > Database deployment through a logical Eventhouse parent binding. Eventhouse
-> and KQL Database disposable live validation is complete. See
+> and KQL Database disposable live validation is complete. Eventstream
+> definition deployment (topology, retention, and throughput) with guarded
+> create/update/no-op apply is also implemented. See
 > [the roadmap](docs/ROADMAP.md).
 
 For sequential environment deployment, see the
@@ -54,6 +56,7 @@ For operational help and release verification, see
 - Data Pipeline
 - Semantic Model
 - Power BI Report
+- Eventstream
 
 ## Quickstart
 

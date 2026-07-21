@@ -78,6 +78,95 @@ describe("online Fabric planning", () => {
     });
   });
 
+  it("dispatches Eventstream discovery to the Eventstream adapter", async () => {
+    const loaded: LoadedManifest = {
+      manifestPath: "deployment.yaml",
+      manifestDirectory: ".",
+      sourceHash: "source",
+      resolvedHash: "resolved",
+      itemContentHashes: { eventstream: "content" },
+      itemDirectories: { eventstream: "items/eventstream" },
+      itemDefinitions: {
+        eventstream: {
+          displayName: "Telemetry Stream",
+        },
+      },
+      environmentDefinitions: {},
+      notebookDefinitions: {},
+      sparkJobDefinitions: {},
+      pipelineDefinitions: {},
+      semanticModelDefinitions: {},
+      eventstreamDefinitions: {
+        eventstream: {
+          parts: [
+            {
+              path: "eventstream.json",
+              payload: Buffer.from(
+                JSON.stringify({
+                  compatibilityLevel: "1.1",
+                  sources: [],
+                  destinations: [],
+                  operators: [],
+                  streams: [],
+                }),
+              ).toString("base64"),
+              payloadType: "InlineBase64" as const,
+            },
+          ],
+        },
+      },
+      sparkCustomPoolDefinitions: {},
+      manifest: {
+        apiVersion: "fabric.deploy/v1alpha1",
+        kind: "FabricDeployment",
+        metadata: { deploymentId: "eventstream-plan" },
+        workspace: { id: "workspace" },
+        items: [
+          {
+            logicalId: "eventstream",
+            type: "Eventstream",
+            path: "items/eventstream",
+          },
+        ],
+      },
+    };
+    const offline = buildPlan(loaded, {
+      mode: "plan",
+      environment: "dev",
+    });
+    const fail = vi.fn(async () => {
+      throw new Error("Unrelated adapter should not be called.");
+    });
+    const eventstream = vi.fn(async () => ({
+      action: "create" as const,
+      reason: "Eventstream does not exist.",
+      observedStateHash: "b".repeat(64),
+    }));
+
+    const online = await enrichPlanWithFabric(offline, loaded, {
+      lakehouse: { plan: fail },
+      eventstream: { plan: eventstream },
+      environment: { plan: fail },
+      notebook: { plan: fail },
+      sparkJob: { plan: fail },
+      pipeline: { plan: fail },
+      semanticModel: { plan: fail },
+      sparkCustomPool: { plan: fail },
+    });
+
+    expect(eventstream).toHaveBeenCalledWith(
+      "workspace",
+      loaded.itemDefinitions.eventstream,
+      loaded.eventstreamDefinitions!.eventstream,
+    );
+    expect(fail).not.toHaveBeenCalled();
+    expect(online.items[0]).toMatchObject({
+      type: "Eventstream",
+      action: "create",
+      observedStateHash: "b".repeat(64),
+    });
+  });
+
   it("plans supported absent items through exact deletion discovery", async () => {
     const loaded: LoadedManifest = {
       manifestPath: "deployment.yaml",

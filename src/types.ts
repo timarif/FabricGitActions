@@ -19,6 +19,7 @@ export const FABRIC_ITEM_TYPES = [
   "SemanticModel",
   "Report",
   "Warehouse",
+  "Eventstream",
 ] as const;
 
 export type FabricItemType = (typeof FABRIC_ITEM_TYPES)[number];
@@ -171,6 +172,7 @@ export interface LoadedManifest {
   pipelineDefinitions: Record<string, FabricDefinition>;
   semanticModelDefinitions: Record<string, FabricDefinition>;
   reportDefinitions?: Record<string, FabricDefinition>;
+  eventstreamDefinitions?: Record<string, FabricDefinition>;
   sparkCustomPoolDefinitions: Record<
     string,
     SparkCustomPoolDefinition

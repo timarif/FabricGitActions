@@ -25,6 +25,7 @@ import {
   loadSemanticModelDefinition,
   semanticModelPlatformLogicalId,
 } from "./fabric/semantic-model-definition";
+import { loadEventstreamDefinition } from "./fabric/eventstream-definition";
 import { loadLakehouseTablesDefinition } from "./fabric/lakehouse-tables-definition";
 import { loadSparkCustomPoolDefinition } from "./fabric/spark-custom-pool-definition";
 import { normalizeNetworkProtection } from "./fabric/network-protection";
@@ -310,6 +311,20 @@ export function loadManifest(
         ),
       ]),
   );
+  const eventstreamDefinitions = Object.fromEntries(
+    manifest.items
+      .filter(
+        (item) =>
+          item.type === "Eventstream" &&
+          item.desiredState !== "absent",
+      )
+      .map((item) => [
+        item.logicalId,
+        loadEventstreamDefinition(
+          itemContent.directories[item.logicalId] ?? "",
+        ),
+      ]),
+  );
   const lakehouseTablesDefinitions = Object.fromEntries(
     manifest.items
       .filter(
@@ -359,6 +374,11 @@ export function loadManifest(
     manifest,
     itemDefinitions,
     reportDefinitions,
+  );
+  validateEventstreamPlatformMetadata(
+    manifest,
+    itemDefinitions,
+    eventstreamDefinitions,
   );
   validateUniqueSemanticModelPlatformLogicalIds(
     manifest,
@@ -412,6 +432,8 @@ export function loadManifest(
                   reportDefinitions[item.logicalId]!,
                 )
               : null,
+          capturedEventstreamDefinition:
+            eventstreamDefinitions[item.logicalId] ?? null,
           capturedSparkCustomPoolDefinition:
             sparkCustomPoolDefinitions[item.logicalId] ?? null,
           capturedLakehouseTablesDefinition:
@@ -437,6 +459,7 @@ export function loadManifest(
     pipelineDefinitions,
     semanticModelDefinitions,
     reportDefinitions,
+    eventstreamDefinitions,
     sparkCustomPoolDefinitions,
     lakehouseTablesDefinitions,
   };
@@ -549,6 +572,32 @@ function validatePipelinePlatformMetadata(
     validatePlatformMetadata(
       item.logicalId,
       "DataPipeline",
+      desired,
+      platformPart.payload,
+    );
+  }
+}
+
+function validateEventstreamPlatformMetadata(
+  manifest: DeploymentManifest,
+  definitions: LoadedManifest["itemDefinitions"],
+  eventstreamDefinitions: LoadedManifest["eventstreamDefinitions"],
+): void {
+  for (const item of manifest.items) {
+    if (item.type !== "Eventstream") {
+      continue;
+    }
+    const desired = definitions[item.logicalId];
+    const fabricDefinition = eventstreamDefinitions?.[item.logicalId];
+    const platformPart = fabricDefinition?.parts.find(
+      (part) => part.path === ".platform",
+    );
+    if (!desired || !platformPart) {
+      continue;
+    }
+    validatePlatformMetadata(
+      item.logicalId,
+      "Eventstream",
       desired,
       platformPart.payload,
     );
@@ -669,7 +718,8 @@ function validatePlatformMetadata(
     | "SparkJobDefinition"
     | "DataPipeline"
     | "SemanticModel"
-    | "Report",
+    | "Report"
+    | "Eventstream",
   desired: LoadedManifest["itemDefinitions"][string],
   payload: string,
 ): void {
@@ -896,7 +946,8 @@ function validateUniqueDesiredIdentities(
     | "SparkJobDefinition"
     | "DataPipeline"
     | "SemanticModel"
-    | "Report",
+    | "Report"
+    | "Eventstream",
     Map<string, string>
   >([
     ["Lakehouse", new Map()],
@@ -910,6 +961,7 @@ function validateUniqueDesiredIdentities(
     ["DataPipeline", new Map()],
     ["SemanticModel", new Map()],
     ["Report", new Map()],
+    ["Eventstream", new Map()],
   ]);
   for (const item of manifest.items) {
     if (
@@ -923,7 +975,8 @@ function validateUniqueDesiredIdentities(
       item.type !== "SparkJobDefinition" &&
       item.type !== "DataPipeline" &&
       item.type !== "SemanticModel" &&
-      item.type !== "Report"
+      item.type !== "Report" &&
+      item.type !== "Eventstream"
     ) {
       continue;
     }

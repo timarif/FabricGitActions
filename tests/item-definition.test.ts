@@ -519,4 +519,163 @@ items:
       "can use minimumConsumptionUnits only when type is Eventhouse",
     );
   });
+
+  it("loads an Eventstream item definition (present)", () => {
+    const root = mkdtempSync(path.join(tmpdir(), "fabric-deploy-item-"));
+    const itemDirectory = path.join(root, "items/item");
+    mkdirSync(path.join(itemDirectory, "definition"), { recursive: true });
+    writeFileSync(
+      path.join(itemDirectory, "item.yaml"),
+      "displayName: Telemetry Stream\n",
+      "utf8",
+    );
+    writeFileSync(
+      path.join(itemDirectory, "definition", "eventstream.json"),
+      JSON.stringify({
+        compatibilityLevel: "1.1",
+        sources: [],
+        destinations: [],
+        operators: [],
+        streams: [],
+      }),
+      "utf8",
+    );
+    const manifestPath = path.join(root, "deployment.yaml");
+    writeFileSync(
+      manifestPath,
+      `
+apiVersion: fabric.deploy/v1alpha1
+kind: FabricDeployment
+metadata:
+  deploymentId: eventstream-test
+workspace:
+  id: workspace-1
+items:
+  - logicalId: target
+    type: Eventstream
+    path: items/item
+`,
+      "utf8",
+    );
+
+    const loaded = loadManifest(manifestPath);
+    expect(loaded.itemDefinitions.target?.displayName).toBe(
+      "Telemetry Stream",
+    );
+  });
+
+  it("supports Eventstream desiredState: absent (deletion)", () => {
+    const root = mkdtempSync(path.join(tmpdir(), "fabric-deploy-item-"));
+    const itemDirectory = path.join(root, "items/item");
+    mkdirSync(itemDirectory, { recursive: true });
+    writeFileSync(
+      path.join(itemDirectory, "item.yaml"),
+      "displayName: Old Stream\ndesiredState: absent\n",
+      "utf8",
+    );
+    const manifestPath = path.join(root, "deployment.yaml");
+    writeFileSync(
+      manifestPath,
+      `
+apiVersion: fabric.deploy/v1alpha1
+kind: FabricDeployment
+metadata:
+  deploymentId: eventstream-delete-test
+workspace:
+  id: workspace-1
+items:
+  - logicalId: target
+    type: Eventstream
+    path: items/item
+    desiredState: absent
+`,
+      "utf8",
+    );
+
+    expect(() => loadManifest(manifestPath)).not.toThrow();
+    const loaded = loadManifest(manifestPath);
+    expect(loaded.itemDefinitions.target?.desiredState).toBe("absent");
+  });
+
+  it("rejects an Eventstream without eventstream.json", () => {
+    const root = mkdtempSync(path.join(tmpdir(), "fabric-deploy-item-"));
+    const itemDirectory = path.join(root, "items/item");
+    mkdirSync(path.join(itemDirectory, "definition"), { recursive: true });
+    writeFileSync(
+      path.join(itemDirectory, "item.yaml"),
+      "displayName: Stream\n",
+      "utf8",
+    );
+    // No eventstream.json in definition directory
+    const manifestPath = path.join(root, "deployment.yaml");
+    writeFileSync(
+      manifestPath,
+      `
+apiVersion: fabric.deploy/v1alpha1
+kind: FabricDeployment
+metadata:
+  deploymentId: eventstream-missing-def
+workspace:
+  id: workspace-1
+items:
+  - logicalId: target
+    type: Eventstream
+    path: items/item
+`,
+      "utf8",
+    );
+
+    expect(() => loadManifest(manifestPath)).toThrow(
+      "must include definition/eventstream.json",
+    );
+  });
+
+  it("rejects duplicate Eventstream logical identities", () => {
+    const root = mkdtempSync(path.join(tmpdir(), "fabric-deploy-item-"));
+    const item1Directory = path.join(root, "items/stream1");
+    const item2Directory = path.join(root, "items/stream2");
+    for (const dir of [item1Directory, item2Directory]) {
+      mkdirSync(path.join(dir, "definition"), { recursive: true });
+      writeFileSync(
+        path.join(dir, "item.yaml"),
+        "displayName: Telemetry Stream\n",
+        "utf8",
+      );
+      writeFileSync(
+        path.join(dir, "definition", "eventstream.json"),
+        JSON.stringify({
+          compatibilityLevel: "1.1",
+          sources: [],
+          destinations: [],
+          operators: [],
+          streams: [],
+        }),
+        "utf8",
+      );
+    }
+    const manifestPath = path.join(root, "deployment.yaml");
+    writeFileSync(
+      manifestPath,
+      `
+apiVersion: fabric.deploy/v1alpha1
+kind: FabricDeployment
+metadata:
+  deploymentId: eventstream-duplicate
+workspace:
+  id: workspace-1
+items:
+  - logicalId: stream1
+    type: Eventstream
+    path: items/stream1
+  - logicalId: stream2
+    type: Eventstream
+    path: items/stream2
+`,
+      "utf8",
+    );
+
+    expect(() => loadManifest(manifestPath)).toThrow(
+      "resolve to the same folder and displayName",
+    );
+  });
 });

@@ -1,0 +1,10 @@
+apiVersion: fabric.deploy/v1alpha1
+kind: FabricDeployment
+
+metadata:
+  deploymentId: eventstream-example
+
+items:
+  - logicalId: telemetryStream
+    type: Eventstream
+    path: items/eventstreams/telemetry

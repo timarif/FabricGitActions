@@ -1,0 +1,3 @@
+displayName: Telemetry Ingestion Stream
+description: Real-time telemetry ingestion from Azure Event Hubs into Lakehouse
+desiredState: present

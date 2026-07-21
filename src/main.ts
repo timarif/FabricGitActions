@@ -41,6 +41,7 @@ import { NotebookAdapter } from "./fabric/notebook";
 import { OneLakeArtifactStager } from "./fabric/onelake-artifacts";
 import { PipelineAdapter } from "./fabric/pipeline";
 import { PipelineJobAdapter } from "./fabric/pipeline-job";
+import { EventstreamAdapter } from "./fabric/eventstream";
 import { ReportAdapter } from "./fabric/report";
 import { SemanticModelAdapter } from "./fabric/semantic-model";
 import { SparkCustomPoolAdapter } from "./fabric/spark-custom-pool";
@@ -388,6 +389,7 @@ export async function run(): Promise<void> {
     let pipelineAdapter: PipelineAdapter | undefined;
     let semanticModelAdapter: SemanticModelAdapter | undefined;
     let reportAdapter: ReportAdapter | undefined;
+    let eventstreamAdapter: EventstreamAdapter | undefined;
     let sparkCustomPoolAdapter: SparkCustomPoolAdapter | undefined;
     let tagAdapter: FabricTagAdapter | undefined;
     let workspaceAdapter: WorkspaceAdapter | undefined;
@@ -433,6 +435,7 @@ export async function run(): Promise<void> {
       pipelineAdapter = new PipelineAdapter(client);
       semanticModelAdapter = new SemanticModelAdapter(client);
       reportAdapter = new ReportAdapter(client);
+      eventstreamAdapter = new EventstreamAdapter(client);
       sparkCustomPoolAdapter = new SparkCustomPoolAdapter(client);
       tagAdapter = new FabricTagAdapter(client);
       workspaceAdapter = new WorkspaceAdapter(client);
@@ -578,6 +581,7 @@ export async function run(): Promise<void> {
         pipeline: pipelineAdapter,
         semanticModel: semanticModelAdapter,
         report: reportAdapter,
+        eventstream: eventstreamAdapter,
         sparkCustomPool: sparkCustomPoolAdapter,
         tags: tagAdapter,
         lakehouseTables: lakehouseTablesAdapter,
@@ -727,6 +731,7 @@ export async function run(): Promise<void> {
         pipelineAdapter,
         semanticModelAdapter,
         reportAdapter,
+        eventstreamAdapter,
         sparkCustomPoolAdapter,
         tagAdapter,
         workspaceAdapter,

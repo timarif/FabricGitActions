@@ -82,7 +82,8 @@
 - [x] KQL Database guarded create/update/no-op apply and LRO recovery
 - [x] KQL Database immutable parent and database-type drift blocking
 - [x] KQL Database disposable live create/no-op/update validation
-- [ ] Eventstream, KQL Queryset, and KQL Dashboard adapters
+- [x] Eventstream definition deployment and guarded create/update/no-op apply
+- [ ] KQL Queryset and KQL Dashboard adapters
 
 ## Phase 8: Data Warehouse adapter
 
