@@ -42,6 +42,12 @@ const examples: ExampleCase[] = [
     itemCount: 1,
   },
   {
+    name: "KQL Database",
+    manifestPath: "kql-database/fabric/deployment.yaml",
+    options: { workspaceIdOverride: WORKSPACE_ID },
+    itemCount: 2,
+  },
+  {
     name: "Phase 3",
     manifestPath: "live-phase3/fabric/deployment.yaml",
     options: { workspaceIdOverride: WORKSPACE_ID },

@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import type { FabricDefinition } from "../src/fabric/definition";
 import {
   hashMaterializedSparkJobDefinition,
+  materializeKqlDatabaseCreationWithProof,
   materializeReportDefinitionWithProof,
   materializeSparkJobDefinitionSnapshot,
   validateLogicalReferenceDeclarations,
@@ -39,6 +40,17 @@ const report: DeploymentItem = {
   type: "Report",
   path: "items/report",
   dependsOn: ["salesModel"],
+};
+const eventhouse: DeploymentItem = {
+  logicalId: "telemetryEventhouse",
+  type: "Eventhouse",
+  path: "items/eventhouse",
+};
+const kqlDatabase: DeploymentItem = {
+  logicalId: "telemetryDatabase",
+  type: "KQLDatabase",
+  path: "items/database",
+  dependsOn: ["telemetryEventhouse"],
 };
 
 function validate(
@@ -305,6 +317,131 @@ describe("logical reference declarations", () => {
         [semanticModel, report],
       ),
     ).toThrow("more than once");
+  });
+
+  it("canonicalizes KQL Database Eventhouse references and bindings", () => {
+    const graph = [eventhouse, kqlDatabase];
+    const reference = validate(
+      { references: { eventhouse: "telemetryEventhouse" } },
+      kqlDatabase,
+      graph,
+    );
+    expect(reference).toEqual({
+      "/creationPayload/parentEventhouseItemId": {
+        logicalId: "telemetryEventhouse",
+        valueFrom: "items.telemetryEventhouse.id",
+        targetType: "Eventhouse",
+      },
+    });
+    expect(
+      validate(
+        {
+          bindings: [
+            {
+              target:
+                "/creationPayload/parentEventhouseItemId",
+              valueFrom: "item.telemetryEventhouse.id",
+            },
+          ],
+        },
+        kqlDatabase,
+        graph,
+      ),
+    ).toEqual(reference);
+  });
+
+  it("rejects invalid KQL Database parents and duplicate declarations", () => {
+    expect(() =>
+      validate({}, kqlDatabase, [eventhouse, kqlDatabase]),
+    ).toThrow("must declare exactly one");
+    expect(() =>
+      validate(
+        { references: { eventhouse: "bronze" } },
+        { ...kqlDatabase, dependsOn: ["bronze"] },
+        [lakehouse, { ...kqlDatabase, dependsOn: ["bronze"] }],
+      ),
+    ).toThrow("requires type 'Eventhouse'");
+    expect(() =>
+      validate(
+        {
+          references: {
+            eventhouse: "telemetryEventhouse",
+          },
+        },
+        { ...kqlDatabase, dependsOn: [] },
+        [eventhouse, { ...kqlDatabase, dependsOn: [] }],
+      ),
+    ).toThrow("dependsOn does not include it");
+    expect(() =>
+      validate(
+        {
+          references: {
+            eventhouse: "telemetryEventhouse",
+          },
+          bindings: [
+            {
+              target:
+                "/creationPayload/parentEventhouseItemId",
+              valueFrom: "items.telemetryEventhouse.id",
+            },
+          ],
+        },
+        kqlDatabase,
+        [eventhouse, kqlDatabase],
+      ),
+    ).toThrow("more than once");
+  });
+});
+
+describe("KQL Database logical reference materialization", () => {
+  it("materializes the exact Eventhouse ID and deterministic proof", () => {
+    const bindings = validate(
+      { references: { eventhouse: "telemetryEventhouse" } },
+      kqlDatabase,
+      [eventhouse, kqlDatabase],
+    );
+    const first = materializeKqlDatabaseCreationWithProof(
+      { databaseType: "ReadWrite" },
+      bindings,
+      { telemetryEventhouse: "eventhouse-physical" },
+    );
+    const second = materializeKqlDatabaseCreationWithProof(
+      {},
+      bindings,
+      { telemetryEventhouse: "eventhouse-physical" },
+    );
+
+    expect(first.creationPayload).toEqual({
+      databaseType: "ReadWrite",
+      parentEventhouseItemId: "eventhouse-physical",
+    });
+    expect(second).toEqual(first);
+    expect(first.materializedDefinitionHash).toMatch(
+      /^[0-9a-f]{64}$/,
+    );
+    expect(first.resolvedBindingsHash).toMatch(
+      /^[0-9a-f]{64}$/,
+    );
+  });
+
+  it("rejects a missing Eventhouse physical ID", () => {
+    expect(() =>
+      materializeKqlDatabaseCreationWithProof(
+        {},
+        validate(
+          {
+            references: {
+              eventhouse: "telemetryEventhouse",
+            },
+          },
+          kqlDatabase,
+          [eventhouse, kqlDatabase],
+        ),
+        {},
+      ),
+    ).toThrow(
+      "Physical ID is missing for logicalId 'telemetryEventhouse'",
+    );
   });
 });
 

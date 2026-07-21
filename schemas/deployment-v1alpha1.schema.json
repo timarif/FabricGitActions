@@ -331,6 +331,7 @@
             "enum": [
               "Lakehouse",
               "Eventhouse",
+              "KQLDatabase",
               "LakehouseTables",
               "FabricTag",
               "Environment",

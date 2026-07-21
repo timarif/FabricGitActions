@@ -25,6 +25,10 @@ import type {
   EventhouseAdapter,
   EventhouseOperationReference,
 } from "./fabric/eventhouse";
+import type {
+  KqlDatabaseAdapter,
+  KqlDatabaseOperationReference,
+} from "./fabric/kql-database";
 import {
   isDeletableFabricItemType,
   type ItemDeletionAdapter,
@@ -98,9 +102,11 @@ import {
   sparkJobIncludesPlatformPart,
 } from "./fabric/spark-job-definition";
 import {
+  materializeKqlDatabaseCreationWithProof,
   materializeSparkJobDefinitionWithProof,
   materializeReportDefinitionWithProof,
   validateLogicalReferenceDeclarations,
+  type KqlDatabaseLogicalReferenceMaterialization,
   type ReportLogicalReferenceMaterialization,
   type SparkJobLogicalReferenceMaterialization,
 } from "./fabric/logical-references";
@@ -146,6 +152,10 @@ export interface ApplyPlanOptions {
   >;
   eventhouseAdapter?: Pick<
     EventhouseAdapter,
+    "create" | "update" | "verify" | "resumeCreate" | "plan"
+  >;
+  kqlDatabaseAdapter?: Pick<
+    KqlDatabaseAdapter,
     "create" | "update" | "verify" | "resumeCreate" | "plan"
   >;
   environmentAdapter?: Pick<
@@ -1233,6 +1243,17 @@ function preflightBeforeRecovery(
         );
         continue;
       }
+      if (hasSymbolicKqlDatabaseBinding(approvedItem)) {
+        assertSymbolicKqlDatabasePreflightState(
+          options,
+          checkpoint,
+          approvedItem,
+          currentItem,
+          completed,
+          pendingItem !== undefined,
+        );
+        continue;
+      }
       if (completed) {
         assertCheckpointedItemSourceUnchanged(approvedItem, currentItem);
         if (!isCompletedItemCurrentNoOp(
@@ -1314,6 +1335,20 @@ function preflightPlan(
           currentItem,
           completed,
           pendingItem !== undefined,
+          resumedOperations.has(logicalId),
+        );
+        assertApplyActionAuthorized(options, approvedItem);
+        continue;
+      }
+      if (hasSymbolicKqlDatabaseBinding(approvedItem)) {
+        assertSymbolicKqlDatabasePreflightState(
+          options,
+          checkpoint,
+          approvedItem,
+          currentItem,
+          completed,
+          pendingItem !== undefined,
+          resumedOperations.has(logicalId),
         );
         assertApplyActionAuthorized(options, approvedItem);
         continue;
@@ -1368,6 +1403,7 @@ function assertSupportedApplyItem(
   if (
     item.type !== "Lakehouse" &&
     item.type !== "Eventhouse" &&
+    item.type !== "KQLDatabase" &&
     item.type !== "Environment" &&
     item.type !== "SparkCustomPool" &&
     item.type !== "Notebook" &&
@@ -1389,6 +1425,15 @@ function assertSupportedApplyItem(
   ) {
     throw new Error(
       `Deletion adapter was not initialized for item '${item.logicalId}' of type ${item.type}.`,
+    );
+  }
+  if (
+    item.desiredState !== "absent" &&
+    item.type === "KQLDatabase" &&
+    !options.kqlDatabaseAdapter
+  ) {
+    throw new Error(
+      `KQL Database adapter was not initialized for item '${item.logicalId}'.`,
     );
   }
   if (
@@ -1667,6 +1712,7 @@ async function resumePendingOperations(
         !approvedItem ||
         (approvedItem.type !== "Lakehouse" &&
           approvedItem.type !== "Eventhouse" &&
+          approvedItem.type !== "KQLDatabase" &&
           approvedItem.type !== "Environment" &&
           approvedItem.type !== "SparkCustomPool" &&
           approvedItem.type !== "Notebook" &&
@@ -1826,6 +1872,7 @@ async function reconcilePendingCreates(
         !approvedItem ||
         (approvedItem.type !== "Lakehouse" &&
           approvedItem.type !== "Eventhouse" &&
+          approvedItem.type !== "KQLDatabase" &&
           approvedItem.type !== "Environment" &&
           approvedItem.type !== "SparkCustomPool" &&
           approvedItem.type !== "Notebook" &&
@@ -1914,6 +1961,7 @@ async function reconcilePendingUpdates(
         !approvedItem ||
         (approvedItem.type !== "Lakehouse" &&
           approvedItem.type !== "Eventhouse" &&
+          approvedItem.type !== "KQLDatabase" &&
           approvedItem.type !== "Environment" &&
           approvedItem.type !== "SparkCustomPool" &&
           approvedItem.type !== "Notebook" &&
@@ -2478,6 +2526,17 @@ function hasSymbolicReportBinding(item: PlannedItem): boolean {
   );
 }
 
+function hasSymbolicKqlDatabaseBinding(
+  item: PlannedItem,
+): boolean {
+  return (
+    item.type === "KQLDatabase" &&
+    item.action === "create" &&
+    item.materializedDefinitionHash === undefined &&
+    item.resolvedBindingsHash === undefined
+  );
+}
+
 function assertSymbolicReportPreflightState(
   options: ApplyPlanOptions,
   checkpoint: ApplyCheckpoint,
@@ -2485,6 +2544,7 @@ function assertSymbolicReportPreflightState(
   currentItem: PlannedItem,
   completed: ApplyCheckpoint["completedItems"][string] | undefined,
   hasPendingItem: boolean,
+  trustedResume = false,
 ): void {
   assertCheckpointedItemSourceUnchanged(
     approvedItem,
@@ -2499,6 +2559,7 @@ function assertSymbolicReportPreflightState(
       `Report '${approvedItem.logicalId}' has incomplete materialization proof.`,
     );
   }
+
   if (hasMaterializedDefinition) {
     const expected = requireReportRuntimeDefinition(
       { ...options, checkpoint },
@@ -2517,6 +2578,14 @@ function assertSymbolicReportPreflightState(
   }
   if (completed) {
     if (
+      trustedResume &&
+      (currentItem.action === "create" ||
+        (currentItem.action === "no-op" &&
+          currentItem.physicalId === completed.physicalId))
+    ) {
+      return;
+    }
+    if (
       currentItem.action !== "no-op" ||
       currentItem.physicalId !== completed.physicalId
     ) {
@@ -2533,6 +2602,81 @@ function assertSymbolicReportPreflightState(
     ) {
       throw new Error(
         `Pending Report '${approvedItem.logicalId}' has unsafe current action '${currentItem.action}'.`,
+      );
+    }
+    return;
+  }
+  assertItemHasNotDrifted(approvedItem, {
+    ...currentItem,
+    materializedDefinitionHash: undefined,
+    resolvedBindingsHash: undefined,
+  });
+}
+
+function assertSymbolicKqlDatabasePreflightState(
+  options: ApplyPlanOptions,
+  checkpoint: ApplyCheckpoint,
+  approvedItem: PlannedItem,
+  currentItem: PlannedItem,
+  completed: ApplyCheckpoint["completedItems"][string] | undefined,
+  hasPendingItem: boolean,
+  trustedResume = false,
+): void {
+  assertCheckpointedItemSourceUnchanged(
+    approvedItem,
+    currentItem,
+  );
+  const hasMaterializedDefinition =
+    currentItem.materializedDefinitionHash !== undefined;
+  const hasResolvedBindings =
+    currentItem.resolvedBindingsHash !== undefined;
+  if (hasMaterializedDefinition !== hasResolvedBindings) {
+    throw new Error(
+      `KQL Database '${approvedItem.logicalId}' has incomplete materialization proof.`,
+    );
+  }
+  if (hasMaterializedDefinition) {
+    const expected = requireKqlDatabaseRuntimeCreation(
+      { ...options, checkpoint },
+      approvedItem.logicalId,
+    );
+    if (
+      currentItem.materializedDefinitionHash !==
+        expected.materializedDefinitionHash ||
+      currentItem.resolvedBindingsHash !==
+        expected.resolvedBindingsHash
+    ) {
+      throw new Error(
+        `KQL Database '${approvedItem.logicalId}' materialized with a different Eventhouse ID after approval.`,
+      );
+    }
+  }
+  if (completed) {
+    if (
+      trustedResume &&
+      (currentItem.action === "create" ||
+        (currentItem.action === "no-op" &&
+          currentItem.physicalId === completed.physicalId))
+    ) {
+      return;
+    }
+    if (
+      currentItem.action !== "no-op" ||
+      currentItem.physicalId !== completed.physicalId
+    ) {
+      throw new Error(
+        `Checkpointed KQL Database '${approvedItem.logicalId}' is not a no-op for physical ID '${completed.physicalId}'.`,
+      );
+    }
+    return;
+  }
+  if (hasPendingItem) {
+    if (
+      currentItem.action !== "create" &&
+      currentItem.action !== "no-op"
+    ) {
+      throw new Error(
+        `Pending KQL Database '${approvedItem.logicalId}' has unsafe current action '${currentItem.action}'.`,
       );
     }
     return;
@@ -4070,6 +4214,7 @@ async function applyItem(
     operation:
       | LakehouseOperationReference
       | EventhouseOperationReference
+      | KqlDatabaseOperationReference
       | EnvironmentOperationReference
       | NotebookOperationReference
       | SparkJobOperationReference
@@ -4088,6 +4233,7 @@ async function applyItem(
   if (
     item.type !== "Lakehouse" &&
     item.type !== "Eventhouse" &&
+    item.type !== "KQLDatabase" &&
     item.type !== "Environment" &&
     item.type !== "SparkCustomPool" &&
     item.type !== "Notebook" &&
@@ -4381,6 +4527,7 @@ async function resumeCompletedItem(
   if (
     item.type !== "Lakehouse" &&
     item.type !== "Eventhouse" &&
+    item.type !== "KQLDatabase" &&
     item.type !== "Environment" &&
     item.type !== "SparkCustomPool" &&
     item.type !== "Notebook" &&
@@ -4455,6 +4602,25 @@ async function planDesiredItem(
       options.approvedPlan.workspaceId,
       desired,
     );
+  }
+  if (item.type === "KQLDatabase") {
+    const materialized = requireKqlDatabaseRuntimeCreation(
+      options,
+      item.logicalId,
+    );
+    return {
+      ...(await requireKqlDatabaseAdapter(
+        options,
+        item.logicalId,
+      ).plan(
+        options.approvedPlan.workspaceId,
+        desired,
+        materialized,
+      )),
+      materializedDefinitionHash:
+        materialized.materializedDefinitionHash,
+      resolvedBindingsHash: materialized.resolvedBindingsHash,
+    };
   }
   if (item.type === "Environment") {
     return requireEnvironmentAdapter(options, item.logicalId).plan(
@@ -4579,6 +4745,7 @@ async function createDesiredItem(
     operation:
       | LakehouseOperationReference
       | EventhouseOperationReference
+      | KqlDatabaseOperationReference
       | EnvironmentOperationReference
       | NotebookOperationReference
       | SparkJobOperationReference
@@ -4615,6 +4782,23 @@ async function createDesiredItem(
     ).create(
       options.approvedPlan.workspaceId,
       desired,
+      onMutationAccepted,
+      onOperationAccepted,
+      onCreateSubmitting,
+      onCreateRejected,
+    );
+  }
+  if (item.type === "KQLDatabase") {
+    return requireKqlDatabaseAdapter(
+      options,
+      item.logicalId,
+    ).create(
+      options.approvedPlan.workspaceId,
+      desired,
+      requireKqlDatabaseRuntimeCreation(
+        options,
+        item.logicalId,
+      ),
       onMutationAccepted,
       onOperationAccepted,
       onCreateSubmitting,
@@ -4719,6 +4903,7 @@ async function resumeCreateDesiredItem(
   operation:
     | LakehouseOperationReference
     | EventhouseOperationReference
+    | KqlDatabaseOperationReference
     | EnvironmentOperationReference
     | NotebookOperationReference
     | SparkJobOperationReference
@@ -4742,6 +4927,21 @@ async function resumeCreateDesiredItem(
     ).resumeCreate(
       options.approvedPlan.workspaceId,
       desired,
+      operation,
+      onMutationAccepted,
+    );
+  }
+  if (item.type === "KQLDatabase") {
+    return requireKqlDatabaseAdapter(
+      options,
+      item.logicalId,
+    ).resumeCreate(
+      options.approvedPlan.workspaceId,
+      desired,
+      requireKqlDatabaseRuntimeCreation(
+        options,
+        item.logicalId,
+      ),
       operation,
       onMutationAccepted,
     );
@@ -4849,6 +5049,23 @@ async function updateDesiredItem(
       options.approvedPlan.workspaceId,
       physicalId,
       desired,
+      onMutationAccepted,
+      onUpdateSubmitting,
+      onUpdateRejected,
+    );
+  }
+  if (item.type === "KQLDatabase") {
+    return requireKqlDatabaseAdapter(
+      options,
+      item.logicalId,
+    ).update(
+      options.approvedPlan.workspaceId,
+      physicalId,
+      desired,
+      requireKqlDatabaseRuntimeCreation(
+        options,
+        item.logicalId,
+      ),
       onMutationAccepted,
       onUpdateSubmitting,
       onUpdateRejected,
@@ -4974,6 +5191,20 @@ async function verifyDesiredItem(
       desired,
     );
   }
+  if (item.type === "KQLDatabase") {
+    return requireKqlDatabaseAdapter(
+      options,
+      item.logicalId,
+    ).verify(
+      options.approvedPlan.workspaceId,
+      physicalId,
+      desired,
+      requireKqlDatabaseRuntimeCreation(
+        options,
+        item.logicalId,
+      ),
+    );
+  }
   if (item.type === "Environment") {
     return requireEnvironmentAdapter(options, item.logicalId).verify(
       options.approvedPlan.workspaceId,
@@ -5097,6 +5328,85 @@ function requireEventhouseAdapter(
     );
   }
   return options.eventhouseAdapter;
+}
+
+function requireKqlDatabaseAdapter(
+  options: ApplyPlanOptions,
+  logicalId: string,
+): NonNullable<ApplyPlanOptions["kqlDatabaseAdapter"]> {
+  if (!options.kqlDatabaseAdapter) {
+    throw new Error(
+      `KQL Database adapter was not initialized for item '${logicalId}'.`,
+    );
+  }
+  return options.kqlDatabaseAdapter;
+}
+
+function requireKqlDatabaseRuntimeCreation(
+  options: ApplyPlanOptions,
+  logicalId: string,
+): KqlDatabaseLogicalReferenceMaterialization {
+  const item = options.loadedManifest.manifest.items.find(
+    (candidate) => candidate.logicalId === logicalId,
+  );
+  const desired =
+    options.loadedManifest.itemDefinitions[logicalId];
+  if (!item || !desired) {
+    throw new Error(
+      `KQL Database declarations are missing for '${logicalId}'.`,
+    );
+  }
+  const bindings = validateLogicalReferenceDeclarations({
+    item,
+    definition: desired,
+    itemGraph: options.loadedManifest.manifest.items,
+  });
+  const binding = Object.values(bindings)[0];
+  if (!binding || binding.targetType !== "Eventhouse") {
+    throw new Error(
+      `KQL Database '${logicalId}' has no valid Eventhouse binding.`,
+    );
+  }
+  const completed = options.checkpoint
+    ? getCompletedItem(options.checkpoint, binding.logicalId)
+    : undefined;
+  const approvedDependency = options.approvedPlan.items.find(
+    (candidate) => candidate.logicalId === binding.logicalId,
+  );
+  const currentDependency = options.currentPlan.items.find(
+    (candidate) => candidate.logicalId === binding.logicalId,
+  );
+  if (
+    !approvedDependency ||
+    approvedDependency.type !== "Eventhouse" ||
+    (currentDependency &&
+      currentDependency.type !== "Eventhouse")
+  ) {
+    throw new Error(
+      `KQL Database '${logicalId}' has an invalid Eventhouse dependency '${binding.logicalId}'.`,
+    );
+  }
+  const physicalId =
+    completed?.physicalId ??
+    approvedDependency.physicalId ??
+    currentDependency?.physicalId;
+  if (!physicalId) {
+    throw new Error(
+      `KQL Database '${logicalId}' cannot materialize Eventhouse '${binding.logicalId}' because its physical ID is not available.`,
+    );
+  }
+  const materialized =
+    materializeKqlDatabaseCreationWithProof(
+      desired,
+      bindings,
+      { [binding.logicalId]: physicalId },
+    );
+  assertLogicalReferenceCheckpointProof(
+    options,
+    logicalId,
+    materialized,
+  );
+  return materialized;
 }
 
 function requireEnvironmentDefinition(
@@ -5287,18 +5597,25 @@ function logicalReferenceCheckpointProof(
   item: PlannedItem,
 ): Pick<
   SparkJobLogicalReferenceMaterialization &
-    ReportLogicalReferenceMaterialization,
+    ReportLogicalReferenceMaterialization &
+    KqlDatabaseLogicalReferenceMaterialization,
   "materializedDefinitionHash" | "resolvedBindingsHash"
 > | Record<string, never> {
   if (
     item.type !== "SparkJobDefinition" &&
-    item.type !== "Report"
+    item.type !== "Report" &&
+    item.type !== "KQLDatabase"
   ) {
     return {};
   }
   const materialized =
     item.type === "Report"
       ? requireReportRuntimeDefinition(options, item.logicalId)
+      : item.type === "KQLDatabase"
+        ? requireKqlDatabaseRuntimeCreation(
+            options,
+            item.logicalId,
+          )
       : requireSparkJobRuntimeDefinition(
           options,
           item.logicalId,
@@ -5319,6 +5636,7 @@ function assertLogicalReferenceCheckpointProof(
   materialized:
     | SparkJobLogicalReferenceMaterialization
     | ReportLogicalReferenceMaterialization
+    | KqlDatabaseLogicalReferenceMaterialization
     | undefined,
 ): void {
   const checkpoint = options.checkpoint;

@@ -340,15 +340,35 @@ to alphanumeric characters, underscores, periods, and hyphens.
 
 ### Phase 7B: KQL Database
 
-KQL Database is next. Its create payload must resolve a declared logical
-Eventhouse dependency to `parentEventhouseItemId`, wait for the parent physical
-ID, and verify the relationship through the Eventhouse child database list.
+ReadWrite KQL Database implementation and disposable live validation are
+complete. The item declares `references.eventhouse`, also lists that logical ID in
+`dependsOn`, and resolves the exact physical ID into
+`creationPayload.parentEventhouseItemId`. `databaseType` defaults to
+`ReadWrite`.
+
+Authenticated planning uses folder-scoped nonrecursive discovery and full-item
+GET read-back. A new KQL Database remains symbolic when its Eventhouse is
+created in the same plan; apply waits for the checkpointed parent physical ID,
+materializes deterministic definition and binding hashes, then records those
+proofs before POST or accepted-operation polling. Existing databases are
+blocked if the parent Eventhouse or database type differs because both fields
+are create-only and immutable.
+
+Create supports synchronous `201` and accepted `202` responses with checkpointed
+LRO recovery. Description updates use PATCH followed by exact read-back
+verification. Query and ingestion service URIs are computed state and excluded
+from drift hashes. Definition-based schema management, Shortcut databases, and
+deletion are deferred.
+
+Live validation confirmed parent Eventhouse creation, KQL Database creation,
+exact parent/type read-back, no-op discovery, description update, a second
+no-op, immutable parent-drift blocking, and exact cleanup of both resources.
 
 ## Remaining Fabric item order
 
 | Phase | Item family | Initial order and constraints |
 | --- | --- | --- |
-| 7 | Real-Time Intelligence | Eventhouse implementation and live validation complete; next KQL Database, Eventstream, KQL Queryset, KQL Dashboard, then newer ontology and graph artifacts. Defer items without service-principal support. |
+| 7 | Real-Time Intelligence | Eventhouse and KQL Database implementation and live validation complete; next Eventstream, KQL Queryset, KQL Dashboard, then newer ontology and graph artifacts. Defer items without service-principal support. |
 | 8 | Warehouse and databases | Warehouse metadata, guarded T-SQL DDL companion, Fabric SQL Database, then service-principal-compatible mirrored catalog variants. |
 | 9 | Data Factory | Copy Job, mounted factory integration, then dbt job support after preview validation. |
 | 10 | Platform and application items | Variable Library, GraphQL API, User Data Function, Snowflake Database, and Azure Databricks storage/catalog items. User Data Functions require a separate code-execution safeguard. |

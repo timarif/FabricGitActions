@@ -50,9 +50,18 @@ const REPORT_SUPPORTED_TARGETS = [
   },
 ] as const;
 
+const KQL_DATABASE_SUPPORTED_TARGETS = [
+  {
+    referenceName: "eventhouse",
+    target: "/creationPayload/parentEventhouseItemId",
+    targetType: "Eventhouse",
+  },
+] as const;
+
 export type SupportedLogicalReferenceTarget =
   | (typeof SPARK_SUPPORTED_TARGETS)[number]["target"]
-  | (typeof REPORT_SUPPORTED_TARGETS)[number]["target"];
+  | (typeof REPORT_SUPPORTED_TARGETS)[number]["target"]
+  | (typeof KQL_DATABASE_SUPPORTED_TARGETS)[number]["target"];
 
 export type SparkJobArtifactIdField =
   (typeof SPARK_SUPPORTED_TARGETS)[number]["configurationField"];
@@ -62,7 +71,7 @@ export interface CanonicalResolvedBinding {
   valueFrom: `items.${string}.id`;
   targetType: Extract<
     FabricItemType,
-    "Lakehouse" | "Environment" | "SemanticModel"
+    "Lakehouse" | "Environment" | "SemanticModel" | "Eventhouse"
   >;
 }
 
@@ -92,6 +101,15 @@ export interface ReportLogicalReferenceMaterialization {
   resolvedBindingsHash: string;
 }
 
+export interface KqlDatabaseLogicalReferenceMaterialization {
+  creationPayload: {
+    databaseType: "ReadWrite";
+    parentEventhouseItemId: string;
+  };
+  materializedDefinitionHash: string;
+  resolvedBindingsHash: string;
+}
+
 export interface SparkJobArtifactMaterialization {
   kind: "executable" | "library";
   fileName: string;
@@ -115,6 +133,9 @@ export function validateLogicalReferenceDeclarations(
   }
   if (input.item.type === "Report") {
     return validateReportReference(input);
+  }
+  if (input.item.type === "KQLDatabase") {
+    return validateKqlDatabaseReference(input);
   }
   const declarations =
     Object.keys(input.definition.references ?? {}).length > 0 ||
@@ -293,6 +314,71 @@ export function validateLogicalReferenceDeclarations(
     return Object.fromEntries(resolved) as CanonicalResolvedBindingMap;
   }
 
+  function validateKqlDatabaseReference(
+    input: LogicalReferenceValidationInput,
+  ): CanonicalResolvedBindingMap {
+    const graph = indexItemGraph(input.itemGraph);
+    const graphItem = graph.get(input.item.logicalId);
+    if (!graphItem || graphItem.type !== "KQLDatabase") {
+      throw new Error(
+        `Item '${input.item.logicalId}' is missing or has a conflicting type in the manifest item graph.`,
+      );
+    }
+    const dependencies = new Set(graphItem.dependsOn ?? []);
+    const resolved = new Map<
+      SupportedLogicalReferenceTarget,
+      CanonicalResolvedBinding
+    >();
+    for (const [referenceName, logicalId] of Object.entries(
+      input.definition.references ?? {},
+    ).sort(([left], [right]) => compareCanonicalStrings(left, right))) {
+      const supported = KQL_DATABASE_SUPPORTED_TARGETS.find(
+        (candidate) => candidate.referenceName === referenceName,
+      );
+      if (!supported) {
+        throw new Error(
+          `Item '${input.item.logicalId}' has unsupported logical reference '${referenceName}'.`,
+        );
+      }
+      addResolvedBinding(
+        input.item,
+        graph,
+        dependencies,
+        resolved,
+        supported.target,
+        logicalId,
+        supported.targetType,
+        `reference '${referenceName}'`,
+      );
+    }
+    for (const binding of input.definition.bindings ?? []) {
+      const supported = KQL_DATABASE_SUPPORTED_TARGETS.find(
+        (candidate) => candidate.target === binding.target,
+      );
+      if (!supported) {
+        throw new Error(
+          `Item '${input.item.logicalId}' has unsupported binding target '${binding.target}'.`,
+        );
+      }
+      addResolvedBinding(
+        input.item,
+        graph,
+        dependencies,
+        resolved,
+        supported.target,
+        parseBindingSource(input.item.logicalId, binding),
+        supported.targetType,
+        `binding '${binding.target}'`,
+      );
+    }
+    if (resolved.size !== 1) {
+      throw new Error(
+        `Item '${input.item.logicalId}' (KQLDatabase) must declare exactly one references.eventhouse or supported Eventhouse binding.`,
+      );
+    }
+    return Object.fromEntries(resolved) as CanonicalResolvedBindingMap;
+  }
+
   return Object.fromEntries(
     [...resolved.entries()].sort(([left], [right]) =>
       compareCanonicalStrings(left, right),
@@ -381,6 +467,7 @@ export function materializeReportDefinitionWithProof(
       "Report definition requires exactly one resolved Semantic Model binding.",
     );
   }
+
   const [target, binding] = entries[0]!;
   const supported = REPORT_SUPPORTED_TARGETS.find(
     (candidate) => candidate.target === target,
@@ -428,6 +515,64 @@ export function materializeReportDefinitionWithProof(
       definition,
       reportIncludesPlatformPart(definition),
       reportIncludesDiagramLayoutPart(definition),
+    ),
+    resolvedBindingsHash: sha256(
+      stableJson([
+        {
+          target,
+          logicalId: binding.logicalId,
+          targetType: binding.targetType,
+          physicalId,
+        },
+      ]),
+    ),
+  };
+}
+
+export function materializeKqlDatabaseCreationWithProof(
+  desired: Pick<ItemDefinition, "databaseType">,
+  bindings: CanonicalResolvedBindingMap,
+  physicalIds: Readonly<Record<string, string>>,
+): KqlDatabaseLogicalReferenceMaterialization {
+  const entries = Object.entries(bindings);
+  if (entries.length !== 1) {
+    throw new Error(
+      "KQL Database creation requires exactly one resolved Eventhouse binding.",
+    );
+  }
+  const [target, binding] = entries[0]!;
+  const supported = KQL_DATABASE_SUPPORTED_TARGETS.find(
+    (candidate) => candidate.target === target,
+  );
+  if (
+    !supported ||
+    !isCanonicalResolvedBinding(binding) ||
+    binding.targetType !== "Eventhouse"
+  ) {
+    throw new Error(
+      `Unsupported or malformed resolved KQL Database logical binding '${target}'.`,
+    );
+  }
+  const physicalId = physicalIds[binding.logicalId];
+  if (typeof physicalId !== "string" || physicalId.trim() === "") {
+    throw new Error(
+      `Physical ID is missing for logicalId '${binding.logicalId}' required by '${target}'.`,
+    );
+  }
+  const databaseType = desired.databaseType ?? "ReadWrite";
+  if (databaseType !== "ReadWrite") {
+    throw new Error(
+      `Unsupported KQL Database databaseType '${databaseType}'.`,
+    );
+  }
+  const creationPayload = {
+    databaseType,
+    parentEventhouseItemId: physicalId,
+  } as const;
+  return {
+    creationPayload,
+    materializedDefinitionHash: sha256(
+      stableJson(creationPayload),
     ),
     resolvedBindingsHash: sha256(
       stableJson([
@@ -548,7 +693,11 @@ function addResolvedBinding(
   >,
   target: SupportedLogicalReferenceTarget,
   logicalId: string,
-  targetType: "Lakehouse" | "Environment" | "SemanticModel",
+  targetType:
+    | "Lakehouse"
+    | "Environment"
+    | "SemanticModel"
+    | "Eventhouse",
   declaration: string,
 ): void {
   if (resolved.has(target)) {
@@ -608,7 +757,8 @@ function isCanonicalResolvedBinding(
     binding.valueFrom === `items.${binding.logicalId}.id` &&
     (binding.targetType === "Lakehouse" ||
       binding.targetType === "Environment" ||
-      binding.targetType === "SemanticModel")
+      binding.targetType === "SemanticModel" ||
+      binding.targetType === "Eventhouse")
   );
 }
 

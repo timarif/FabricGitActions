@@ -12,6 +12,7 @@ import type {
 } from "../types";
 import type { EnvironmentAdapter } from "./environment";
 import type { EventhouseAdapter } from "./eventhouse";
+import type { KqlDatabaseAdapter } from "./kql-database";
 import {
   isDeletableFabricItemType,
   type ItemDeletionAdapter,
@@ -45,6 +46,7 @@ import type { WorkspaceAdapter } from "./workspace";
 import {
   materializeSparkJobDefinitionWithProof,
   materializeReportDefinitionWithProof,
+  materializeKqlDatabaseCreationWithProof,
   validateLogicalReferenceDeclarations,
 } from "./logical-references";
 
@@ -53,6 +55,8 @@ export interface FabricPlanAdapters {
   deletion?: Pick<ItemDeletionAdapter, "plan">;
   lakehouse: Pick<LakehouseAdapter, "plan">;
   eventhouse?: Pick<EventhouseAdapter, "plan">;
+  kqlDatabase?: Pick<KqlDatabaseAdapter, "plan"> &
+    Partial<Pick<KqlDatabaseAdapter, "planUnresolvedParent">>;
   environment: Pick<EnvironmentAdapter, "plan">;
   notebook: Pick<NotebookAdapter, "plan">;
   sparkJob: Pick<SparkJobAdapter, "plan"> &
@@ -163,8 +167,10 @@ export async function enrichPlanWithFabric(
         item.type !== "FabricTag" &&
         item.type !== "SparkJobDefinition" &&
         item.type !== "LakehouseTables" &&
+        item.type !== "KQLDatabase" &&
         item.type !== "Report",
     ),
+    ...plan.items.filter((item) => item.type === "KQLDatabase"),
     ...plan.items.filter(
       (item) => item.type === "LakehouseTables",
     ),
@@ -191,6 +197,7 @@ export async function enrichPlanWithFabric(
     if (
       item.type !== "Lakehouse" &&
       item.type !== "Eventhouse" &&
+      item.type !== "KQLDatabase" &&
       item.type !== "Environment" &&
       item.type !== "SparkCustomPool" &&
       item.type !== "Notebook" &&
@@ -446,6 +453,15 @@ export async function enrichPlanWithFabric(
               adapters,
               item.logicalId,
             ).plan(workspaceId, desired)
+        : item.type === "KQLDatabase"
+          ? await planKqlDatabase(
+              workspaceId,
+              item,
+              desired,
+              loadedManifest,
+              plannedItems,
+              adapters.kqlDatabase,
+            )
         : item.type === "Environment"
           ? await adapters.environment.plan(
               workspaceId,
@@ -890,6 +906,7 @@ async function planReport(
       `The resolved Report definition or manifest item is missing for '${item.logicalId}'.`,
     );
   }
+
   if (!adapter) {
     return {
       action: "blocked" as const,
@@ -957,6 +974,95 @@ async function planReport(
   return {
     action: "blocked" as const,
     reason: `Report '${desired.displayName}' cannot resolve Semantic Model '${binding.logicalId}' because its current plan action is '${dependency?.action ?? "missing"}'.`,
+    observedStateHash: sha256(stableJson(null)),
+  };
+}
+
+async function planKqlDatabase(
+  workspaceId: string,
+  item: PlannedItem,
+  desired: NonNullable<
+    LoadedManifest["itemDefinitions"][string]
+  >,
+  loadedManifest: LoadedManifest,
+  plannedItems: ReadonlyMap<string, PlannedItem>,
+  adapter: FabricPlanAdapters["kqlDatabase"],
+) {
+  const manifestItem = loadedManifest.manifest.items.find(
+    (candidate) => candidate.logicalId === item.logicalId,
+  );
+  if (!manifestItem) {
+    throw new Error(
+      `The resolved KQL Database manifest item is missing for '${item.logicalId}'.`,
+    );
+  }
+  if (!adapter) {
+    return {
+      action: "blocked" as const,
+      reason: `KQL Database adapter was not initialized for '${item.logicalId}'.`,
+      observedStateHash: sha256(stableJson(null)),
+    };
+  }
+  const bindings = validateLogicalReferenceDeclarations({
+    item: manifestItem,
+    definition: desired,
+    itemGraph: loadedManifest.manifest.items,
+  });
+  const binding = Object.values(bindings)[0];
+  if (!binding || binding.targetType !== "Eventhouse") {
+    throw new Error(
+      `KQL Database '${desired.displayName}' is missing its Eventhouse binding.`,
+    );
+  }
+  const dependency = plannedItems.get(binding.logicalId);
+  if (
+    dependency?.physicalId &&
+    (dependency.action === "update" ||
+      dependency.action === "no-op")
+  ) {
+    const materialized =
+      materializeKqlDatabaseCreationWithProof(
+        desired,
+        bindings,
+        { [binding.logicalId]: dependency.physicalId },
+      );
+    return {
+      ...(await adapter.plan(
+        workspaceId,
+        desired,
+        materialized,
+      )),
+      materializedDefinitionHash:
+        materialized.materializedDefinitionHash,
+      resolvedBindingsHash: materialized.resolvedBindingsHash,
+    };
+  }
+  if (dependency?.action === "create") {
+    if (!adapter.planUnresolvedParent) {
+      return {
+        action: "blocked" as const,
+        reason: `KQL Database '${desired.displayName}' requires the physical ID of newly created Eventhouse '${binding.logicalId}'; replan after it exists.`,
+        observedStateHash: sha256(stableJson(null)),
+      };
+    }
+    const unresolved = await adapter.planUnresolvedParent(
+      workspaceId,
+      desired,
+      [binding.logicalId],
+    );
+    if (
+      unresolved.action !== "create" &&
+      unresolved.action !== "blocked"
+    ) {
+      throw new Error(
+        `KQL Database '${desired.displayName}' returned unsafe action '${unresolved.action}' before its Eventhouse ID was available.`,
+      );
+    }
+    return unresolved;
+  }
+  return {
+    action: "blocked" as const,
+    reason: `KQL Database '${desired.displayName}' cannot resolve Eventhouse '${binding.logicalId}' because its current plan action is '${dependency?.action ?? "missing"}'.`,
     observedStateHash: sha256(stableJson(null)),
   };
 }

@@ -7,6 +7,7 @@ import type { FabricTagScope } from "./fabric/tags";
 export const FABRIC_ITEM_TYPES = [
   "Lakehouse",
   "Eventhouse",
+  "KQLDatabase",
   "LakehouseTables",
   "FabricTag",
   "Environment",
@@ -41,6 +42,7 @@ export interface ItemDefinition {
   folderId?: string;
   enableSchemas?: true;
   minimumConsumptionUnits?: number;
+  databaseType?: "ReadWrite";
   scope?: FabricTagScope;
   tags?: string[];
   references?: Record<string, string>;

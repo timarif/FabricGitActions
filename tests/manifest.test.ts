@@ -363,6 +363,59 @@ items:
     );
   });
 
+  it("rejects duplicate desired KQL Database identities", () => {
+    const root = mkdtempSync(path.join(tmpdir(), "fabric-deploy-"));
+    const manifestPath = createFixture(
+      root,
+      `
+apiVersion: fabric.deploy/v1alpha1
+kind: FabricDeployment
+metadata:
+  deploymentId: kql-database-identities
+workspace:
+  id: workspace-1
+items:
+  - logicalId: eventhouse
+    type: Eventhouse
+    path: items/eventhouse
+  - logicalId: firstDatabase
+    type: KQLDatabase
+    path: items/databases/first
+    dependsOn: [eventhouse]
+  - logicalId: secondDatabase
+    type: KQLDatabase
+    path: items/databases/second
+    dependsOn: [eventhouse]
+`,
+      [
+        "items/eventhouse",
+        "items/databases/first",
+        "items/databases/second",
+      ],
+    );
+    writeFileSync(
+      path.join(root, "items/eventhouse/item.yaml"),
+      "displayName: ParentEventhouse\n",
+      "utf8",
+    );
+    for (const name of ["first", "second"]) {
+      writeFileSync(
+        path.join(
+          root,
+          "items/databases",
+          name,
+          "item.yaml",
+        ),
+        "displayName: Shared-Database\nreferences:\n  eventhouse: eventhouse\n",
+        "utf8",
+      );
+    }
+
+    expect(() => loadManifest(manifestPath)).toThrow(
+      "KQLDatabase items 'firstDatabase' and 'secondDatabase' resolve to the same folder and displayName",
+    );
+  });
+
   it("rejects duplicate desired Environment identities", () => {
     const root = mkdtempSync(path.join(tmpdir(), "fabric-deploy-"));
     const manifestPath = createFixture(

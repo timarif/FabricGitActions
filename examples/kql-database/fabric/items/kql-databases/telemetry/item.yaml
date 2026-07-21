@@ -1,0 +1,6 @@
+displayName: Telemetry-Database
+description: ReadWrite telemetry database
+desiredState: present
+databaseType: ReadWrite
+references:
+  eventhouse: telemetryEventhouse
