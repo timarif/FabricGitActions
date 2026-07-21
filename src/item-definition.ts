@@ -41,6 +41,13 @@ const itemDefinitionSchema = {
     databaseType: {
       const: "ReadWrite",
     },
+    collationType: {
+      type: "string",
+      enum: [
+        "Latin1_General_100_BIN2_UTF8",
+        "Latin1_General_100_CI_AS_KS_WS_SC_UTF8",
+      ],
+    },
     scope: {
       oneOf: [
         {
@@ -173,6 +180,7 @@ function validateDeletionDefinition(
     definition.enableSchemas !== undefined ||
     definition.minimumConsumptionUnits !== undefined ||
     definition.databaseType !== undefined ||
+    definition.collationType !== undefined ||
     definition.scope !== undefined ||
     definition.tags !== undefined ||
     definition.references !== undefined ||
@@ -197,6 +205,7 @@ function validateDeletionDefinition(
     case "LakehouseTables":
     case "SparkCustomPool":
     case "Report":
+    case "Warehouse":
       throw new Error(
         `Item '${item.logicalId}' of type ${item.type} does not support desiredState: absent.`,
       );
@@ -338,6 +347,14 @@ function validateTypeSpecificDefinition(
       `Item '${item.logicalId}' can use databaseType only when type is KQLDatabase.`,
     );
   }
+  if (
+    item.type !== "Warehouse" &&
+    definition.collationType !== undefined
+  ) {
+    throw new Error(
+      `Item '${item.logicalId}' can use collationType only when type is Warehouse.`,
+    );
+  }
 
   switch (item.type) {
     case "Lakehouse":
@@ -427,6 +444,11 @@ function validateTypeSpecificDefinition(
       definitionDirectory(item, itemDirectory);
       loadReportDefinition(itemDirectory);
       return;
+    case "Warehouse":
+      // No definition directory — all warehouse DDL is applied via T-SQL
+      // through the SQL endpoint (deferred to a future WarehouseTables adapter).
+      assertNoWarehouseDefinitionDirectory(item, itemDirectory);
+      return;
     default:
       assertNever(item.type);
   }
@@ -450,6 +472,19 @@ function assertNoDefinitionDirectory(
   if (existsSync(directory)) {
     throw new Error(
       `Item '${item.logicalId}' (${item.type}) does not support a definition directory; configure minimumConsumptionUnits in item.yaml.`,
+    );
+  }
+}
+
+function assertNoWarehouseDefinitionDirectory(
+  item: DeploymentItem,
+  itemDirectory: string,
+): void {
+  const directory = path.join(itemDirectory, "definition");
+  if (existsSync(directory)) {
+    throw new Error(
+      `Item '${item.logicalId}' (Warehouse) does not support a definition directory. ` +
+        `Warehouse schema and table DDL is managed separately via T-SQL through the SQL endpoint.`,
     );
   }
 }

@@ -13,6 +13,7 @@ import type {
 import type { EnvironmentAdapter } from "./environment";
 import type { EventhouseAdapter } from "./eventhouse";
 import type { KqlDatabaseAdapter } from "./kql-database";
+import type { WarehouseAdapter } from "./warehouse";
 import {
   isDeletableFabricItemType,
   type ItemDeletionAdapter,
@@ -57,6 +58,7 @@ export interface FabricPlanAdapters {
   eventhouse?: Pick<EventhouseAdapter, "plan">;
   kqlDatabase?: Pick<KqlDatabaseAdapter, "plan"> &
     Partial<Pick<KqlDatabaseAdapter, "planUnresolvedParent">>;
+  warehouse?: Pick<WarehouseAdapter, "plan">;
   environment: Pick<EnvironmentAdapter, "plan">;
   notebook: Pick<NotebookAdapter, "plan">;
   sparkJob: Pick<SparkJobAdapter, "plan"> &
@@ -198,6 +200,7 @@ export async function enrichPlanWithFabric(
       item.type !== "Lakehouse" &&
       item.type !== "Eventhouse" &&
       item.type !== "KQLDatabase" &&
+      item.type !== "Warehouse" &&
       item.type !== "Environment" &&
       item.type !== "SparkCustomPool" &&
       item.type !== "Notebook" &&
@@ -518,14 +521,19 @@ export async function enrichPlanWithFabric(
                       item.logicalId,
                     ),
                   )
-                  : await planReport(
-                      workspaceId,
-                      item,
-                      desired,
-                      loadedManifest,
-                      plannedItems,
-                      adapters.report,
-                    );
+                  : item.type === "Warehouse"
+                    ? await requireWarehouseAdapter(
+                        adapters,
+                        item.logicalId,
+                      ).plan(workspaceId, desired)
+                    : await planReport(
+                        workspaceId,
+                        item,
+                        desired,
+                        loadedManifest,
+                        plannedItems,
+                        adapters.report,
+                      );
     plannedItems.set(item.logicalId, {
       ...item,
       action: result.action,
@@ -646,6 +654,18 @@ export async function enrichPlanWithFabric(
       );
     }
     return adapters.eventhouse;
+  }
+
+  function requireWarehouseAdapter(
+    adapters: FabricPlanAdapters,
+    logicalId: string,
+  ): NonNullable<FabricPlanAdapters["warehouse"]> {
+    if (!adapters.warehouse) {
+      throw new Error(
+        `Warehouse adapter is missing for '${logicalId}'.`,
+      );
+    }
+    return adapters.warehouse;
   }
 
   const orderedItems = plan.items.map((item) => {

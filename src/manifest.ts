@@ -889,6 +889,7 @@ function validateUniqueDesiredIdentities(
     | "Lakehouse"
     | "Eventhouse"
     | "KQLDatabase"
+    | "Warehouse"
     | "Environment"
     | "SparkCustomPool"
     | "Notebook"
@@ -901,6 +902,7 @@ function validateUniqueDesiredIdentities(
     ["Lakehouse", new Map()],
     ["Eventhouse", new Map()],
     ["KQLDatabase", new Map()],
+    ["Warehouse", new Map()],
     ["Environment", new Map()],
     ["SparkCustomPool", new Map()],
     ["Notebook", new Map()],
@@ -914,6 +916,7 @@ function validateUniqueDesiredIdentities(
       item.type !== "Lakehouse" &&
       item.type !== "Eventhouse" &&
       item.type !== "KQLDatabase" &&
+      item.type !== "Warehouse" &&
       item.type !== "Environment" &&
       item.type !== "SparkCustomPool" &&
       item.type !== "Notebook" &&

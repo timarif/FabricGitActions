@@ -29,6 +29,10 @@ import type {
   KqlDatabaseAdapter,
   KqlDatabaseOperationReference,
 } from "./fabric/kql-database";
+import type {
+  WarehouseAdapter,
+  WarehouseOperationReference,
+} from "./fabric/warehouse";
 import {
   isDeletableFabricItemType,
   type ItemDeletionAdapter,
@@ -156,6 +160,10 @@ export interface ApplyPlanOptions {
   >;
   kqlDatabaseAdapter?: Pick<
     KqlDatabaseAdapter,
+    "create" | "update" | "verify" | "resumeCreate" | "plan"
+  >;
+  warehouseAdapter?: Pick<
+    WarehouseAdapter,
     "create" | "update" | "verify" | "resumeCreate" | "plan"
   >;
   environmentAdapter?: Pick<
@@ -1404,6 +1412,7 @@ function assertSupportedApplyItem(
     item.type !== "Lakehouse" &&
     item.type !== "Eventhouse" &&
     item.type !== "KQLDatabase" &&
+    item.type !== "Warehouse" &&
     item.type !== "Environment" &&
     item.type !== "SparkCustomPool" &&
     item.type !== "Notebook" &&
@@ -1512,6 +1521,15 @@ function assertSupportedApplyItem(
   if (item.type === "LakehouseTables" && !options.lakehouseTablesAdapter) {
     throw new Error(
       `LakehouseTables adapter was not initialized for item '${item.logicalId}'.`,
+    );
+  }
+  if (
+    item.desiredState !== "absent" &&
+    item.type === "Warehouse" &&
+    !options.warehouseAdapter
+  ) {
+    throw new Error(
+      `Warehouse adapter was not initialized for item '${item.logicalId}'.`,
     );
   }
   if (
@@ -1713,6 +1731,7 @@ async function resumePendingOperations(
         (approvedItem.type !== "Lakehouse" &&
           approvedItem.type !== "Eventhouse" &&
           approvedItem.type !== "KQLDatabase" &&
+          approvedItem.type !== "Warehouse" &&
           approvedItem.type !== "Environment" &&
           approvedItem.type !== "SparkCustomPool" &&
           approvedItem.type !== "Notebook" &&
@@ -1873,6 +1892,7 @@ async function reconcilePendingCreates(
         (approvedItem.type !== "Lakehouse" &&
           approvedItem.type !== "Eventhouse" &&
           approvedItem.type !== "KQLDatabase" &&
+          approvedItem.type !== "Warehouse" &&
           approvedItem.type !== "Environment" &&
           approvedItem.type !== "SparkCustomPool" &&
           approvedItem.type !== "Notebook" &&
@@ -1962,6 +1982,7 @@ async function reconcilePendingUpdates(
         (approvedItem.type !== "Lakehouse" &&
           approvedItem.type !== "Eventhouse" &&
           approvedItem.type !== "KQLDatabase" &&
+          approvedItem.type !== "Warehouse" &&
           approvedItem.type !== "Environment" &&
           approvedItem.type !== "SparkCustomPool" &&
           approvedItem.type !== "Notebook" &&
@@ -4234,6 +4255,7 @@ async function applyItem(
     item.type !== "Lakehouse" &&
     item.type !== "Eventhouse" &&
     item.type !== "KQLDatabase" &&
+    item.type !== "Warehouse" &&
     item.type !== "Environment" &&
     item.type !== "SparkCustomPool" &&
     item.type !== "Notebook" &&
@@ -4528,6 +4550,7 @@ async function resumeCompletedItem(
     item.type !== "Lakehouse" &&
     item.type !== "Eventhouse" &&
     item.type !== "KQLDatabase" &&
+    item.type !== "Warehouse" &&
     item.type !== "Environment" &&
     item.type !== "SparkCustomPool" &&
     item.type !== "Notebook" &&
@@ -4621,6 +4644,12 @@ async function planDesiredItem(
         materialized.materializedDefinitionHash,
       resolvedBindingsHash: materialized.resolvedBindingsHash,
     };
+  }
+  if (item.type === "Warehouse") {
+    return requireWarehouseAdapter(options, item.logicalId).plan(
+      options.approvedPlan.workspaceId,
+      desired,
+    );
   }
   if (item.type === "Environment") {
     return requireEnvironmentAdapter(options, item.logicalId).plan(
@@ -4746,6 +4775,7 @@ async function createDesiredItem(
       | LakehouseOperationReference
       | EventhouseOperationReference
       | KqlDatabaseOperationReference
+      | WarehouseOperationReference
       | EnvironmentOperationReference
       | NotebookOperationReference
       | SparkJobOperationReference
@@ -4799,6 +4829,19 @@ async function createDesiredItem(
         options,
         item.logicalId,
       ),
+      onMutationAccepted,
+      onOperationAccepted,
+      onCreateSubmitting,
+      onCreateRejected,
+    );
+  }
+  if (item.type === "Warehouse") {
+    return requireWarehouseAdapter(
+      options,
+      item.logicalId,
+    ).create(
+      options.approvedPlan.workspaceId,
+      desired,
       onMutationAccepted,
       onOperationAccepted,
       onCreateSubmitting,
@@ -4904,6 +4947,7 @@ async function resumeCreateDesiredItem(
     | LakehouseOperationReference
     | EventhouseOperationReference
     | KqlDatabaseOperationReference
+    | WarehouseOperationReference
     | EnvironmentOperationReference
     | NotebookOperationReference
     | SparkJobOperationReference
@@ -4942,6 +4986,17 @@ async function resumeCreateDesiredItem(
         options,
         item.logicalId,
       ),
+      operation,
+      onMutationAccepted,
+    );
+  }
+  if (item.type === "Warehouse") {
+    return requireWarehouseAdapter(
+      options,
+      item.logicalId,
+    ).resumeCreate(
+      options.approvedPlan.workspaceId,
+      desired,
       operation,
       onMutationAccepted,
     );
@@ -5066,6 +5121,19 @@ async function updateDesiredItem(
         options,
         item.logicalId,
       ),
+      onMutationAccepted,
+      onUpdateSubmitting,
+      onUpdateRejected,
+    );
+  }
+  if (item.type === "Warehouse") {
+    return requireWarehouseAdapter(
+      options,
+      item.logicalId,
+    ).update(
+      options.approvedPlan.workspaceId,
+      physicalId,
+      desired,
       onMutationAccepted,
       onUpdateSubmitting,
       onUpdateRejected,
@@ -5203,6 +5271,16 @@ async function verifyDesiredItem(
         options,
         item.logicalId,
       ),
+    );
+  }
+  if (item.type === "Warehouse") {
+    return requireWarehouseAdapter(
+      options,
+      item.logicalId,
+    ).verify(
+      options.approvedPlan.workspaceId,
+      physicalId,
+      desired,
     );
   }
   if (item.type === "Environment") {
@@ -5407,6 +5485,18 @@ function requireKqlDatabaseRuntimeCreation(
     materialized,
   );
   return materialized;
+}
+
+function requireWarehouseAdapter(
+  options: ApplyPlanOptions,
+  logicalId: string,
+): NonNullable<ApplyPlanOptions["warehouseAdapter"]> {
+  if (!options.warehouseAdapter) {
+    throw new Error(
+      `Warehouse adapter was not initialized for item '${logicalId}'.`,
+    );
+  }
+  return options.warehouseAdapter;
 }
 
 function requireEnvironmentDefinition(

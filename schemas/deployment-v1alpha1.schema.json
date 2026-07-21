@@ -340,7 +340,8 @@
               "SparkJobDefinition",
               "DataPipeline",
               "SemanticModel",
-              "Report"
+            "Report",
+            "Warehouse"
             ]
           },
           "path": {
