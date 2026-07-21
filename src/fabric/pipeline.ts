@@ -100,7 +100,11 @@ export class PipelineAdapter {
     if (!folderMatches) {
       return {
         action: "blocked",
-        reason: `Data Pipeline '${desired.displayName}' is in a different folder; folder moves are not supported.`,
+        // The Fabric UpdateDataPipelineRequest schema has no folderId field
+        // (confirmed: microsoft/fabric-rest-api-specs:dataPipeline/definitions.json).
+        // Folder placement cannot be changed after creation via PATCH; the item
+        // must be recreated in the target folder.
+        reason: `Data Pipeline '${desired.displayName}' is in folder '${current.folderId ?? "(workspace root)"}' but the manifest targets '${desired.folderId ?? "(workspace root)"}'. The Fabric API does not support moving pipelines between folders (UpdateDataPipelineRequest has no folderId field); recreate the pipeline in the correct folder to resolve this.`,
         physicalId: current.id,
         observedStateHash,
         stagedDefinitionHash: currentDefinitionHash,
@@ -434,6 +438,26 @@ export class PipelineAdapter {
       );
     }
     return actual;
+  }
+
+  /**
+   * Resolves a physical Data Pipeline by display name and folder scope for use
+   * by run-pipeline mode. Throws descriptively if the item is absent or
+   * ambiguous, preventing execution against an undeployed or mismatched item.
+   */
+  async resolveForRun(
+    workspaceId: string,
+    desired: ItemDefinition,
+  ): Promise<DataPipeline> {
+    const existing = await this.findByDisplayName(workspaceId, desired);
+    if (!existing) {
+      throw new Error(
+        `Data Pipeline '${desired.displayName}' was not found in workspace '${workspaceId}'${
+          desired.folderId ? ` (folder '${desired.folderId}')` : ""
+        }. The item may not have been deployed yet.`,
+      );
+    }
+    return this.get(workspaceId, existing.id);
   }
 
   private async stageDefinition(

@@ -37,7 +37,8 @@
 - [x] Workspace custom Spark pool deployment
 - [x] Spark Job Definition deployment
 - [x] Logical reference resolution
-- [x] Data Pipeline definition deployment
+- [x] Data Pipeline definition deployment and folder-drift blocking
+- [x] Guarded on-demand Data Pipeline job execution (`run-pipeline` mode)
 
 ## Phase 4: production hardening
 
@@ -99,3 +100,17 @@
 See [the Fabric platform expansion plan](PHASE5_PLAN.md) for the prioritized
 Real-Time Intelligence, warehouse/database, Data Factory, platform,
 application, additional Power BI, and service-principal-blocked item inventory.
+
+### API-confirmed constraint: Data Pipeline folder moves
+
+The Fabric `UpdateDataPipelineRequest` schema (authoritative source:
+[`microsoft/fabric-rest-api-specs:dataPipeline/definitions.json`](https://github.com/microsoft/fabric-rest-api-specs/blob/main/dataPipeline/definitions.json))
+contains only `displayName` and `description` — there is **no `folderId` field**.
+Folder placement is fixed at creation and cannot be changed via
+`PATCH /dataPipelines/{id}`.
+
+The planner correctly classifies folder drift as `action: "blocked"` with a
+descriptive error that names both the current and target folder and cites the
+API limitation. A future lifecycle-management PR could implement folder move
+via item recreation (delete + create in target folder), but this carries
+data-loss risk and requires an explicit manifest-level acknowledgement flag.

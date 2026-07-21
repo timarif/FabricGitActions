@@ -591,4 +591,179 @@ describe("Data Pipeline adapter", () => {
     expect(checkpoints).toEqual(["metadata-submitting"]);
     expect(onUpdateRejected).not.toHaveBeenCalled();
   });
+
+  it("blocked reason names both folders and cites the API limitation", async () => {
+    // Verifies that the reason string is actionable: it tells the user which
+    // folder the pipeline is currently in, which folder the manifest targets,
+    // and WHY the move cannot happen (UpdateDataPipelineRequest has no
+    // folderId field — confirmed in microsoft/fabric-rest-api-specs).
+    const fetchImpl = vi.fn(async (input: string | URL) => {
+      const url = String(input);
+      if (url.includes("?recursive=false")) {
+        return new Response(
+          JSON.stringify({
+            value: [{ id: "pipeline-1", displayName: "Hello" }],
+          }),
+          { status: 200 },
+        );
+      }
+      if (url.endsWith("/getDefinition")) {
+        return new Response(
+          JSON.stringify(definitionResponse()),
+          { status: 200 },
+        );
+      }
+      return new Response(
+        JSON.stringify({
+          id: "pipeline-1",
+          displayName: "Hello",
+          folderId: "source-folder-uuid",
+        }),
+        { status: 200 },
+      );
+    });
+    const adapter = createAdapter(fetchImpl);
+
+    const result = await adapter.plan(
+      "workspace",
+      { displayName: "Hello", folderId: "target-folder-uuid" },
+      pipelineDefinition(),
+    );
+
+    expect(result.action).toBe("blocked");
+    expect(result.reason).toContain("source-folder-uuid");
+    expect(result.reason).toContain("target-folder-uuid");
+    expect(result.reason).toContain("UpdateDataPipelineRequest");
+  });
+
+  it("plans update when only the description differs", async () => {
+    const fetchImpl = vi.fn(async (input: string | URL) => {
+      const url = String(input);
+      if (url.includes("?recursive=false")) {
+        return new Response(
+          JSON.stringify({
+            value: [{ id: "pipeline-1", displayName: "Hello" }],
+          }),
+          { status: 200 },
+        );
+      }
+      if (url.endsWith("/getDefinition")) {
+        return new Response(
+          JSON.stringify(definitionResponse()),
+          { status: 200 },
+        );
+      }
+      return new Response(
+        JSON.stringify({
+          id: "pipeline-1",
+          displayName: "Hello",
+          description: "Old Description",
+        }),
+        { status: 200 },
+      );
+    });
+    const adapter = createAdapter(fetchImpl);
+
+    await expect(
+      adapter.plan(
+        "workspace",
+        { displayName: "Hello", description: "New Description" },
+        pipelineDefinition(),
+      ),
+    ).resolves.toMatchObject({
+      action: "update",
+      reason: expect.stringContaining("metadata differs"),
+      managedMetadataMatches: false,
+    });
+  });
+
+  it("PATCH body for a metadata-only update contains displayName and description but not folderId", async () => {
+    // Guards the API contract: UpdateDataPipelineRequest has no folderId,
+    // so we must never send it — even when the desired ItemDefinition has one.
+    let capturedPatchBody: unknown;
+    const definition = pipelineDefinition(1, false); // no .platform → PATCH path
+    const fetchImpl = vi.fn(
+      async (input: string | URL, init?: RequestInit) => {
+        const url = String(input);
+        if (
+          init?.method === "PATCH" &&
+          url.includes("/dataPipelines/pipeline-1")
+        ) {
+          capturedPatchBody = JSON.parse(String(init.body));
+          return new Response(
+            JSON.stringify({
+              id: "pipeline-1",
+              displayName: "Hello",
+              description: "Managed",
+              folderId: "folder-1",
+            }),
+            { status: 200 },
+          );
+        }
+        if (url.includes("/updateDefinition")) {
+          return new Response(undefined, { status: 200 });
+        }
+        if (url.endsWith("/getDefinition")) {
+          return new Response(
+            JSON.stringify(definitionResponse(1, false)),
+            { status: 200 },
+          );
+        }
+        return new Response(
+          JSON.stringify({
+            id: "pipeline-1",
+            displayName: "Hello",
+            description: "Managed",
+            folderId: "folder-1",
+          }),
+          { status: 200 },
+        );
+      },
+    );
+    const adapter = createAdapter(fetchImpl);
+
+    await adapter.update(
+      "workspace",
+      "pipeline-1",
+      { displayName: "Hello", description: "Managed", folderId: "folder-1" },
+      definition,
+    );
+
+    expect(capturedPatchBody).toMatchObject({
+      displayName: "Hello",
+      description: "Managed",
+    });
+    // folderId MUST NOT appear — the Fabric API rejects it.
+    expect(capturedPatchBody).not.toHaveProperty("folderId");
+  });
+
+  it("verify throws when the live pipeline is in a different folder than desired", async () => {
+    const fetchImpl = vi.fn(async (input: string | URL) => {
+      const url = String(input);
+      if (url.endsWith("/getDefinition")) {
+        return new Response(
+          JSON.stringify(definitionResponse()),
+          { status: 200 },
+        );
+      }
+      return new Response(
+        JSON.stringify({
+          id: "pipeline-1",
+          displayName: "Hello",
+          folderId: "actual-folder",
+        }),
+        { status: 200 },
+      );
+    });
+    const adapter = createAdapter(fetchImpl);
+
+    await expect(
+      adapter.verify(
+        "workspace",
+        "pipeline-1",
+        { displayName: "Hello", folderId: "expected-folder" },
+        pipelineDefinition(),
+      ),
+    ).rejects.toThrow("folder placement");
+  });
 });
