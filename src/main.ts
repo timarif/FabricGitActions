@@ -42,6 +42,7 @@ import { OneLakeArtifactStager } from "./fabric/onelake-artifacts";
 import { PipelineAdapter } from "./fabric/pipeline";
 import { PipelineJobAdapter } from "./fabric/pipeline-job";
 import { EventstreamAdapter } from "./fabric/eventstream";
+import { CopyJobAdapter } from "./fabric/copy-job";
 import { ReportAdapter } from "./fabric/report";
 import { SemanticModelAdapter } from "./fabric/semantic-model";
 import { SparkCustomPoolAdapter } from "./fabric/spark-custom-pool";
@@ -387,6 +388,7 @@ export async function run(): Promise<void> {
     let notebookAdapter: NotebookAdapter | undefined;
     let sparkJobAdapter: SparkJobAdapter | undefined;
     let pipelineAdapter: PipelineAdapter | undefined;
+    let copyJobAdapter: CopyJobAdapter | undefined;
     let semanticModelAdapter: SemanticModelAdapter | undefined;
     let reportAdapter: ReportAdapter | undefined;
     let eventstreamAdapter: EventstreamAdapter | undefined;
@@ -433,6 +435,7 @@ export async function run(): Promise<void> {
       notebookAdapter = new NotebookAdapter(client);
       sparkJobAdapter = new SparkJobAdapter(client);
       pipelineAdapter = new PipelineAdapter(client);
+      copyJobAdapter = new CopyJobAdapter(client);
       semanticModelAdapter = new SemanticModelAdapter(client);
       reportAdapter = new ReportAdapter(client);
       eventstreamAdapter = new EventstreamAdapter(client);
@@ -556,6 +559,7 @@ export async function run(): Promise<void> {
         !notebookAdapter ||
         !sparkJobAdapter ||
         !pipelineAdapter ||
+        !copyJobAdapter ||
         !semanticModelAdapter ||
         !reportAdapter ||
         !sparkCustomPoolAdapter ||
@@ -579,6 +583,7 @@ export async function run(): Promise<void> {
         notebook: notebookAdapter,
         sparkJob: sparkJobAdapter,
         pipeline: pipelineAdapter,
+        copyJob: copyJobAdapter,
         semanticModel: semanticModelAdapter,
         report: reportAdapter,
         eventstream: eventstreamAdapter,
@@ -704,6 +709,7 @@ export async function run(): Promise<void> {
         !notebookAdapter ||
         !sparkJobAdapter ||
         !pipelineAdapter ||
+        !copyJobAdapter ||
         !semanticModelAdapter ||
         !reportAdapter ||
         !sparkCustomPoolAdapter ||
@@ -729,6 +735,7 @@ export async function run(): Promise<void> {
         notebookAdapter,
         sparkJobAdapter,
         pipelineAdapter,
+        copyJobAdapter,
         semanticModelAdapter,
         reportAdapter,
         eventstreamAdapter,

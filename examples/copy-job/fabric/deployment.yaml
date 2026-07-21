@@ -1,0 +1,13 @@
+apiVersion: fabric.deploy/v1alpha1
+kind: FabricDeployment
+
+metadata:
+  deploymentId: copy-job-example
+
+workspace:
+  id: ${var.FABRIC_WORKSPACE_ID}
+
+items:
+  - logicalId: batchIngestion
+    type: CopyJob
+    path: items/copy-jobs/batch-ingestion

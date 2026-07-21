@@ -16,6 +16,7 @@ export const FABRIC_ITEM_TYPES = [
   "Notebook",
   "SparkJobDefinition",
   "DataPipeline",
+  "CopyJob",
   "SemanticModel",
   "Report",
   "Warehouse",
@@ -170,6 +171,7 @@ export interface LoadedManifest {
   sparkJobDefinitions: Record<string, FabricDefinition>;
   sparkJobArtifactSources?: Record<string, SparkJobArtifactSource[]>;
   pipelineDefinitions: Record<string, FabricDefinition>;
+  copyJobDefinitions?: Record<string, FabricDefinition>;
   semanticModelDefinitions: Record<string, FabricDefinition>;
   reportDefinitions?: Record<string, FabricDefinition>;
   eventstreamDefinitions?: Record<string, FabricDefinition>;

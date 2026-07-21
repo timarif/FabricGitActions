@@ -209,4 +209,53 @@ describe("generic Fabric item deletion adapter", () => {
       ),
     ).resolves.toBe("absent");
   });
+
+  // -------------------------------------------------------------------------
+  // CopyJob — deletion type registration
+  // -------------------------------------------------------------------------
+
+  it("treats CopyJob as a generic soft-deletable item type", () => {
+    expect(isDeletableFabricItemType("CopyJob")).toBe(true);
+  });
+
+  it("plans a CopyJob deletion using the generic items discovery URL with type=CopyJob", async () => {
+    const copyJobItem = {
+      id: "copyjob-42",
+      workspaceId: "workspace",
+      type: "CopyJob",
+      displayName: "My Copy Job",
+    };
+    let discoveryUrl = "";
+    const fetchImpl = vi
+      .fn()
+      .mockImplementationOnce(async (input: string | URL) => {
+        discoveryUrl = String(input);
+        return new Response(
+          JSON.stringify({ value: [copyJobItem] }),
+          { status: 200 },
+        );
+      })
+      .mockImplementationOnce(async () =>
+        new Response(JSON.stringify(copyJobItem), { status: 200 }),
+      );
+    const adapter = createAdapter(fetchImpl);
+
+    const result = await adapter.plan("workspace", "CopyJob", {
+      displayName: "My Copy Job",
+      desiredState: "absent",
+    });
+
+    expect(result.action).toBe("delete");
+    expect(result.physicalId).toBe("copyjob-42");
+    expect(result.observedStateHash).toBe(
+      hashObservedDeletionItem(copyJobItem),
+    );
+    expect(result.reason).toMatch(/Copy Job/);
+
+    // Discovery must use the generic items endpoint with type=CopyJob.
+    const url = new URL(discoveryUrl);
+    expect(url.pathname).toBe("/v1/workspaces/workspace/items");
+    expect(url.searchParams.get("type")).toBe("CopyJob");
+    expect(url.searchParams.get("recursive")).toBe("false");
+  });
 });

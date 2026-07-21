@@ -29,6 +29,7 @@ import {
   type NetworkProtectionAdapter,
 } from "./network-protection";
 import type { PipelineAdapter } from "./pipeline";
+import type { CopyJobAdapter } from "./copy-job";
 import type { ReportAdapter } from "./report";
 import type { SemanticModelAdapter } from "./semantic-model";
 import type { SparkCustomPoolAdapter } from "./spark-custom-pool";
@@ -65,6 +66,7 @@ export interface FabricPlanAdapters {
   sparkJob: Pick<SparkJobAdapter, "plan"> &
     Partial<Pick<SparkJobAdapter, "planUnresolvedReferences">>;
   pipeline: Pick<PipelineAdapter, "plan">;
+  copyJob?: Pick<CopyJobAdapter, "plan">;
   semanticModel: Pick<SemanticModelAdapter, "plan">;
   report?: Pick<ReportAdapter, "plan"> &
     Partial<Pick<ReportAdapter, "planUnresolvedReferences">>;
@@ -208,6 +210,7 @@ export async function enrichPlanWithFabric(
       item.type !== "Notebook" &&
       item.type !== "SparkJobDefinition" &&
       item.type !== "DataPipeline" &&
+      item.type !== "CopyJob" &&
       item.type !== "SemanticModel" &&
       item.type !== "Report" &&
       item.type !== "FabricTag" &&
@@ -515,6 +518,18 @@ export async function enrichPlanWithFabric(
                       item.logicalId,
                     ),
                   )
+                : item.type === "CopyJob"
+                  ? await requireCopyJobAdapter(
+                      adapters,
+                      item.logicalId,
+                    ).plan(
+                      workspaceId,
+                      desired,
+                      requireCopyJobDefinition(
+                        loadedManifest,
+                        item.logicalId,
+                      ),
+                    )
                 : item.type === "SemanticModel"
                   ? await adapters.semanticModel.plan(
                     workspaceId,
@@ -603,6 +618,31 @@ export async function enrichPlanWithFabric(
       );
     }
     return definition;
+  }
+
+  function requireCopyJobDefinition(
+    loadedManifest: LoadedManifest,
+    logicalId: string,
+  ) {
+    const definition = loadedManifest.copyJobDefinitions?.[logicalId];
+    if (!definition) {
+      throw new Error(
+        `The resolved Copy Job definition is missing for '${logicalId}'.`,
+      );
+    }
+    return definition;
+  }
+
+  function requireCopyJobAdapter(
+    adapters: FabricPlanAdapters,
+    logicalId: string,
+  ): NonNullable<FabricPlanAdapters["copyJob"]> {
+    if (!adapters.copyJob) {
+      throw new Error(
+        `Copy Job adapter is missing for '${logicalId}'.`,
+      );
+    }
+    return adapters.copyJob;
   }
 
   function requireSemanticModelDefinition(
