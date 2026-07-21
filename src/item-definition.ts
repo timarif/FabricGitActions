@@ -10,6 +10,7 @@ import { parse } from "yaml";
 
 import { loadEnvironmentDefinition } from "./fabric/definition";
 import { loadEventstreamDefinition } from "./fabric/eventstream-definition";
+import { loadDataAgentDefinition } from "./fabric/data-agent-definition";
 import { loadNotebookDefinition } from "./fabric/notebook-definition";
 import { loadCopyJobDefinition } from "./fabric/copy-job-definition";
 import { loadReportDefinition } from "./fabric/report-definition";
@@ -203,6 +204,12 @@ function validateDeletionDefinition(
     case "SemanticModel":
     case "Eventstream":
       return;
+    case "DataAgent":
+      throw new Error(
+        `Item '${item.logicalId}' of type DataAgent does not support desiredState: absent in this release. ` +
+          `Definition-aware deletion drift proof is required before DataAgent supports deletion. ` +
+          `Remove the desiredState: absent from the item definition to proceed.`,
+      );
     case "Eventhouse":
     case "KQLDatabase":
     case "FabricTag":
@@ -459,6 +466,11 @@ function validateTypeSpecificDefinition(
     case "Eventstream":
       definitionDirectory(item, itemDirectory);
       loadEventstreamDefinition(itemDirectory);
+      return;
+    case "DataAgent":
+      // Files/Config/ directory is optional — shell creation (no definition) is supported.
+      // Eagerly validate the definition if the directory is present.
+      loadDataAgentDefinition(itemDirectory);
       return;
     default:
       assertNever(item.type);

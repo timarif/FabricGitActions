@@ -1028,3 +1028,80 @@ dynamicExecutorAllocation: { enabled: true, minExecutors: 1, maxExecutors: 1 }
     ).toThrow("symbolic link or junction");
   });
 });
+
+// ---------------------------------------------------------------------------
+// DataAgent duplicate identity validation (item 4 regression tests)
+// ---------------------------------------------------------------------------
+
+describe("DataAgent duplicate identity detection", () => {
+  const ROOT_SCHEMA_URL =
+    "https://developer.microsoft.com/json-schemas/fabric/item/dataAgent/definition/dataAgent/2.1.0/schema.json";
+
+  function createTwoDataAgents(
+    name1: string,
+    name2: string,
+    folder1?: string,
+    folder2?: string,
+  ): string {
+    const root = mkdtempSync(path.join(tmpdir(), "fabric-deploy-da-"));
+    const dir1 = path.join(root, "items/agent1");
+    const dir2 = path.join(root, "items/agent2");
+    mkdirSync(dir1, { recursive: true });
+    mkdirSync(dir2, { recursive: true });
+    writeFileSync(
+      path.join(dir1, "item.yaml"),
+      `displayName: ${name1}\n${folder1 ? `folderId: ${folder1}\n` : ""}`,
+      "utf8",
+    );
+    writeFileSync(
+      path.join(dir2, "item.yaml"),
+      `displayName: ${name2}\n${folder2 ? `folderId: ${folder2}\n` : ""}`,
+      "utf8",
+    );
+    const manifestPath = path.join(root, "deployment.yaml");
+    writeFileSync(
+      manifestPath,
+      `
+apiVersion: fabric.deploy/v1alpha1
+kind: FabricDeployment
+metadata:
+  deploymentId: da-dupe-test
+workspace:
+  id: workspace-1
+items:
+  - logicalId: agent1
+    type: DataAgent
+    path: items/agent1
+  - logicalId: agent2
+    type: DataAgent
+    path: items/agent2
+`,
+      "utf8",
+    );
+    return manifestPath;
+  }
+
+  it("rejects two DataAgents with the same displayName in root folder (item 4)", () => {
+    const manifestPath = createTwoDataAgents("My Agent", "My Agent");
+    expect(() => loadManifest(manifestPath)).toThrow(
+      /DataAgent.*resolve to the same folder and displayName/,
+    );
+  });
+
+  it("allows two DataAgents with the same displayName in different folders", () => {
+    const folderId1 = "11111111-1111-4111-8111-111111111111";
+    const folderId2 = "22222222-2222-4222-8222-222222222222";
+    const manifestPath = createTwoDataAgents(
+      "My Agent",
+      "My Agent",
+      folderId1,
+      folderId2,
+    );
+    expect(() => loadManifest(manifestPath)).not.toThrow();
+  });
+
+  it("allows two DataAgents with different displayNames in the same folder", () => {
+    const manifestPath = createTwoDataAgents("Agent One", "Agent Two");
+    expect(() => loadManifest(manifestPath)).not.toThrow();
+  });
+});

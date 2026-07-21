@@ -112,6 +112,29 @@
 - [x] Schema and example fixture support
 - [ ] Dataflow adapter
 
+## Phase 10: AI — Data Agent
+
+DataAgent support in this PR covers create/update/no-op flows with checkpoint-safe
+shell-create recovery; deletion remains future work alongside logical datasource
+reference resolution.
+
+- [x] DataAgent item type first-class support in manifest schema
+- [x] Definition loader/validator for Files/Config/data_agent.json and draft/ files
+- [x] Scoped-hash drift detection (ignores server-auto-generated parts like stage_config.json with aiInstructions:null)
+- [x] .platform and published/** hash exclusion
+- [x] Shell (definition-free) DataAgent create and metadata management
+- [x] Create-then-stage definition pattern (shell create 201, then updateDefinition 202)
+- [x] Create 201/202 support with checkpoint-safe operation reference
+- [x] Shell-create recovery proof checkpointing (physicalId + shell definition hash)
+- [x] getDefinition 202 async polling
+- [x] Metadata PATCH (displayName, description)
+- [x] updateDefinition 202 async with checkpoint phases (metadata-submitting / metadata-updated / definition-submitting / definition-staged)
+- [x] Checkpoint-safe recovery for completed creates
+- [x] Read-back verification with scoped hash comparison
+- [x] Live probes against real Fabric workspace confirming synchronous 201 create, async 202 getDefinition/updateDefinition, and PATCH 200
+- [ ] Logical reference support for datasource.json artifactId bindings (Lakehouse / Warehouse / SemanticModel)
+- [ ] DataAgent deletion with definition-aware drift proof
+
 See [the Fabric platform expansion plan](PHASE5_PLAN.md) for the prioritized
 Real-Time Intelligence, warehouse/database, Data Factory, platform,
 application, additional Power BI, and service-principal-blocked item inventory.

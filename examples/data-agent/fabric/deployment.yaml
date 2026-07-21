@@ -1,0 +1,16 @@
+apiVersion: fabric.deploy/v1alpha1
+kind: FabricDeployment
+
+metadata:
+  deploymentId: data-agent-example
+
+items:
+  # Full Data Agent with authored definition (data_agent.json + stage_config.json)
+  - logicalId: salesAssistant
+    type: DataAgent
+    path: items/data-agents/sales-assistant
+
+  # Shell Data Agent – no definition files; metadata-only management
+  - logicalId: shellAgent
+    type: DataAgent
+    path: items/data-agents/shell-agent
