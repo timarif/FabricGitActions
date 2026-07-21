@@ -116,6 +116,14 @@ const examples: ExampleCase[] = [
     options: { workspaceIdOverride: WORKSPACE_ID },
     itemCount: 0,
   },
+  {
+    name: "Copy Job",
+    manifestPath: "copy-job/fabric/deployment.yaml",
+    options: {
+      variables: { FABRIC_WORKSPACE_ID: WORKSPACE_ID },
+    },
+    itemCount: 1,
+  },
 ];
 
 describe("maintained examples", () => {

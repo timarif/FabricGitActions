@@ -11,6 +11,7 @@ import { parse } from "yaml";
 import { loadEnvironmentDefinition } from "./fabric/definition";
 import { loadEventstreamDefinition } from "./fabric/eventstream-definition";
 import { loadNotebookDefinition } from "./fabric/notebook-definition";
+import { loadCopyJobDefinition } from "./fabric/copy-job-definition";
 import { loadReportDefinition } from "./fabric/report-definition";
 import { loadSemanticModelDefinition } from "./fabric/semantic-model-definition";
 import {
@@ -198,6 +199,7 @@ function validateDeletionDefinition(
     case "Notebook":
     case "SparkJobDefinition":
     case "DataPipeline":
+    case "CopyJob":
     case "SemanticModel":
     case "Eventstream":
       return;
@@ -438,6 +440,9 @@ function validateTypeSpecificDefinition(
     case "DataPipeline":
       requirePipelineDefinition(item, itemDirectory);
       return;
+    case "CopyJob":
+      requireCopyJobDefinition(item, itemDirectory);
+      return;
     case "SemanticModel":
       definitionDirectory(item, itemDirectory);
       loadSemanticModelDefinition(itemDirectory);
@@ -561,6 +566,25 @@ function parseJsonObject(
       `Item '${logicalId}' ${description} definition must be a JSON object.`,
     );
   }
+}
+
+function requireCopyJobDefinition(
+  item: DeploymentItem,
+  itemDirectory: string,
+): void {
+  const copyJobContentPath = path.join(
+    definitionDirectory(item, itemDirectory),
+    "copyjob-content.json",
+  );
+  if (
+    !existsSync(copyJobContentPath) ||
+    !statSync(copyJobContentPath).isFile()
+  ) {
+    throw new Error(
+      `Item '${item.logicalId}' requires definition/copyjob-content.json.`,
+    );
+  }
+  loadCopyJobDefinition(itemDirectory);
 }
 
 function assertNever(value: FabricItemType): never {

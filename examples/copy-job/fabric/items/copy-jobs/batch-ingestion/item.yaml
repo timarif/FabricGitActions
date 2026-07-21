@@ -1,0 +1,3 @@
+displayName: Bronze Batch Ingestion
+description: Batch Copy Job for bronze layer ingestion
+desiredState: present

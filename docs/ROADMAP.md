@@ -97,6 +97,20 @@
 - [ ] Warehouse guarded deletion (deferred — requires confirming hardDelete
   behaviour through the warehouse-specific DELETE endpoint)
 
+## Phase 9: Copy Job adapter
+
+- [x] Copy Job definition loader, validator, and semantic hasher (`copyjob-content.json`, optional `.platform`)
+- [x] Managed desired definition limited to `properties.jobMode` (`Batch` or `CDC`); extra fields are rejected to prevent hidden normalization drift
+- [x] Folder semantics: `folderId` accepted at creation; folder moves blocked because `UpdateCopyJobRequest` has no `folderId`
+- [x] Immutable `jobMode` drift blocking; `resetCopyJob` is never called automatically
+- [x] `.platform` `config.logicalId` sentinel policy: only absent or the zero GUID is accepted, and the sentinel is stripped before hashing
+- [x] Existing Copy Jobs use metadata PATCH only; `updateDefinition` is never called, with or without `.platform`
+- [x] `.platform` and other unapplyable definition drift is blocked and requires recreation
+- [x] Configured service readback is projected to the managed `jobMode` surface before hashing, excluding portal-managed activities, connections, and policies
+- [x] Checkpointed create and metadata-update recovery
+- [x] Copy Job planning, apply, verification, and guarded `desiredState: absent` deletion support
+- [x] Schema and example fixture support
+- [ ] Dataflow adapter
 
 See [the Fabric platform expansion plan](PHASE5_PLAN.md) for the prioritized
 Real-Time Intelligence, warehouse/database, Data Factory, platform,

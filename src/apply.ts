@@ -56,6 +56,14 @@ import type {
   PipelineOperationReference,
 } from "./fabric/pipeline";
 import type {
+  CopyJobAdapter,
+  CopyJobOperationReference,
+} from "./fabric/copy-job";
+import {
+  hashCopyJobDefinition,
+  copyJobIncludesPlatformPart,
+} from "./fabric/copy-job-definition";
+import type {
   ReportAdapter,
   ReportOperationReference,
 } from "./fabric/report";
@@ -193,6 +201,10 @@ export interface ApplyPlanOptions {
   >;
   pipelineAdapter?: Pick<
     PipelineAdapter,
+    "create" | "update" | "verify" | "resumeCreate" | "plan"
+  >;
+  copyJobAdapter?: Pick<
+    CopyJobAdapter,
     "create" | "update" | "verify" | "resumeCreate" | "plan"
   >;
   semanticModelAdapter?: Pick<
@@ -1431,6 +1443,7 @@ function assertSupportedApplyItem(
     item.type !== "Notebook" &&
     item.type !== "SparkJobDefinition" &&
     item.type !== "DataPipeline" &&
+    item.type !== "CopyJob" &&
     item.type !== "SemanticModel" &&
     item.type !== "Report" &&
     item.type !== "LakehouseTables" &&
@@ -1504,6 +1517,15 @@ function assertSupportedApplyItem(
   ) {
     throw new Error(
       `Data Pipeline adapter was not initialized for item '${item.logicalId}'.`,
+    );
+  }
+  if (
+    item.desiredState !== "absent" &&
+    item.type === "CopyJob" &&
+    !options.copyJobAdapter
+  ) {
+    throw new Error(
+      `Copy Job adapter was not initialized for item '${item.logicalId}'.`,
     );
   }
   if (
@@ -1760,6 +1782,7 @@ async function resumePendingOperations(
           approvedItem.type !== "Notebook" &&
           approvedItem.type !== "SparkJobDefinition" &&
           approvedItem.type !== "DataPipeline" &&
+          approvedItem.type !== "CopyJob" &&
           approvedItem.type !== "SemanticModel" &&
           approvedItem.type !== "Report" &&
           approvedItem.type !== "Eventstream")
@@ -1922,6 +1945,7 @@ async function reconcilePendingCreates(
           approvedItem.type !== "Notebook" &&
           approvedItem.type !== "SparkJobDefinition" &&
           approvedItem.type !== "DataPipeline" &&
+          approvedItem.type !== "CopyJob" &&
           approvedItem.type !== "SemanticModel" &&
           approvedItem.type !== "Report" &&
           approvedItem.type !== "Eventstream" &&
@@ -2013,6 +2037,7 @@ async function reconcilePendingUpdates(
           approvedItem.type !== "Notebook" &&
           approvedItem.type !== "SparkJobDefinition" &&
           approvedItem.type !== "DataPipeline" &&
+          approvedItem.type !== "CopyJob" &&
           approvedItem.type !== "SemanticModel" &&
           approvedItem.type !== "Report" &&
           approvedItem.type !== "Eventstream") ||
@@ -2055,6 +2080,13 @@ async function reconcilePendingUpdates(
             )) ||
           (approvedItem.type === "DataPipeline" &&
             hasPipelineRecoveryProof(
+              options,
+              approvedItem,
+              live,
+              intent,
+            )) ||
+          (approvedItem.type === "CopyJob" &&
+            hasCopyJobRecoveryProof(
               options,
               approvedItem,
               live,
@@ -4295,6 +4327,7 @@ async function applyItem(
     item.type !== "Notebook" &&
     item.type !== "SparkJobDefinition" &&
     item.type !== "DataPipeline" &&
+    item.type !== "CopyJob" &&
     item.type !== "SemanticModel" &&
     item.type !== "Report" &&
     item.type !== "FabricTag" &&
@@ -4591,6 +4624,7 @@ async function resumeCompletedItem(
     item.type !== "Notebook" &&
     item.type !== "SparkJobDefinition" &&
     item.type !== "DataPipeline" &&
+    item.type !== "CopyJob" &&
     item.type !== "SemanticModel" &&
     item.type !== "Report" &&
     item.type !== "FabricTag" &&
@@ -4737,6 +4771,13 @@ async function planDesiredItem(
       options.approvedPlan.workspaceId,
       desired,
       requirePipelineDefinition(options, item.logicalId),
+    );
+  }
+  if (item.type === "CopyJob") {
+    return requireCopyJobAdapter(options, item.logicalId).plan(
+      options.approvedPlan.workspaceId,
+      desired,
+      requireCopyJobDefinitionFromOptions(options, item.logicalId),
     );
   }
   if (item.type === "SemanticModel") {
@@ -4950,6 +4991,19 @@ async function createDesiredItem(
       onCreateRejected,
     );
   }
+  if (item.type === "CopyJob") {
+    return requireCopyJobAdapter(options, item.logicalId).create(
+      options.approvedPlan.workspaceId,
+      desired,
+      requireCopyJobDefinitionFromOptions(options, item.logicalId),
+      onMutationAccepted,
+      onOperationAccepted as
+        | ((operation: CopyJobOperationReference) => void)
+        | undefined,
+      onCreateSubmitting,
+      onCreateRejected,
+    );
+  }
   if (item.type === "SemanticModel") {
     return requireSemanticModelAdapter(
       options,
@@ -5007,6 +5061,7 @@ async function resumeCreateDesiredItem(
     | NotebookOperationReference
     | SparkJobOperationReference
     | PipelineOperationReference
+    | CopyJobOperationReference
     | SemanticModelOperationReference
     | ReportOperationReference
     | EventstreamOperationReference,
@@ -5096,6 +5151,18 @@ async function resumeCreateDesiredItem(
       desired,
       requirePipelineDefinition(options, item.logicalId),
       operation,
+      onMutationAccepted,
+    );
+  }
+  if (item.type === "CopyJob") {
+    return requireCopyJobAdapter(
+      options,
+      item.logicalId,
+    ).resumeCreate(
+      options.approvedPlan.workspaceId,
+      desired,
+      requireCopyJobDefinitionFromOptions(options, item.logicalId),
+      operation as CopyJobOperationReference,
       onMutationAccepted,
     );
   }
@@ -5276,6 +5343,17 @@ async function updateDesiredItem(
       onUpdateRejected,
     );
   }
+  if (item.type === "CopyJob") {
+    return requireCopyJobAdapter(options, item.logicalId).update(
+      options.approvedPlan.workspaceId,
+      physicalId,
+      desired,
+      requireCopyJobDefinitionFromOptions(options, item.logicalId),
+      onMutationAccepted,
+      onUpdateSubmitting,
+      onUpdateRejected,
+    );
+  }
   if (item.type === "SemanticModel") {
     return requireSemanticModelAdapter(
       options,
@@ -5403,6 +5481,14 @@ async function verifyDesiredItem(
       physicalId,
       desired,
       requirePipelineDefinition(options, item.logicalId),
+    );
+  }
+  if (item.type === "CopyJob") {
+    return requireCopyJobAdapter(options, item.logicalId).verify(
+      options.approvedPlan.workspaceId,
+      physicalId,
+      desired,
+      requireCopyJobDefinitionFromOptions(options, item.logicalId),
     );
   }
   if (item.type === "SemanticModel") {
@@ -5876,6 +5962,32 @@ function requirePipelineDefinition(
   return definition;
 }
 
+function requireCopyJobAdapter(
+  options: ApplyPlanOptions,
+  logicalId: string,
+): NonNullable<ApplyPlanOptions["copyJobAdapter"]> {
+  if (!options.copyJobAdapter) {
+    throw new Error(
+      `Copy Job adapter was not initialized for item '${logicalId}'.`,
+    );
+  }
+  return options.copyJobAdapter;
+}
+
+function requireCopyJobDefinitionFromOptions(
+  options: ApplyPlanOptions,
+  logicalId: string,
+) {
+  const definition =
+    options.loadedManifest.copyJobDefinitions?.[logicalId];
+  if (!definition) {
+    throw new Error(
+      `Copy Job definition snapshot is missing for '${logicalId}'.`,
+    );
+  }
+  return definition;
+}
+
 function requireSemanticModelAdapter(
   options: ApplyPlanOptions,
   logicalId: string,
@@ -6226,6 +6338,45 @@ function hasPipelineRecoveryProof(
     live.managedMetadataMatches === true &&
     live.stagedDefinitionHash === intent.stagedDefinitionHash
   );
+}
+
+function hasCopyJobRecoveryProof(
+  options: ApplyPlanOptions,
+  item: PlannedItem,
+  live: {
+    action: PlannedAction;
+    observedStateHash: string;
+    stagedDefinitionHash?: string;
+    managedMetadataMatches?: boolean;
+  },
+  intent?: ApplyCheckpoint["pendingUpdates"][string],
+): boolean {
+  if (item.type !== "CopyJob") {
+    return false;
+  }
+  if (live.observedStateHash === item.observedStateHash) {
+    return true;
+  }
+  const desiredDefinition = requireCopyJobDefinitionFromOptions(
+    options,
+    item.logicalId,
+  );
+  const expectedDefinitionHash = hashCopyJobDefinition(
+    desiredDefinition,
+    copyJobIncludesPlatformPart(desiredDefinition),
+  );
+  if (
+    live.managedMetadataMatches === true &&
+    live.stagedDefinitionHash === expectedDefinitionHash
+  ) {
+    return true;
+  }
+
+  // No further recovery path: re-run update or escalate.
+  // NOTE: branch 3 (checking intent.phase === "metadata-submitting") was
+  // removed — CopyJob update() is PATCH-only and never emits a phase-tagged
+  // checkpoint, so that branch was unreachable.
+  return false;
 }
 
 function hasSemanticModelRecoveryProof(

@@ -16,6 +16,7 @@ import { compareCanonicalStrings, sha256, stableJson } from "./hash";
 import { loadEnvironmentDefinition } from "./fabric/definition";
 import { loadNotebookDefinition } from "./fabric/notebook-definition";
 import { loadPipelineDefinition } from "./fabric/pipeline-definition";
+import { loadCopyJobDefinition } from "./fabric/copy-job-definition";
 import {
   loadReportDefinition,
   reportPlatformLogicalId,
@@ -283,6 +284,19 @@ export function loadManifest(
         ),
       ]),
   );
+  const copyJobDefinitions = Object.fromEntries(
+    manifest.items
+      .filter(
+        (item) =>
+          item.type === "CopyJob" && item.desiredState !== "absent",
+      )
+      .map((item) => [
+        item.logicalId,
+        loadCopyJobDefinition(
+          itemContent.directories[item.logicalId] ?? "",
+        ),
+      ]),
+  );
   const semanticModelDefinitions = Object.fromEntries(
     manifest.items
       .filter(
@@ -365,6 +379,11 @@ export function loadManifest(
     itemDefinitions,
     pipelineDefinitions,
   );
+  validateCopyJobPlatformMetadata(
+    manifest,
+    itemDefinitions,
+    copyJobDefinitions,
+  );
   validateSemanticModelPlatformMetadata(
     manifest,
     itemDefinitions,
@@ -424,6 +443,8 @@ export function loadManifest(
             ) ?? null,
           capturedPipelineDefinition:
             pipelineDefinitions[item.logicalId] ?? null,
+          capturedCopyJobDefinition:
+            copyJobDefinitions[item.logicalId] ?? null,
           capturedSemanticModelDefinition:
             semanticModelDefinitions[item.logicalId] ?? null,
           capturedReportDefinition:
@@ -457,6 +478,7 @@ export function loadManifest(
     sparkJobDefinitions,
     sparkJobArtifactSources,
     pipelineDefinitions,
+    copyJobDefinitions,
     semanticModelDefinitions,
     reportDefinitions,
     eventstreamDefinitions,
@@ -604,6 +626,32 @@ function validateEventstreamPlatformMetadata(
   }
 }
 
+function validateCopyJobPlatformMetadata(
+  manifest: DeploymentManifest,
+  definitions: LoadedManifest["itemDefinitions"],
+  copyJobDefinitions: LoadedManifest["copyJobDefinitions"],
+): void {
+  for (const item of manifest.items) {
+    if (item.type !== "CopyJob") {
+      continue;
+    }
+    const desired = definitions[item.logicalId];
+    const fabricDefinition = copyJobDefinitions?.[item.logicalId];
+    const platformPart = fabricDefinition?.parts.find(
+      (part) => part.path === ".platform",
+    );
+    if (!desired || !platformPart) {
+      continue;
+    }
+    validatePlatformMetadata(
+      item.logicalId,
+      "CopyJob",
+      desired,
+      platformPart.payload,
+    );
+  }
+}
+
 function validateSemanticModelPlatformMetadata(
   manifest: DeploymentManifest,
   definitions: LoadedManifest["itemDefinitions"],
@@ -717,6 +765,7 @@ function validatePlatformMetadata(
     | "Notebook"
     | "SparkJobDefinition"
     | "DataPipeline"
+    | "CopyJob"
     | "SemanticModel"
     | "Report"
     | "Eventstream",
@@ -945,6 +994,7 @@ function validateUniqueDesiredIdentities(
     | "Notebook"
     | "SparkJobDefinition"
     | "DataPipeline"
+    | "CopyJob"
     | "SemanticModel"
     | "Report"
     | "Eventstream",
@@ -959,6 +1009,7 @@ function validateUniqueDesiredIdentities(
     ["Notebook", new Map()],
     ["SparkJobDefinition", new Map()],
     ["DataPipeline", new Map()],
+    ["CopyJob", new Map()],
     ["SemanticModel", new Map()],
     ["Report", new Map()],
     ["Eventstream", new Map()],
@@ -974,6 +1025,7 @@ function validateUniqueDesiredIdentities(
       item.type !== "Notebook" &&
       item.type !== "SparkJobDefinition" &&
       item.type !== "DataPipeline" &&
+      item.type !== "CopyJob" &&
       item.type !== "SemanticModel" &&
       item.type !== "Report" &&
       item.type !== "Eventstream"

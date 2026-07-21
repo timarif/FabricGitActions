@@ -1,8 +1,8 @@
 # Fabric Deploy Action
 
 A GitHub Marketplace action for declarative Microsoft Fabric deployments,
-covering core Data Engineering, Power BI, network protection, Eventhouse, and
-KQL Database workloads.
+covering core Data Engineering, Data Factory, Power BI, network protection,
+Data Warehouse, and Real-Time Intelligence workloads.
 
 > [!IMPORTANT]
 > Fabric Deploy is an independent community project. It is not an official
@@ -25,10 +25,11 @@ KQL Database workloads.
 > create/no-op/update validation is complete; PBIR-Legacy live validation
 > remains required. Phase 7 begins Real-Time Intelligence support with guarded
 > Eventhouse metadata and minimum-consumption deployment plus ReadWrite KQL
-> Database deployment through a logical Eventhouse parent binding. Eventhouse
-> and KQL Database disposable live validation is complete. Eventstream
-> definition deployment (topology, retention, and throughput) with guarded
-> create/update/no-op apply is also implemented. See
+> Database deployment through a logical Eventhouse parent binding. Eventhouse,
+> KQL Database, and Warehouse disposable live validation is complete.
+> Eventstream definition deployment (topology, retention, and throughput),
+> guarded Copy Job deployment, and explicit on-demand Data Pipeline execution
+> are also implemented. See
 > [the roadmap](docs/ROADMAP.md).
 
 For sequential environment deployment, see the
@@ -54,6 +55,7 @@ For operational help and release verification, see
 - Workspace custom Spark pool
 - Spark Job Definition
 - Data Pipeline
+- Copy Job
 - Semantic Model
 - Power BI Report
 - Eventstream
@@ -134,7 +136,7 @@ deletion and capacity unassignment are intentionally unsupported.
 Without authentication, `plan` is offline and reports item actions as
 `unknown`. With Fabric authentication configured, Lakehouses, Environments, Notebooks,
 LakehouseTables bundles, Fabric tags, Spark Job Definitions, Data Pipelines,
-Semantic Models, Power BI Reports, and workspace custom Spark pools are
+Copy Jobs, Semantic Models, Power BI Reports, and workspace custom Spark pools are
 classified as `create`, `update`, `delete`, `no-op`, or `blocked`; later workload
 adapters remain `unknown`.
 
@@ -504,7 +506,7 @@ management, Shortcut databases, and deletion are intentionally deferred. See
 
 ### Guarded item deletion
 
-Lakehouse, Environment, Notebook, Spark Job Definition, Data Pipeline, and
+Lakehouse, Environment, Notebook, Spark Job Definition, Data Pipeline, Copy Job, and
 Semantic Model items can declare `desiredState: absent`. Deletion intent must
 be explicit in both the deployment manifest and `item.yaml`:
 
@@ -605,6 +607,7 @@ deletion-only items use only `item.yaml` as described above.
 | Notebook | Exactly one `.py`, `.scala`, `.r`, `.sql`, or `.ipynb` file under `definition/`; optional `.platform` |
 | Spark Job Definition | Exactly one `definition/main.py` or `definition/main.jar`; optional `SparkJobDefinitionV1.json`, `.platform`, and files under `definition/libs/` |
 | Data Pipeline | Valid JSON object at `definition/pipeline-content.json` |
+| Copy Job | `definition/copyjob-content.json` containing `{ "properties": { "jobMode": "Batch" } }` or `"CDC"` |
 | Semantic Model | TMSL: `definition/model.bim` plus `definition/definition.pbism`; TMDL: `definition/definition.pbism` plus one or more `definition/definition/**/*.tmdl` files; optional `definition/diagramLayout.json`, `definition/.platform`, and `definition/Copilot/*.json` / `definition/Copilot/*.md` |
 | Report | PBIR: `definition/definition.pbir`, `definition/definition/report.json`, `definition/definition/version.json`, and supported pages/visuals/bookmarks; PBIR-Legacy: `definition/definition.pbir` plus root `definition/report.json`; optional `definition/StaticResources/**`, `definition/semanticModelDiagramLayout.json`, and `definition/.platform` |
 | Workspace custom Spark pool | `definition/pool.yaml` with node family, node size, autoscale, and dynamic executor allocation settings |
@@ -768,6 +771,21 @@ ID and current status are written immediately after submission, so a polling
 or timeout failure still leaves a recoverable identity in the action outputs
 and `pipeline-run-result-file`. The result path cannot overlap the deployment
 manifest or any managed item directory.
+
+Copy Jobs deploy the public `copyjob-content.json` definition containing only
+`properties.jobMode` (`Batch` or `CDC`). `jobMode` is immutable after
+creation: drift produces a `blocked` plan; `resetCopyJob` is never called
+automatically. Activities, connections, and data-transformation policies are
+portal-managed and are projected out of configured-definition readback before
+managed hashing. Existing Copy Jobs use metadata PATCH only:
+`updateDefinition` is never called, with or without `.platform`, so
+portal-managed configuration is never overwritten. `.platform` drift is
+blocked and requires recreation. `folderId` is accepted at creation but folder
+moves are blocked (the Fabric API has no `folderId` field in
+`UpdateCopyJobRequest`). Copy Jobs support `desiredState: absent` with the
+standard guarded deletion safeguards (live-confirmed `DELETE 200`).
+See [`examples/copy-job`](examples/copy-job) and
+[`docs/COPY_JOB.md`](docs/COPY_JOB.md).
 
 Semantic Models deploy the official `TMSL` or `TMDL` public definition
 formats. TMSL uses `model.bim`; TMDL preserves every declared `.tmdl` part
@@ -937,6 +955,7 @@ The action currently implements:
 - Spark Job Definition V2 mapping, create/update, and read-back verification
 - Immutable OneLake staging for Spark Job JVM executables and JAR libraries
 - Data Pipeline definition mapping, create/update, and read-back verification
+- Copy Job definition mapping, create/update, guarded deletion, and read-back verification
 - Semantic Model TMSL/TMDL mapping, create/update, and read-back verification
 - Report PBIR/PBIR-Legacy mapping, symbolic Semantic Model binding, create/update, and read-back verification
 - Workspace custom Spark pool mapping, create/update, and read-back verification
@@ -946,7 +965,7 @@ The action currently implements:
 - Authenticated create/update/no-op planning
 - Approved-plan integrity and source-commit binding
 - Pre-mutation drift and authorization checks
-- Lakehouse, Eventhouse, KQL Database, Environment, Notebook, Spark Job Definition, Data Pipeline, Semantic Model, Report, and workspace custom Spark pool create/update/no-op apply
+- Lakehouse, Eventhouse, KQL Database, Warehouse, Environment, Notebook, Spark Job Definition, Data Pipeline, Copy Job, Semantic Model, Report, Eventstream, and workspace custom Spark pool create/update/no-op apply
 - Checkpoint and result artifacts
 
 ## Live test workflow
