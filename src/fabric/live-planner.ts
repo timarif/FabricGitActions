@@ -33,6 +33,7 @@ import type { ReportAdapter } from "./report";
 import type { SemanticModelAdapter } from "./semantic-model";
 import type { SparkCustomPoolAdapter } from "./spark-custom-pool";
 import type { SparkJobAdapter } from "./spark-job";
+import type { EventstreamAdapter } from "./eventstream";
 import type { FabricTagAdapter } from "./tags";
 import {
   buildTagAssignmentHash,
@@ -67,6 +68,7 @@ export interface FabricPlanAdapters {
   semanticModel: Pick<SemanticModelAdapter, "plan">;
   report?: Pick<ReportAdapter, "plan"> &
     Partial<Pick<ReportAdapter, "planUnresolvedReferences">>;
+  eventstream?: Pick<EventstreamAdapter, "plan">;
   sparkCustomPool: Pick<SparkCustomPoolAdapter, "plan">;
   tags?: Pick<FabricTagAdapter, "plan" | "planItemAssignment">;
   lakehouseTables?: Pick<LakehouseTablesAdapter, "plan">;
@@ -208,7 +210,8 @@ export async function enrichPlanWithFabric(
       item.type !== "DataPipeline" &&
       item.type !== "SemanticModel" &&
       item.type !== "Report" &&
-      item.type !== "FabricTag"
+      item.type !== "FabricTag" &&
+      item.type !== "Eventstream"
     ) {
       plannedItems.set(item.logicalId, {
         ...item,
@@ -526,6 +529,18 @@ export async function enrichPlanWithFabric(
                         adapters,
                         item.logicalId,
                       ).plan(workspaceId, desired)
+                    : item.type === "Eventstream"
+                      ? await requireEventstreamAdapter(
+                          adapters,
+                          item.logicalId,
+                        ).plan(
+                          workspaceId,
+                          desired,
+                          requireEventstreamDefinition(
+                            loadedManifest,
+                            item.logicalId,
+                          ),
+                        )
                     : await planReport(
                         workspaceId,
                         item,
@@ -666,6 +681,32 @@ export async function enrichPlanWithFabric(
       );
     }
     return adapters.warehouse;
+  }
+
+  function requireEventstreamDefinition(
+    loadedManifest: LoadedManifest,
+    logicalId: string,
+  ) {
+    const definition =
+      loadedManifest.eventstreamDefinitions?.[logicalId];
+    if (!definition) {
+      throw new Error(
+        `The resolved Eventstream definition is missing for '${logicalId}'.`,
+      );
+    }
+    return definition;
+  }
+
+  function requireEventstreamAdapter(
+    adapters: FabricPlanAdapters,
+    logicalId: string,
+  ): NonNullable<FabricPlanAdapters["eventstream"]> {
+    if (!adapters.eventstream) {
+      throw new Error(
+        `Eventstream adapter is missing for '${logicalId}'.`,
+      );
+    }
+    return adapters.eventstream;
   }
 
   const orderedItems = plan.items.map((item) => {

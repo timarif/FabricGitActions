@@ -9,6 +9,7 @@ import Ajv, { type ErrorObject } from "ajv";
 import { parse } from "yaml";
 
 import { loadEnvironmentDefinition } from "./fabric/definition";
+import { loadEventstreamDefinition } from "./fabric/eventstream-definition";
 import { loadNotebookDefinition } from "./fabric/notebook-definition";
 import { loadReportDefinition } from "./fabric/report-definition";
 import { loadSemanticModelDefinition } from "./fabric/semantic-model-definition";
@@ -198,6 +199,7 @@ function validateDeletionDefinition(
     case "SparkJobDefinition":
     case "DataPipeline":
     case "SemanticModel":
+    case "Eventstream":
       return;
     case "Eventhouse":
     case "KQLDatabase":
@@ -448,6 +450,10 @@ function validateTypeSpecificDefinition(
       // No definition directory — all warehouse DDL is applied via T-SQL
       // through the SQL endpoint (deferred to a future WarehouseTables adapter).
       assertNoWarehouseDefinitionDirectory(item, itemDirectory);
+      return;
+    case "Eventstream":
+      definitionDirectory(item, itemDirectory);
+      loadEventstreamDefinition(itemDirectory);
       return;
     default:
       assertNever(item.type);
