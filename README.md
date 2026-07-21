@@ -735,6 +735,37 @@ semantic JSON comparison and optional managed `.platform` metadata. Accepted
 create and definition-update operations are checkpointed and verified through
 Fabric readback before apply completes.
 
+### Run a Data Pipeline on demand
+
+Pipeline execution is a separate explicit mode and is never triggered by
+`plan` or `apply`. The logical ID must identify a deployed `DataPipeline`
+manifest item, and the independent `allow-pipeline-run` safeguard defaults to
+`false`.
+
+```yaml
+- id: run-pipeline
+  uses: timarif/FabricGitActions@v1
+  with:
+    mode: run-pipeline
+    manifest: fabric/deployment.yaml
+    workspace-id: ${{ vars.FABRIC_WORKSPACE_ID }}
+    pipeline-logical-id: bronzeToSilver
+    auth-mode: oidc
+    tenant-id: ${{ vars.FABRIC_TENANT_ID }}
+    client-id: ${{ vars.FABRIC_CLIENT_ID }}
+    allow-pipeline-run: "true"
+    pipeline-run-timeout-minutes: "60"
+```
+
+The action resolves the folder-scoped physical pipeline, submits an Execute
+job, honors Fabric's initial and subsequent `Retry-After` headers, and waits
+for a terminal status. `Completed` succeeds; `Failed`, `Cancelled`, and
+`Deduped` fail the action with the service failure details. The job instance
+ID and current status are written immediately after submission, so a polling
+or timeout failure still leaves a recoverable identity in the action outputs
+and `pipeline-run-result-file`. The result path cannot overlap the deployment
+manifest or any managed item directory.
+
 Semantic Models deploy the official `TMSL` or `TMDL` public definition
 formats. TMSL uses `model.bim`; TMDL preserves every declared `.tmdl` part
 under `definition/`; both require `definition.pbism`. The `definition.pbism`

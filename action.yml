@@ -8,7 +8,7 @@ branding:
 
 inputs:
   mode:
-    description: Operation to perform. Supported values are validate, plan, and apply.
+    description: Operation to perform. Supported values are validate, plan, apply, and run-pipeline.
     required: false
     default: plan
   manifest:
@@ -165,10 +165,25 @@ inputs:
     description: Return deployed Lakehouse Livy API endpoints during apply.
     required: false
     default: "false"
+  pipeline-logical-id:
+    description: Logical ID of the DataPipeline manifest item to run. Required when mode is run-pipeline.
+    required: false
+  allow-pipeline-run:
+    description: Safeguard that must be explicitly set to 'true' to permit on-demand pipeline job execution. Fail-closed by default.
+    required: false
+    default: "false"
+  pipeline-run-timeout-minutes:
+    description: Maximum number of minutes to wait for the pipeline job to reach a terminal state. Applies only when mode is run-pipeline.
+    required: false
+    default: "60"
+  pipeline-run-result-file:
+    description: Path where the pipeline run result JSON is written. Applies only when mode is run-pipeline.
+    required: false
+    default: fabric-pipeline-run-result.json
 
 outputs:
   status:
-    description: Validation, planning, or apply result.
+    description: Validation, planning, apply, or pipeline execution result.
   plan-file:
     description: Path to the generated JSON plan.
   plan-hash:
@@ -237,6 +252,12 @@ outputs:
     description: Livy API endpoint when exactly one Lakehouse is deployed and return-livy-api-endpoint is true.
   livy-api-endpoints:
     description: JSON map of Lakehouse logical IDs to Livy API endpoints when return-livy-api-endpoint is true.
+  pipeline-job-instance-id:
+    description: Fabric job instance ID of the triggered Data Pipeline run. Set when mode is run-pipeline.
+  pipeline-job-status:
+    description: Terminal status of the Data Pipeline job (Completed, Failed, Cancelled, or Deduped). Set when mode is run-pipeline.
+  pipeline-run-result-file:
+    description: Resolved path to the pipeline run result JSON artifact. Set when mode is run-pipeline.
 
 runs:
   using: node24

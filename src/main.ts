@@ -1,5 +1,13 @@
 import * as core from "@actions/core";
-import { readFileSync } from "node:fs";
+import {
+  accessSync,
+  constants as fsConstants,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import path from "node:path";
 
 import { applyApprovedPlan } from "./apply";
@@ -32,6 +40,7 @@ import { NetworkProtectionAdapter } from "./fabric/network-protection";
 import { NotebookAdapter } from "./fabric/notebook";
 import { OneLakeArtifactStager } from "./fabric/onelake-artifacts";
 import { PipelineAdapter } from "./fabric/pipeline";
+import { PipelineJobAdapter } from "./fabric/pipeline-job";
 import { ReportAdapter } from "./fabric/report";
 import { SemanticModelAdapter } from "./fabric/semantic-model";
 import { SparkCustomPoolAdapter } from "./fabric/spark-custom-pool";
@@ -53,6 +62,11 @@ import {
   writeJobSummary,
   writePlan,
 } from "./reporting";
+import {
+  parsePipelineRunTimeoutMs,
+  runPipeline,
+  type PipelineRunResult,
+} from "./run-pipeline";
 import type {
   ActionMode,
   ApplyCheckpoint,
@@ -69,7 +83,161 @@ export async function run(): Promise<void> {
       }
     | undefined;
   try {
-    const mode = readMode(core.getInput("mode") || "plan");
+    const rawMode = core.getInput("mode") || "plan";
+    if (rawMode === "run-pipeline") {
+      // ---------------------------------------------------------------
+      // run-pipeline mode: trigger and poll a Data Pipeline on-demand job.
+      // Completely isolated — no plan/apply side effects.
+      // ---------------------------------------------------------------
+      const pipelineLogicalId = core.getInput("pipeline-logical-id");
+      if (!pipelineLogicalId) {
+        throw new Error(
+          "pipeline-logical-id is required when mode is run-pipeline.",
+        );
+      }
+      const allowPipelineRun = readBooleanInput("allow-pipeline-run");
+      if (!allowPipelineRun) {
+        throw new Error(
+          "allow-pipeline-run must be 'true' to trigger a Data Pipeline job. " +
+            "This safeguard prevents unintended pipeline execution.",
+        );
+      }
+      const runWorkspaceId = core.getInput("workspace-id") || undefined;
+      const runManifestPath =
+        core.getInput("manifest") || "fabric/deployment.yaml";
+      const runVariables = readVariables(
+        core.getInput("variables") || "{}",
+      );
+      const runAuthMode = readAuthMode(
+        core.getInput("auth-mode") || "none",
+      );
+      const runEndpoints = parseFabricEndpoints(
+        core.getInput("fabric-api-endpoint") ||
+          "https://api.fabric.microsoft.com",
+        core.getInput("onelake-endpoint") ||
+          "https://onelake.dfs.fabric.microsoft.com",
+        core.getInput("onelake-blob-endpoint") || undefined,
+      );
+      const timeoutMinutesRaw =
+        core.getInput("pipeline-run-timeout-minutes") || "60";
+      const timeoutMs = parsePipelineRunTimeoutMs(
+        timeoutMinutesRaw,
+      );
+      const pipelineRunResultFile =
+        core.getInput("pipeline-run-result-file") ||
+        "fabric-pipeline-run-result.json";
+
+      if (runAuthMode === "none") {
+        throw new Error(
+          "run-pipeline mode requires Fabric authentication. " +
+            "Set auth-mode to 'oidc' or 'service-principal-secret'.",
+        );
+      }
+      const runLoadedManifest = loadManifest(runManifestPath, {
+        variables: runVariables,
+        workspaceIdOverride: runWorkspaceId,
+      });
+      assertDistinctFilePaths([
+        {
+          label: "Deployment manifest",
+          filePath: runManifestPath,
+        },
+        {
+          label: "Pipeline run result file",
+          filePath: pipelineRunResultFile,
+        },
+      ]);
+      assertOutputPathOutsideItems(
+        pipelineRunResultFile,
+        Object.values(runLoadedManifest.itemDirectories),
+        "Pipeline run result file",
+      );
+      const resolvedPipelineRunResultFile =
+        preparePipelineRunResultFile(pipelineRunResultFile);
+      const effectiveWorkspaceId =
+        runWorkspaceId ?? runLoadedManifest.manifest.workspace?.id;
+      if (!effectiveWorkspaceId) {
+        throw new Error(
+          "workspace-id is required for run-pipeline mode. " +
+            "Set workspace-id input or add workspace.id to the manifest.",
+        );
+      }
+
+      const clientSecret = core.getInput("client-secret") || undefined;
+      if (clientSecret) {
+        core.setSecret(clientSecret);
+      }
+      const tokenProvider = new EntraTokenProvider({
+        mode: runAuthMode,
+        tenantId: core.getInput("tenant-id"),
+        clientId: core.getInput("client-id"),
+        clientSecret,
+        authorityHost:
+            core.getInput("authority-host") ||
+            "https://login.microsoftonline.com",
+        getOidcToken:
+            runAuthMode === "oidc"
+              ? (audience) => core.getIDToken(audience)
+              : undefined,
+        maskSecret: (value) => core.setSecret(value),
+      });
+      const client = new FabricClient({
+        endpoint: runEndpoints.fabricApiEndpoint,
+        scope: FABRIC_SCOPE,
+        tokenProvider,
+      });
+      const pipelineAdapterForRun = new PipelineAdapter(client);
+      const pipelineJobAdapter = new PipelineJobAdapter(client, {
+        timeoutMs,
+      });
+      const writePipelineResult = (
+        result: PipelineRunResult,
+      ): void => {
+        core.setOutput(
+            "pipeline-job-instance-id",
+            result.jobInstanceId,
+        );
+        core.setOutput("pipeline-job-status", result.status);
+        core.setOutput(
+            "pipeline-run-result-file",
+            resolvedPipelineRunResultFile,
+        );
+        writeFileSync(
+            resolvedPipelineRunResultFile,
+            JSON.stringify(result, null, 2),
+            "utf8",
+        );
+      };
+
+      const result = await runPipeline(
+        {
+          pipelineLogicalId,
+          allowPipelineRun,
+          workspaceId: effectiveWorkspaceId,
+        },
+        runLoadedManifest,
+        pipelineAdapterForRun,
+        pipelineJobAdapter,
+        {
+          onTriggered: writePipelineResult,
+        },
+      );
+
+      writePipelineResult(result);
+
+      if (result.status !== "Completed") {
+        const failureDetail = result.failureReason
+          ? ` Failure reason: ${result.failureReason.errorCode ?? "unknown"} — ${result.failureReason.message ?? "no details"}.`
+          : "";
+        core.setOutput("status", result.status.toLowerCase());
+        throw new Error(
+          `Data Pipeline '${pipelineLogicalId}' job '${result.jobInstanceId}' ended with status '${result.status}'.${failureDetail}`,
+        );
+      }
+      core.setOutput("status", "completed");
+      return;
+    }
+    const mode = readMode(rawMode);
     const manifestPath = core.getInput("manifest") || "fabric/deployment.yaml";
     const environment = core.getInput("environment") || "dev";
     const workspaceId = core.getInput("workspace-id") || undefined;
@@ -753,6 +921,23 @@ export async function run(): Promise<void> {
     }
     core.setFailed(message);
   }
+}
+
+function preparePipelineRunResultFile(filePath: string): string {
+  const resolved = path.resolve(filePath);
+  const parent = path.dirname(resolved);
+  mkdirSync(parent, { recursive: true });
+  if (existsSync(resolved)) {
+    if (!statSync(resolved).isFile()) {
+      throw new Error(
+        `Pipeline run result file '${resolved}' must be a file path.`,
+      );
+    }
+    accessSync(resolved, fsConstants.W_OK);
+  } else {
+    accessSync(parent, fsConstants.W_OK);
+  }
+  return resolved;
 }
 
 function isInProgressResult(resultFile: string): boolean {
