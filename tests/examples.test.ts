@@ -1,3 +1,4 @@
+import { Buffer } from "node:buffer";
 import path from "node:path";
 
 import { describe, expect, it } from "vitest";
@@ -124,6 +125,12 @@ const examples: ExampleCase[] = [
     },
     itemCount: 1,
   },
+  {
+    name: "Data Agent",
+    manifestPath: "data-agent/fabric/deployment.yaml",
+    options: { workspaceIdOverride: WORKSPACE_ID },
+    itemCount: 2,
+  },
 ];
 
 describe("maintained examples", () => {
@@ -145,4 +152,66 @@ describe("maintained examples", () => {
       }
     },
   );
+});
+
+describe("Data Agent example — targeted assertions", () => {
+  const loaded = loadManifest(
+    path.join(EXAMPLES_ROOT, "data-agent/fabric/deployment.yaml"),
+    { workspaceIdOverride: WORKSPACE_ID },
+  );
+
+  it("contains exactly 2 items, both of type DataAgent", () => {
+    expect(loaded.manifest.items).toHaveLength(2);
+    for (const item of loaded.manifest.items) {
+      expect(item.type).toBe("DataAgent");
+    }
+  });
+
+  it("salesAssistant item has a definition (Files/Config present)", () => {
+    expect(loaded.dataAgentDefinitions).toBeDefined();
+    const def = loaded.dataAgentDefinitions!["salesAssistant"];
+    expect(def).toBeDefined();
+    expect(def!.parts.length).toBeGreaterThanOrEqual(1);
+    const rootPart = def!.parts.find(
+      (p) => p.path === "Files/Config/data_agent.json",
+    );
+    expect(rootPart).toBeDefined();
+  });
+
+  it("salesAssistant definition includes stage_config with aiInstructions", () => {
+    const def = loaded.dataAgentDefinitions!["salesAssistant"]!;
+    const stagePart = def.parts.find(
+      (p) => p.path === "Files/Config/draft/stage_config.json",
+    );
+    expect(stagePart).toBeDefined();
+    const payload = JSON.parse(
+      Buffer.from(stagePart!.payload, "base64").toString("utf8"),
+    );
+    expect(typeof payload.aiInstructions).toBe("string");
+    expect(payload.aiInstructions.length).toBeGreaterThan(0);
+  });
+
+  it("shellAgent item has no definition (shell mode)", () => {
+    const def = loaded.dataAgentDefinitions?.["shellAgent"];
+    // Shell agent: no Files/Config directory → definition is undefined
+    expect(def).toBeUndefined();
+  });
+
+  it("no DataAgent item declares desiredState: absent", () => {
+    for (const item of loaded.manifest.items) {
+      expect(item.desiredState).not.toBe("absent");
+    }
+  });
+
+  it("salesAssistant itemDefinition has correct displayName", () => {
+    const itemDef = loaded.itemDefinitions["salesAssistant"];
+    expect(itemDef).toBeDefined();
+    expect(itemDef!.displayName).toBe("Sales Assistant");
+  });
+
+  it("shellAgent itemDefinition has correct displayName", () => {
+    const itemDef = loaded.itemDefinitions["shellAgent"];
+    expect(itemDef).toBeDefined();
+    expect(itemDef!.displayName).toBe("Shell Data Agent");
+  });
 });

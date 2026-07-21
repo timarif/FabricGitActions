@@ -32,6 +32,7 @@ import type { PipelineAdapter } from "./pipeline";
 import type { CopyJobAdapter } from "./copy-job";
 import type { ReportAdapter } from "./report";
 import type { SemanticModelAdapter } from "./semantic-model";
+import type { DataAgentAdapter } from "./data-agent";
 import type { SparkCustomPoolAdapter } from "./spark-custom-pool";
 import type { SparkJobAdapter } from "./spark-job";
 import type { EventstreamAdapter } from "./eventstream";
@@ -71,6 +72,7 @@ export interface FabricPlanAdapters {
   report?: Pick<ReportAdapter, "plan"> &
     Partial<Pick<ReportAdapter, "planUnresolvedReferences">>;
   eventstream?: Pick<EventstreamAdapter, "plan">;
+  dataAgent?: Pick<DataAgentAdapter, "plan">;
   sparkCustomPool: Pick<SparkCustomPoolAdapter, "plan">;
   tags?: Pick<FabricTagAdapter, "plan" | "planItemAssignment">;
   lakehouseTables?: Pick<LakehouseTablesAdapter, "plan">;
@@ -213,8 +215,9 @@ export async function enrichPlanWithFabric(
       item.type !== "CopyJob" &&
       item.type !== "SemanticModel" &&
       item.type !== "Report" &&
-      item.type !== "FabricTag" &&
-      item.type !== "Eventstream"
+      item.type !== "Eventstream" &&
+      item.type !== "DataAgent" &&
+      item.type !== "FabricTag"
     ) {
       plannedItems.set(item.logicalId, {
         ...item,
@@ -556,6 +559,14 @@ export async function enrichPlanWithFabric(
                             item.logicalId,
                           ),
                         )
+                      : item.type === "DataAgent"
+                        ? await planDataAgent(
+                            workspaceId,
+                            item,
+                            desired,
+                            loadedManifest,
+                            adapters.dataAgent,
+                          )
                     : await planReport(
                         workspaceId,
                         item,
@@ -1166,6 +1177,28 @@ async function planKqlDatabase(
     reason: `KQL Database '${desired.displayName}' cannot resolve Eventhouse '${binding.logicalId}' because its current plan action is '${dependency?.action ?? "missing"}'.`,
     observedStateHash: sha256(stableJson(null)),
   };
+}
+
+async function planDataAgent(
+  workspaceId: string,
+  item: PlannedItem,
+  desired: NonNullable<
+    LoadedManifest["itemDefinitions"][string]
+  >,
+  loadedManifest: LoadedManifest,
+  adapter: FabricPlanAdapters["dataAgent"],
+) {
+  if (!adapter) {
+    return {
+      action: "blocked" as const,
+      reason: `Data Agent adapter was not initialized for '${item.logicalId}'.`,
+      observedStateHash: sha256(stableJson(null)),
+    };
+  }
+  // DataAgent definition is optional — undefined means shell (metadata only).
+  const definition =
+    loadedManifest.dataAgentDefinitions?.[item.logicalId];
+  return adapter.plan(workspaceId, desired, definition);
 }
 
 async function planSparkJob(

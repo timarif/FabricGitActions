@@ -45,6 +45,7 @@ import { EventstreamAdapter } from "./fabric/eventstream";
 import { CopyJobAdapter } from "./fabric/copy-job";
 import { ReportAdapter } from "./fabric/report";
 import { SemanticModelAdapter } from "./fabric/semantic-model";
+import { DataAgentAdapter } from "./fabric/data-agent";
 import { SparkCustomPoolAdapter } from "./fabric/spark-custom-pool";
 import { assertSparkJobArtifactEndpoints } from "./fabric/spark-job-artifacts";
 import { SparkJobAdapter } from "./fabric/spark-job";
@@ -392,6 +393,7 @@ export async function run(): Promise<void> {
     let semanticModelAdapter: SemanticModelAdapter | undefined;
     let reportAdapter: ReportAdapter | undefined;
     let eventstreamAdapter: EventstreamAdapter | undefined;
+    let dataAgentAdapter: DataAgentAdapter | undefined;
     let sparkCustomPoolAdapter: SparkCustomPoolAdapter | undefined;
     let tagAdapter: FabricTagAdapter | undefined;
     let workspaceAdapter: WorkspaceAdapter | undefined;
@@ -439,6 +441,7 @@ export async function run(): Promise<void> {
       semanticModelAdapter = new SemanticModelAdapter(client);
       reportAdapter = new ReportAdapter(client);
       eventstreamAdapter = new EventstreamAdapter(client);
+      dataAgentAdapter = new DataAgentAdapter(client);
       sparkCustomPoolAdapter = new SparkCustomPoolAdapter(client);
       tagAdapter = new FabricTagAdapter(client);
       workspaceAdapter = new WorkspaceAdapter(client);
@@ -587,6 +590,7 @@ export async function run(): Promise<void> {
         semanticModel: semanticModelAdapter,
         report: reportAdapter,
         eventstream: eventstreamAdapter,
+        dataAgent: dataAgentAdapter,
         sparkCustomPool: sparkCustomPoolAdapter,
         tags: tagAdapter,
         lakehouseTables: lakehouseTablesAdapter,
@@ -712,6 +716,7 @@ export async function run(): Promise<void> {
         !copyJobAdapter ||
         !semanticModelAdapter ||
         !reportAdapter ||
+        !dataAgentAdapter ||
         !sparkCustomPoolAdapter ||
         !tagAdapter ||
         !workspaceAdapter
@@ -739,6 +744,7 @@ export async function run(): Promise<void> {
         semanticModelAdapter,
         reportAdapter,
         eventstreamAdapter,
+        dataAgentAdapter,
         sparkCustomPoolAdapter,
         tagAdapter,
         workspaceAdapter,

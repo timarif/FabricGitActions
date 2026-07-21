@@ -59,6 +59,7 @@ For operational help and release verification, see
 - Semantic Model
 - Power BI Report
 - Eventstream
+- Data Agent
 
 ## Quickstart
 
@@ -539,7 +540,8 @@ deleted before their dependencies. A present item cannot depend on an absent
 item. Lakehouse deletion additionally requires
 `allow-lakehouse-data-loss: "true"` so a generic delete approval cannot remove
 Lakehouse data. Eventhouse, KQL Database, FabricTag, LakehouseTables, and
-workspace custom Spark pool deletion remain unsupported.
+workspace custom Spark pool, and Data Agent
+deletion remain unsupported.
 
 See [`examples/deletion`](examples/deletion) for a Lakehouse and dependent
 Data Pipeline retirement manifest.
@@ -889,6 +891,83 @@ synchronous, non-retryable, checkpointed before submission, and reconciled
 against either the exact approved pre-state or the verified desired state.
 Deletion is intentionally unsupported.
 
+### Data Agent
+
+Data Agents (`type: DataAgent`) deploy Microsoft Fabric AI-powered data agents
+using the GA `/v1/workspaces/{id}/dataAgents` REST endpoints, compatible with
+service principals and managed identities.
+
+**Shell agents** (metadata-only management) are created with `displayName` and
+optional `description` alone — no `Files/Config/` directory required:
+
+```yaml
+# deployment.yaml
+items:
+  - logicalId: shellAgent
+    type: DataAgent
+    path: items/data-agents/shell-agent
+```
+
+**Definition agents** include a `Files/Config/data_agent.json` root file plus
+any combination of supported draft files:
+
+```
+items/my-agent/
+├── item.yaml                           # displayName, description
+└── Files/
+    └── Config/
+        ├── data_agent.json             # required; $schema 2.x.x
+        └── draft/
+            ├── stage_config.json       # optional; AI system instructions
+            └── <type>-<name>/          # optional datasource subdirectory
+                ├── datasource.json     # type, artifactId, workspaceId, displayName
+                └── fewshots.json       # fewShots array; each entry: UUID id + question
+```
+
+**`Files/Config/data_agent.json`** is required when a definition is provided
+and must declare the official schema URL:
+
+```json
+{
+  "$schema": "https://developer.microsoft.com/json-schemas/fabric/item/dataAgent/definition/dataAgent/2.1.0/schema.json"
+}
+```
+
+**`draft/stage_config.json`** sets the AI system instructions:
+
+```json
+{
+  "$schema": "https://developer.microsoft.com/json-schemas/fabric/item/dataAgent/definition/stageConfiguration/1.0.0/schema.json",
+  "aiInstructions": "You are a helpful data assistant."
+}
+```
+
+The server creates a default `stage_config.json` with `aiInstructions: null`
+for every new agent. This server default is excluded from drift detection, so
+you only need to author it when setting custom instructions.
+
+**Draft file ownership**: user-authored draft files are authoritative. If you
+remove a datasource or fewshots file from the definition directory, it will be
+deleted from the agent on the next deployment. See
+[`docs/DATA_AGENT.md`](docs/DATA_AGENT.md) for the full ownership table.
+
+**Safeguards**:
+
+- Shell-create (201 sync) checkpoints the exact `physicalId` and a hash of the
+  server's shell definition before staging the user definition. Recovery
+  verifies both identity and shell-definition hash and refuses if either has
+  changed externally (fail-closed).
+- `desiredState: absent` is **not yet supported** for `DataAgent`. Setting it
+  causes manifest loading to fail with a clear message. Use the Fabric portal
+  for manual deletion until definition-aware drift proof is implemented.
+- Schema-level validation is strict for desired files: `$schema` is required in
+  `stage_config.json` and `fewshots.json`; `datasource.json` requires
+  `displayName`, UUID `artifactId`, and UUID `workspaceId`; each `fewShots`
+  entry requires a UUID `id` and a non-empty `question` string.
+
+See [`examples/data-agent`](examples/data-agent) for a complete working example
+with a full definition agent and a shell agent.
+
 Optional non-sensitive deployment variables can be passed explicitly:
 
 ```yaml
@@ -965,7 +1044,9 @@ The action currently implements:
 - Authenticated create/update/no-op planning
 - Approved-plan integrity and source-commit binding
 - Pre-mutation drift and authorization checks
-- Lakehouse, Eventhouse, KQL Database, Warehouse, Environment, Notebook, Spark Job Definition, Data Pipeline, Copy Job, Semantic Model, Report, Eventstream, and workspace custom Spark pool create/update/no-op apply
+- Lakehouse, Eventhouse, KQL Database, Warehouse, Environment, Notebook, Spark Job Definition, Data Pipeline, Copy Job, Semantic Model, Report, Eventstream, workspace custom Spark pool, and Data Agent create/update/no-op apply
+- Data Agent shell-create with physicalId+shellDefinitionHash proof checkpoint; definition staging with checkpointed phases; strict desired-schema validation
+- Data Agent `desiredState: absent` intentionally deferred pending definition-aware drift proof
 - Checkpoint and result artifacts
 
 ## Live test workflow

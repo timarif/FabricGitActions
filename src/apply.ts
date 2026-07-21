@@ -87,6 +87,11 @@ import {
   semanticModelIncludesCopilotParts,
 } from "./fabric/semantic-model-definition";
 import type {
+  DataAgentAdapter,
+  DataAgentOperationReference,
+} from "./fabric/data-agent";
+import { hashDataAgentDefinition } from "./fabric/data-agent-definition";
+import type {
   SparkCustomPoolAdapter,
   SparkCustomPoolOperationReference,
 } from "./fabric/spark-custom-pool";
@@ -217,6 +222,10 @@ export interface ApplyPlanOptions {
   >;
   eventstreamAdapter?: Pick<
     EventstreamAdapter,
+    "create" | "update" | "verify" | "resumeCreate" | "plan"
+  >;
+  dataAgentAdapter?: Pick<
+    DataAgentAdapter,
     "create" | "update" | "verify" | "resumeCreate" | "plan"
   >;
   sparkCustomPoolAdapter?: Pick<
@@ -867,6 +876,13 @@ async function reconcileInitialTerminalCreate(
   if (live.action !== "no-op" || !live.physicalId) {
     return undefined;
   }
+  // DataAgent: never adopt a live no-op after a failed create dispatch.
+  // Without verified provenance (sync physicalId+shellHash or LRO proof)
+  // a same-name item on the server could be a pre-existing agent.
+  // Return undefined so the caller re-throws the original error.
+  if (item.type === "DataAgent") {
+    return undefined;
+  }
   const verified = await verifyDesiredItem(
     options,
     item,
@@ -1446,6 +1462,7 @@ function assertSupportedApplyItem(
     item.type !== "CopyJob" &&
     item.type !== "SemanticModel" &&
     item.type !== "Report" &&
+    item.type !== "DataAgent" &&
     item.type !== "LakehouseTables" &&
     item.type !== "FabricTag" &&
     item.type !== "Eventstream"
@@ -1553,6 +1570,15 @@ function assertSupportedApplyItem(
   ) {
     throw new Error(
       `Eventstream adapter was not initialized for item '${item.logicalId}'.`,
+    );
+  }
+  if (
+    item.desiredState !== "absent" &&
+    item.type === "DataAgent" &&
+    !options.dataAgentAdapter
+  ) {
+    throw new Error(
+      `Data Agent adapter was not initialized for item '${item.logicalId}'.`,
     );
   }
   if (
@@ -1785,7 +1811,8 @@ async function resumePendingOperations(
           approvedItem.type !== "CopyJob" &&
           approvedItem.type !== "SemanticModel" &&
           approvedItem.type !== "Report" &&
-          approvedItem.type !== "Eventstream")
+          approvedItem.type !== "Eventstream" &&
+          approvedItem.type !== "DataAgent")
       ) {
         throw new Error(
           `Pending operation item '${logicalId}' is missing or unsupported.`,
@@ -1812,6 +1839,12 @@ async function resumePendingOperations(
               ? { operationId: operation.operationId }
               : {}),
             ...(operation.location ? { location: operation.location } : {}),
+            ...(operation.physicalId
+              ? { physicalId: operation.physicalId }
+              : {}),
+            ...(operation.shellDefinitionHash
+              ? { shellDefinitionHash: operation.shellDefinitionHash }
+              : {}),
           },
           (physicalId) => {
             completeCreateCheckpoint(
@@ -1879,6 +1912,12 @@ async function resumePendingOperations(
           throw new Error(
             `Create operation for '${logicalId}' returned physical ID '${completed.physicalId}', but live discovery found '${live.physicalId}'.`,
           );
+        }
+        // DataAgent: never adopt a live no-op after create/resume failure.
+        // Preserve checkpoint and rethrow — the correct proof-based resume
+        // path must succeed or the operator must investigate.
+        if (approvedItem.type === "DataAgent") {
+          throw operationError;
         }
         const verified = await verifyDesiredItem(
           options,
@@ -1949,6 +1988,7 @@ async function reconcilePendingCreates(
           approvedItem.type !== "SemanticModel" &&
           approvedItem.type !== "Report" &&
           approvedItem.type !== "Eventstream" &&
+          approvedItem.type !== "DataAgent" &&
           approvedItem.type !== "FabricTag") ||
         !currentItem
       ) {
@@ -1984,6 +2024,21 @@ async function reconcilePendingCreates(
         writeCheckpoint(options.checkpointFile, checkpoint);
         recovered.add(logicalId);
         continue;
+      }
+      // DataAgent: a pendingCreate without a corresponding pendingOperation proof
+      // (sync physicalId+shellDefinitionHash or LRO operationId/location) must
+      // ALWAYS fail closed.  We cannot tell whether a same-name "no-op" item on
+      // the server is the one we just created or a coincidentally named pre-existing
+      // agent.  Only pendingOperations (written by onOperationAccepted) may resume;
+      // pendingCreates for DataAgent must never adopt any live state without proof.
+      if (approvedItem.type === "DataAgent") {
+        throw new Error(
+          `DataAgent create recovery for '${logicalId}': an ambiguous checkpoint exists ` +
+            `(pendingCreate with no sync proof or LRO reference was recorded). ` +
+            `Live state is '${live.action}'${live.physicalId ? ` (id: ${live.physicalId})` : ""}. ` +
+            `Refusing to adopt any live item without verified provenance. ` +
+            `To recover: delete the ambiguous item manually and retry the deployment.`,
+        );
       }
       if (live.action !== "no-op" || !live.physicalId) {
         throw new Error(
@@ -2040,7 +2095,8 @@ async function reconcilePendingUpdates(
           approvedItem.type !== "CopyJob" &&
           approvedItem.type !== "SemanticModel" &&
           approvedItem.type !== "Report" &&
-          approvedItem.type !== "Eventstream") ||
+          approvedItem.type !== "Eventstream" &&
+          approvedItem.type !== "DataAgent") ||
         approvedItem.action !== "update" ||
         !currentItem
       ) {
@@ -2101,6 +2157,13 @@ async function reconcilePendingUpdates(
             )) ||
           (approvedItem.type === "Report" &&
             hasReportRecoveryProof(
+              options,
+              approvedItem,
+              live,
+              intent,
+            )) ||
+          (approvedItem.type === "DataAgent" &&
+            hasDataAgentRecoveryProof(
               options,
               approvedItem,
               live,
@@ -4307,7 +4370,8 @@ async function applyItem(
       | PipelineOperationReference
       | SemanticModelOperationReference
       | ReportOperationReference
-      | EventstreamOperationReference,
+      | EventstreamOperationReference
+      | DataAgentOperationReference,
   ) => void,
   onCreateSubmitting: () => void,
   onCreateRejected: () => void,
@@ -4330,8 +4394,9 @@ async function applyItem(
     item.type !== "CopyJob" &&
     item.type !== "SemanticModel" &&
     item.type !== "Report" &&
-    item.type !== "FabricTag" &&
-    item.type !== "Eventstream"
+    item.type !== "Eventstream" &&
+    item.type !== "DataAgent" &&
+    item.type !== "FabricTag"
   ) {
     throw new Error(
       `Apply is not implemented for item '${item.logicalId}' of type ${item.type}.`,
@@ -4627,8 +4692,9 @@ async function resumeCompletedItem(
     item.type !== "CopyJob" &&
     item.type !== "SemanticModel" &&
     item.type !== "Report" &&
-    item.type !== "FabricTag" &&
-    item.type !== "Eventstream"
+    item.type !== "Eventstream" &&
+    item.type !== "DataAgent" &&
+    item.type !== "FabricTag"
   ) {
     throw new Error(
       `Checkpoint resume is not implemented for type ${item.type}.`,
@@ -4819,6 +4885,13 @@ async function planDesiredItem(
       requireEventstreamDefinition(options, item.logicalId),
     );
   }
+  if (item.type === "DataAgent") {
+    return requireDataAgentAdapter(options, item.logicalId).plan(
+      options.approvedPlan.workspaceId,
+      desired,
+      requireDataAgentDefinition(options, item.logicalId),
+    );
+  }
   throw new Error(
     `Fabric planning is not implemented for item '${item.logicalId}' of type ${item.type}.`,
   );
@@ -4866,7 +4939,8 @@ async function createDesiredItem(
       | PipelineOperationReference
       | SemanticModelOperationReference
       | ReportOperationReference
-      | EventstreamOperationReference,
+      | EventstreamOperationReference
+      | DataAgentOperationReference,
   ) => void,
   onCreateSubmitting: () => void,
   onCreateRejected: () => void,
@@ -5043,6 +5117,17 @@ async function createDesiredItem(
       onCreateRejected,
     );
   }
+  if (item.type === "DataAgent") {
+    return requireDataAgentAdapter(options, item.logicalId).create(
+      options.approvedPlan.workspaceId,
+      desired,
+      requireDataAgentDefinition(options, item.logicalId),
+      onMutationAccepted,
+      onOperationAccepted,
+      onCreateSubmitting,
+      onCreateRejected,
+    );
+  }
   throw new Error(
     `Create is not implemented for item '${item.logicalId}' of type ${item.type}.`,
   );
@@ -5064,7 +5149,8 @@ async function resumeCreateDesiredItem(
     | CopyJobOperationReference
     | SemanticModelOperationReference
     | ReportOperationReference
-    | EventstreamOperationReference,
+    | EventstreamOperationReference
+    | DataAgentOperationReference,
   onMutationAccepted: (physicalId: string) => void,
 ) {
   if (item.type === "Lakehouse") {
@@ -5201,6 +5287,15 @@ async function resumeCreateDesiredItem(
       options.approvedPlan.workspaceId,
       desired,
       requireEventstreamDefinition(options, item.logicalId),
+      operation,
+      onMutationAccepted,
+    );
+  }
+  if (item.type === "DataAgent") {
+    return requireDataAgentAdapter(options, item.logicalId).resumeCreate(
+      options.approvedPlan.workspaceId,
+      desired,
+      requireDataAgentDefinition(options, item.logicalId),
       operation,
       onMutationAccepted,
     );
@@ -5382,6 +5477,17 @@ async function updateDesiredItem(
       onUpdateRejected,
     );
   }
+  if (item.type === "DataAgent") {
+    return requireDataAgentAdapter(options, item.logicalId).update(
+      options.approvedPlan.workspaceId,
+      physicalId,
+      desired,
+      requireDataAgentDefinition(options, item.logicalId),
+      onMutationAccepted,
+      onUpdateSubmitting,
+      onUpdateRejected,
+    );
+  }
   throw new Error(
     `Update is not implemented for item '${item.logicalId}' of type ${item.type}.`,
   );
@@ -5519,6 +5625,14 @@ async function verifyDesiredItem(
       physicalId,
       desired,
       requireEventstreamDefinition(options, item.logicalId),
+    );
+  }
+  if (item.type === "DataAgent") {
+    return requireDataAgentAdapter(options, item.logicalId).verify(
+      options.approvedPlan.workspaceId,
+      physicalId,
+      desired,
+      requireDataAgentDefinition(options, item.logicalId),
     );
   }
   throw new Error(
@@ -6128,6 +6242,80 @@ function requireReportDefinition(
     options,
     logicalId,
   ).definition;
+}
+
+function requireDataAgentAdapter(
+  options: ApplyPlanOptions,
+  logicalId: string,
+): NonNullable<ApplyPlanOptions["dataAgentAdapter"]> {
+  if (!options.dataAgentAdapter) {
+    throw new Error(
+      `Data Agent adapter was not initialized for item '${logicalId}'.`,
+    );
+  }
+  return options.dataAgentAdapter;
+}
+
+function requireDataAgentDefinition(
+  options: ApplyPlanOptions,
+  logicalId: string,
+): import("./fabric/definition").FabricDefinition | undefined {
+  return options.loadedManifest.dataAgentDefinitions?.[logicalId];
+}
+
+function hasDataAgentRecoveryProof(
+  options: ApplyPlanOptions,
+  approvedItem: PlannedItem,
+  live: {
+    action: PlannedAction;
+    observedStateHash: string;
+    stagedDefinitionHash?: string;
+    managedMetadataMatches?: boolean;
+  },
+  intent?: import("./types").ApplyCheckpointUpdateIntent,
+): boolean {
+  if (approvedItem.type !== "DataAgent") {
+    return false;
+  }
+  if (live.observedStateHash === approvedItem.observedStateHash) {
+    return true;
+  }
+  const desiredDef = requireDataAgentDefinition(
+    options,
+    approvedItem.logicalId,
+  );
+  const desiredHash = desiredDef
+    ? hashDataAgentDefinition(desiredDef)
+    : sha256(stableJson(null));
+
+  if (
+    intent?.phase === "definition-staged" ||
+    intent?.phase === "marker-cleaned"
+  ) {
+    if (!intent.stagedDefinitionHash) {
+      return false;
+    }
+    if (intent.stagedDefinitionHash !== desiredHash) {
+      return false;
+    }
+    return (
+      live.managedMetadataMatches === true &&
+      live.stagedDefinitionHash === intent.stagedDefinitionHash
+    );
+  }
+
+  if (
+    intent?.phase === "metadata-submitting" ||
+    intent?.phase === "metadata-updated" ||
+    intent?.phase === "definition-submitting"
+  ) {
+    return (
+      live.managedMetadataMatches === true &&
+      live.stagedDefinitionHash === intent.stagedDefinitionHash
+    );
+  }
+
+  return false;
 }
 
 function requireSparkCustomPoolAdapter(

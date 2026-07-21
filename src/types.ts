@@ -21,6 +21,7 @@ export const FABRIC_ITEM_TYPES = [
   "Report",
   "Warehouse",
   "Eventstream",
+  "DataAgent",
 ] as const;
 
 export type FabricItemType = (typeof FABRIC_ITEM_TYPES)[number];
@@ -175,6 +176,7 @@ export interface LoadedManifest {
   semanticModelDefinitions: Record<string, FabricDefinition>;
   reportDefinitions?: Record<string, FabricDefinition>;
   eventstreamDefinitions?: Record<string, FabricDefinition>;
+  dataAgentDefinitions?: Record<string, FabricDefinition | undefined>;
   sparkCustomPoolDefinitions: Record<
     string,
     SparkCustomPoolDefinition
@@ -474,6 +476,10 @@ export interface ApplyCheckpointOperation {
   action: "create";
   operationId?: string;
   location?: string;
+  /** Sync shell-create proof (201 path only): exact physical item ID */
+  physicalId?: string;
+  /** Sync shell-create proof: semantic hash of the server's shell definition at creation time */
+  shellDefinitionHash?: string;
   materializedDefinitionHash?: string;
   resolvedBindingsHash?: string;
   acceptedAt: string;

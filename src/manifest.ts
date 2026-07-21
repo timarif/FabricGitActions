@@ -27,6 +27,7 @@ import {
   semanticModelPlatformLogicalId,
 } from "./fabric/semantic-model-definition";
 import { loadEventstreamDefinition } from "./fabric/eventstream-definition";
+import { loadDataAgentDefinition } from "./fabric/data-agent-definition";
 import { loadLakehouseTablesDefinition } from "./fabric/lakehouse-tables-definition";
 import { loadSparkCustomPoolDefinition } from "./fabric/spark-custom-pool-definition";
 import { normalizeNetworkProtection } from "./fabric/network-protection";
@@ -339,6 +340,22 @@ export function loadManifest(
         ),
       ]),
   );
+  // DataAgent definitions are optional (shell create supported) — each entry
+  // may be FabricDefinition or undefined when Files/Config/ is absent.
+  const dataAgentDefinitions = Object.fromEntries(
+    manifest.items
+      .filter(
+        (item) =>
+          item.type === "DataAgent" &&
+          item.desiredState !== "absent",
+      )
+      .map((item) => [
+        item.logicalId,
+        loadDataAgentDefinition(
+          itemContent.directories[item.logicalId] ?? "",
+        ),
+      ]),
+  );
   const lakehouseTablesDefinitions = Object.fromEntries(
     manifest.items
       .filter(
@@ -427,7 +444,7 @@ export function loadManifest(
       sha256(
         stableJson({
           fileContentHash:
-            item.type === "Report"
+            item.type === "Report" || item.type === "DataAgent"
               ? null
               : itemContent.hashes[item.logicalId],
           resolvedDefinition: itemDefinitions[item.logicalId],
@@ -455,6 +472,8 @@ export function loadManifest(
               : null,
           capturedEventstreamDefinition:
             eventstreamDefinitions[item.logicalId] ?? null,
+          capturedDataAgentDefinition:
+            dataAgentDefinitions[item.logicalId] ?? null,
           capturedSparkCustomPoolDefinition:
             sparkCustomPoolDefinitions[item.logicalId] ?? null,
           capturedLakehouseTablesDefinition:
@@ -482,6 +501,7 @@ export function loadManifest(
     semanticModelDefinitions,
     reportDefinitions,
     eventstreamDefinitions,
+    dataAgentDefinitions,
     sparkCustomPoolDefinitions,
     lakehouseTablesDefinitions,
   };
@@ -997,7 +1017,8 @@ function validateUniqueDesiredIdentities(
     | "CopyJob"
     | "SemanticModel"
     | "Report"
-    | "Eventstream",
+    | "Eventstream"
+    | "DataAgent",
     Map<string, string>
   >([
     ["Lakehouse", new Map()],
@@ -1013,6 +1034,7 @@ function validateUniqueDesiredIdentities(
     ["SemanticModel", new Map()],
     ["Report", new Map()],
     ["Eventstream", new Map()],
+    ["DataAgent", new Map()],
   ]);
   for (const item of manifest.items) {
     if (
@@ -1028,7 +1050,8 @@ function validateUniqueDesiredIdentities(
       item.type !== "CopyJob" &&
       item.type !== "SemanticModel" &&
       item.type !== "Report" &&
-      item.type !== "Eventstream"
+      item.type !== "Eventstream" &&
+      item.type !== "DataAgent"
     ) {
       continue;
     }

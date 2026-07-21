@@ -1050,8 +1050,19 @@ function isCheckpoint(value: unknown): value is ApplyCheckpoint {
       (operation.location === undefined ||
         (typeof operation.location === "string" &&
           operation.location.length > 0)) &&
+      // Sync shell-create proof fields (201 path): physicalId + shellDefinitionHash
+      (operation.physicalId === undefined ||
+        (typeof operation.physicalId === "string" &&
+          operation.physicalId.length > 0)) &&
+      (operation.shellDefinitionHash === undefined ||
+        /^[a-f0-9]{64}$/.test(operation.shellDefinitionHash)) &&
+      // At least one recovery path must be present:
+      //  (a) LRO path: operationId or location
+      //  (b) Sync proof path: physicalId AND shellDefinitionHash
       (typeof operation.operationId === "string" ||
-        typeof operation.location === "string") &&
+        typeof operation.location === "string" ||
+        (typeof operation.physicalId === "string" &&
+          typeof operation.shellDefinitionHash === "string")) &&
       typeof operation.acceptedAt === "string" &&
       !Number.isNaN(Date.parse(operation.acceptedAt))
     );

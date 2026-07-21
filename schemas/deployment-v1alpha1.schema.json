@@ -343,7 +343,8 @@
               "SemanticModel",
               "Report",
               "Warehouse",
-              "Eventstream"
+              "Eventstream",
+              "DataAgent"
             ]
           },
           "path": {

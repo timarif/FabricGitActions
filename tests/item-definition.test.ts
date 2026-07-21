@@ -679,3 +679,174 @@ items:
     );
   });
 });
+
+// ---------------------------------------------------------------------------
+// DataAgent-specific item definition validation (item 1 regression tests)
+// ---------------------------------------------------------------------------
+
+const ROOT_SCHEMA_URL =
+  "https://developer.microsoft.com/json-schemas/fabric/item/dataAgent/definition/dataAgent/2.1.0/schema.json";
+const VALID_UUID = "a67215a2-b766-4bfd-bd63-f0241bac1a0f";
+
+function createDataAgentDeployment(
+  itemYaml: string,
+  hasDefinition = false,
+): { root: string; manifestPath: string; itemDirectory: string } {
+  const root = mkdtempSync(path.join(tmpdir(), "fabric-deploy-da-"));
+  const itemDirectory = path.join(root, "items/agent");
+  mkdirSync(itemDirectory, { recursive: true });
+  writeFileSync(path.join(itemDirectory, "item.yaml"), itemYaml, "utf8");
+  if (hasDefinition) {
+    const configDir = path.join(itemDirectory, "Files", "Config");
+    mkdirSync(configDir, { recursive: true });
+    writeFileSync(
+      path.join(configDir, "data_agent.json"),
+      JSON.stringify({ $schema: ROOT_SCHEMA_URL }),
+      "utf8",
+    );
+  }
+  const manifestPath = path.join(root, "deployment.yaml");
+  writeFileSync(
+    manifestPath,
+    `
+apiVersion: fabric.deploy/v1alpha1
+kind: FabricDeployment
+metadata:
+  deploymentId: da-test
+workspace:
+  id: workspace-1
+items:
+  - logicalId: agent
+    type: DataAgent
+    path: items/agent
+`,
+    "utf8",
+  );
+  return { root, manifestPath, itemDirectory };
+}
+
+describe("DataAgent item definition validation", () => {
+  it("loads a DataAgent item definition (shell, no Files/Config)", () => {
+    const fixture = createDataAgentDeployment("displayName: My Agent\n");
+    const loaded = loadManifest(fixture.manifestPath);
+    expect(loaded.itemDefinitions.agent).toMatchObject({ displayName: "My Agent" });
+  });
+
+  it("loads a DataAgent item definition when Files/Config is present", () => {
+    const fixture = createDataAgentDeployment(
+      "displayName: My Agent\ndescription: Sales helper\n",
+      true,
+    );
+    const loaded = loadManifest(fixture.manifestPath);
+    expect(loaded.itemDefinitions.agent).toMatchObject({
+      displayName: "My Agent",
+      description: "Sales helper",
+    });
+  });
+
+  it("rejects enableSchemas for DataAgent (item 1)", () => {
+    const fixture = createDataAgentDeployment(
+      "displayName: My Agent\nenableSchemas: true\n",
+    );
+    expect(() => loadManifest(fixture.manifestPath)).toThrow(
+      "can use enableSchemas only when type is Lakehouse",
+    );
+  });
+
+  it("rejects minimumConsumptionUnits for DataAgent (item 1)", () => {
+    const fixture = createDataAgentDeployment(
+      "displayName: My Agent\nminimumConsumptionUnits: 4.25\n",
+    );
+    expect(() => loadManifest(fixture.manifestPath)).toThrow(
+      "can use minimumConsumptionUnits only when type is Eventhouse",
+    );
+  });
+
+  it("rejects scope for DataAgent (item 1)", () => {
+    const fixture = createDataAgentDeployment(
+      "displayName: My Agent\nscope:\n  type: Tenant\n",
+    );
+    expect(() => loadManifest(fixture.manifestPath)).toThrow(
+      "can use scope only when type is FabricTag",
+    );
+  });
+
+  it("rejects desiredState: absent for DataAgent in this release", () => {
+    const root = mkdtempSync(path.join(tmpdir(), "fabric-deploy-da-"));
+    const itemDirectory = path.join(root, "items/agent");
+    mkdirSync(itemDirectory, { recursive: true });
+    writeFileSync(
+      path.join(itemDirectory, "item.yaml"),
+      "displayName: My Agent\ndesiredState: absent\n",
+      "utf8",
+    );
+    const manifestPath = path.join(root, "deployment.yaml");
+    writeFileSync(
+      manifestPath,
+      `
+apiVersion: fabric.deploy/v1alpha1
+kind: FabricDeployment
+metadata:
+  deploymentId: da-delete-test
+workspace:
+  id: workspace-1
+items:
+  - logicalId: agent
+    type: DataAgent
+    path: items/agent
+    desiredState: absent
+`,
+      "utf8",
+    );
+    expect(() => loadManifest(manifestPath)).toThrow(
+      /DataAgent.*absent|desiredState.*absent/,
+    );
+  });
+
+  it("rejects invalid datasource.json (missing artifactId) via item definition validation", () => {
+    const root = mkdtempSync(path.join(tmpdir(), "fabric-deploy-da-"));
+    const itemDirectory = path.join(root, "items/agent");
+    const configDir = path.join(itemDirectory, "Files", "Config");
+    const draftDir = path.join(configDir, "draft", "lh-Sales");
+    mkdirSync(draftDir, { recursive: true });
+    writeFileSync(
+      path.join(configDir, "data_agent.json"),
+      JSON.stringify({ $schema: ROOT_SCHEMA_URL }),
+      "utf8",
+    );
+    writeFileSync(
+      path.join(draftDir, "datasource.json"),
+      JSON.stringify({
+        $schema:
+          "https://developer.microsoft.com/json-schemas/fabric/item/dataAgent/definition/dataSource/1.0.0/schema.json",
+        type: "lakehouse",
+        workspaceId: VALID_UUID,
+        displayName: "Test DS",
+      }),
+      "utf8",
+    );
+    writeFileSync(
+      path.join(itemDirectory, "item.yaml"),
+      "displayName: My Agent\n",
+      "utf8",
+    );
+    const manifestPath = path.join(root, "deployment.yaml");
+    writeFileSync(
+      manifestPath,
+      `
+apiVersion: fabric.deploy/v1alpha1
+kind: FabricDeployment
+metadata:
+  deploymentId: da-ds-test
+workspace:
+  id: workspace-1
+items:
+  - logicalId: agent
+    type: DataAgent
+    path: items/agent
+`,
+      "utf8",
+    );
+    expect(() => loadManifest(manifestPath)).toThrow(/artifactId/);
+  });
+});
