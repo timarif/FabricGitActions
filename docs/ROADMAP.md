@@ -83,7 +83,18 @@
 - [x] KQL Database disposable live create/no-op/update validation
 - [ ] Eventstream, KQL Queryset, and KQL Dashboard adapters
 
-## Later phases
+## Phase 8: Data Warehouse adapter
+
+- [x] Warehouse manifest validation and authenticated discovery
+- [x] Warehouse guarded create/update/no-op apply and LRO recovery
+- [x] Warehouse immutable collationType drift blocking
+- [x] Warehouse disposable live create/no-op/update validation
+- [ ] WarehouseTables T-SQL DDL companion (deferred — requires separate TDS/ODBC
+  auth channel distinct from the Fabric REST API; see
+  [implementation notes](PHASE5_PLAN.md))
+- [ ] Warehouse guarded deletion (deferred — requires confirming hardDelete
+  behaviour through the warehouse-specific DELETE endpoint)
+
 
 See [the Fabric platform expansion plan](PHASE5_PLAN.md) for the prioritized
 Real-Time Intelligence, warehouse/database, Data Factory, platform,

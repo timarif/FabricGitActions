@@ -1,0 +1,12 @@
+displayName: Sales-Warehouse
+description: Sales data warehouse — case-insensitive collation
+desiredState: present
+# collationType is optional. The server default is Latin1_General_100_BIN2_UTF8
+# (case-sensitive). Use Latin1_General_100_CI_AS_KS_WS_SC_UTF8 for
+# case-insensitive queries.
+#
+# IMPORTANT: collationType is immutable after creation. Changing it after the
+# Warehouse has been deployed requires deleting and recreating the item.
+# fabric-deploy will emit a "blocked" plan action if the desired value differs
+# from the observed value.
+collationType: Latin1_General_100_CI_AS_KS_WS_SC_UTF8

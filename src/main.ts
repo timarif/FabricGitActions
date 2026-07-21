@@ -17,6 +17,7 @@ import { parseFabricEndpoints } from "./fabric/config";
 import { EnvironmentAdapter } from "./fabric/environment";
 import { EventhouseAdapter } from "./fabric/eventhouse";
 import { KqlDatabaseAdapter } from "./fabric/kql-database";
+import { WarehouseAdapter } from "./fabric/warehouse";
 import { ItemDeletionAdapter } from "./fabric/item-deletion";
 import { LakehouseAdapter } from "./fabric/lakehouse";
 import { LakehouseTablesAdapter } from "./fabric/lakehouse-tables";
@@ -211,6 +212,7 @@ export async function run(): Promise<void> {
     let lakehouseAdapter: LakehouseAdapter | undefined;
     let eventhouseAdapter: EventhouseAdapter | undefined;
     let kqlDatabaseAdapter: KqlDatabaseAdapter | undefined;
+    let warehouseAdapter: WarehouseAdapter | undefined;
     let environmentAdapter: EnvironmentAdapter | undefined;
     let itemDeletionAdapter: ItemDeletionAdapter | undefined;
     let notebookAdapter: NotebookAdapter | undefined;
@@ -254,6 +256,7 @@ export async function run(): Promise<void> {
       lakehouseAdapter = new LakehouseAdapter(client);
       eventhouseAdapter = new EventhouseAdapter(client);
       kqlDatabaseAdapter = new KqlDatabaseAdapter(client);
+      warehouseAdapter = new WarehouseAdapter(client);
       lakehouseTablesAdapter = new LakehouseTablesAdapter(client);
       environmentAdapter = new EnvironmentAdapter(client);
       itemDeletionAdapter = new ItemDeletionAdapter(client);
@@ -377,6 +380,7 @@ export async function run(): Promise<void> {
         !lakehouseAdapter ||
         !eventhouseAdapter ||
         !kqlDatabaseAdapter ||
+        !warehouseAdapter ||
         !environmentAdapter ||
         !notebookAdapter ||
         !sparkJobAdapter ||
@@ -399,6 +403,7 @@ export async function run(): Promise<void> {
         lakehouse: lakehouseAdapter,
         eventhouse: eventhouseAdapter,
         kqlDatabase: kqlDatabaseAdapter,
+        warehouse: warehouseAdapter,
         environment: environmentAdapter,
         notebook: notebookAdapter,
         sparkJob: sparkJobAdapter,
@@ -521,6 +526,7 @@ export async function run(): Promise<void> {
         !lakehouseAdapter ||
         !eventhouseAdapter ||
         !kqlDatabaseAdapter ||
+        !warehouseAdapter ||
         !environmentAdapter ||
         !itemDeletionAdapter ||
         !notebookAdapter ||
@@ -545,6 +551,7 @@ export async function run(): Promise<void> {
         lakehouseAdapter,
         eventhouseAdapter,
         kqlDatabaseAdapter,
+        warehouseAdapter,
         environmentAdapter,
         itemDeletionAdapter,
         notebookAdapter,

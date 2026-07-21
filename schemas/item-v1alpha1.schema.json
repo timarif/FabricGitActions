@@ -39,6 +39,13 @@
     "databaseType": {
       "const": "ReadWrite"
     },
+    "collationType": {
+      "type": "string",
+      "enum": [
+        "Latin1_General_100_BIN2_UTF8",
+        "Latin1_General_100_CI_AS_KS_WS_SC_UTF8"
+      ]
+    },
     "references": {
       "type": "object",
       "additionalProperties": {

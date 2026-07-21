@@ -1,0 +1,10 @@
+apiVersion: fabric.deploy/v1alpha1
+kind: FabricDeployment
+
+metadata:
+  deploymentId: warehouse-example
+
+items:
+  - logicalId: salesWarehouse
+    type: Warehouse
+    path: items/warehouses/sales

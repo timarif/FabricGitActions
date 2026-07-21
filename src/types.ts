@@ -3,6 +3,7 @@ import type { LoadedLakehouseTablesDefinition } from "./fabric/lakehouse-tables-
 import type { SparkJobArtifactSource } from "./fabric/spark-job-definition";
 import type { SparkCustomPoolDefinition } from "./fabric/spark-custom-pool-definition";
 import type { FabricTagScope } from "./fabric/tags";
+import type { CollationType } from "./fabric/warehouse";
 
 export const FABRIC_ITEM_TYPES = [
   "Lakehouse",
@@ -17,6 +18,7 @@ export const FABRIC_ITEM_TYPES = [
   "DataPipeline",
   "SemanticModel",
   "Report",
+  "Warehouse",
 ] as const;
 
 export type FabricItemType = (typeof FABRIC_ITEM_TYPES)[number];
@@ -43,6 +45,7 @@ export interface ItemDefinition {
   enableSchemas?: true;
   minimumConsumptionUnits?: number;
   databaseType?: "ReadWrite";
+  collationType?: CollationType;
   scope?: FabricTagScope;
   tags?: string[];
   references?: Record<string, string>;

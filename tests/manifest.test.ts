@@ -416,6 +416,43 @@ items:
     );
   });
 
+  it("rejects duplicate desired Warehouse identities", () => {
+    const root = mkdtempSync(path.join(tmpdir(), "fabric-deploy-"));
+    const manifestPath = createFixture(
+      root,
+      `
+apiVersion: fabric.deploy/v1alpha1
+kind: FabricDeployment
+metadata:
+  deploymentId: warehouse-identities
+workspace:
+  id: workspace-1
+items:
+  - logicalId: firstWarehouse
+    type: Warehouse
+    path: items/warehouses/first
+  - logicalId: secondWarehouse
+    type: Warehouse
+    path: items/warehouses/second
+`,
+      [
+        "items/warehouses/first",
+        "items/warehouses/second",
+      ],
+    );
+    for (const name of ["first", "second"]) {
+      writeFileSync(
+        path.join(root, "items/warehouses", name, "item.yaml"),
+        "displayName: Shared-Warehouse\n",
+        "utf8",
+      );
+    }
+
+    expect(() => loadManifest(manifestPath)).toThrow(
+      "Warehouse items 'firstWarehouse' and 'secondWarehouse' resolve to the same folder and displayName",
+    );
+  });
+
   it("rejects duplicate desired Environment identities", () => {
     const root = mkdtempSync(path.join(tmpdir(), "fabric-deploy-"));
     const manifestPath = createFixture(
