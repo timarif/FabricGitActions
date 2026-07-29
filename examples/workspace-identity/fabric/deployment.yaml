@@ -1,0 +1,17 @@
+apiVersion: fabric.deploy/v1alpha1
+kind: FabricDeployment
+
+metadata:
+  deploymentId: workspace-identity
+
+workspace:
+  id: ${var.FABRIC_WORKSPACE_ID}
+
+workspaceIdentity:
+  provision: true
+  roleAssignments:
+    - role: Contributor
+    - workspaceId: ${var.SHARED_WORKSPACE_ID}
+      role: Viewer
+
+items: []

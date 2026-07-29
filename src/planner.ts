@@ -8,7 +8,9 @@ import type {
   LoadedManifest,
   PlannedItem,
   PlannedWorkspace,
+  PlannedWorkspaceIdentity,
   WorkspaceDefinition,
+  WorkspaceIdentityDefinition,
 } from "./types";
 
 export interface BuildPlanOptions {
@@ -68,6 +70,14 @@ export function buildPlan(
           ),
         }
       : {}),
+    ...(loadedManifest.manifest.workspaceIdentity
+      ? {
+          workspaceIdentity: buildOfflineWorkspaceIdentityPlan(
+            loadedManifest.manifest.workspaceIdentity,
+            workspaceId,
+          ),
+        }
+      : {}),
     ...(loadedManifest.manifest.networkProtection
       ? {
           networkProtection: buildUnknownNetworkProtectionPlan(
@@ -95,6 +105,7 @@ export function rehashPlan(plan: DeploymentPlan): DeploymentPlan {
     environment: plan.environment,
     workspaceId: plan.workspaceId,
     workspace: plan.workspace,
+    workspaceIdentity: plan.workspaceIdentity,
     networkProtection: plan.networkProtection,
     sourceCommit: plan.sourceCommit,
     sourceHash: plan.sourceHash,
@@ -120,6 +131,54 @@ function buildOfflineWorkspacePlan(
     action: "unknown",
     reason:
       "Online Fabric workspace discovery is disabled because authentication is not configured.",
+  };
+}
+
+function buildOfflineWorkspaceIdentityPlan(
+  identity: WorkspaceIdentityDefinition,
+  workspaceId: string,
+): PlannedWorkspaceIdentity {
+  const roleAssignments = (identity.roleAssignments ?? [])
+    .map((assignment) => {
+      const targetWorkspaceId = assignment.workspaceId ?? workspaceId;
+      const desiredHash = sha256(
+        stableJson({
+          targetWorkspaceId,
+          role: assignment.role,
+        }),
+      );
+      return {
+        targetWorkspaceId,
+        role: assignment.role,
+        desiredHash,
+        observedStateHash: sha256(stableJson(null)),
+        action: "unknown" as const,
+        reason:
+          "Online workspace identity role discovery is disabled because authentication is not configured.",
+      };
+    })
+    .sort((left, right) =>
+      `${left.targetWorkspaceId}\0${left.role}`.localeCompare(
+        `${right.targetWorkspaceId}\0${right.role}`,
+      ),
+    );
+  return {
+    desiredHash: sha256(
+      stableJson({
+        provision: identity.provision,
+        roleAssignments: roleAssignments.map(
+          ({ targetWorkspaceId, role }) => ({
+            targetWorkspaceId,
+            role,
+          }),
+        ),
+      }),
+    ),
+    observedStateHash: sha256(stableJson(null)),
+    action: "unknown",
+    reason:
+      "Online workspace identity discovery is disabled because authentication is not configured.",
+    roleAssignments,
   };
 }
 

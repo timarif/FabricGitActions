@@ -29,6 +29,9 @@ export const deploymentSchema = {
           },
         },
         {
+          required: ["workspaceIdentity"],
+        },
+        {
           required: ["networkProtection"],
         },
       ],
@@ -84,6 +87,35 @@ export const deploymentSchema = {
         capacityId: {
           type: "string",
           minLength: 1,
+        },
+      },
+    },
+    workspaceIdentity: {
+      type: "object",
+      additionalProperties: false,
+      required: ["provision"],
+      properties: {
+        provision: {
+          const: true,
+        },
+        roleAssignments: {
+          type: "array",
+          maxItems: 1000,
+          items: {
+            type: "object",
+            additionalProperties: false,
+            required: ["role"],
+            properties: {
+              workspaceId: {
+                type: "string",
+                minLength: 1,
+              },
+              role: {
+                type: "string",
+                enum: ["Admin", "Member", "Contributor", "Viewer"],
+              },
+            },
+          },
         },
       },
     },

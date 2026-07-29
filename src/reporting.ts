@@ -189,6 +189,40 @@ export async function writeJobSummary(plan: DeploymentPlan): Promise<void> {
       ],
     ]);
 
+  if (plan.workspaceIdentity) {
+    const identity = plan.workspaceIdentity;
+    core.summary.addHeading("Workspace identity", 2).addTable([
+      [
+        { data: "Action", header: true },
+        { data: "Application ID", header: true },
+        { data: "Service principal ID", header: true },
+        { data: "Reason", header: true },
+      ],
+      [
+        identity.action,
+        identity.applicationId ?? "",
+        identity.servicePrincipalId ?? "",
+        identity.reason,
+      ],
+    ]);
+    if (identity.roleAssignments.length > 0) {
+      core.summary.addTable([
+        [
+          { data: "Target workspace", header: true },
+          { data: "Role", header: true },
+          { data: "Action", header: true },
+          { data: "Reason", header: true },
+        ],
+        ...identity.roleAssignments.map((assignment) => [
+          assignment.targetWorkspaceId,
+          assignment.role,
+          assignment.action,
+          assignment.reason,
+        ]),
+      ]);
+    }
+  }
+
   if (plan.networkProtection) {
     const networkProtection = plan.networkProtection;
     const surfaceRows: Array<[string, string, string, string]> = [

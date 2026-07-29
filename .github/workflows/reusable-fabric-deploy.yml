@@ -77,6 +77,14 @@ on:
         required: false
         default: false
         type: boolean
+      allow_workspace_identity_provision:
+        required: false
+        default: false
+        type: boolean
+      allow_workspace_identity_role_assign:
+        required: false
+        default: false
+        type: boolean
       allow_lakehouse_schema_create:
         required: false
         default: false
@@ -274,6 +282,35 @@ jobs:
                 .workspace.action != "blocked"
                 and .workspace.action != "unknown"
               )
+            )
+            and (
+              .workspaceIdentity == null
+              or if .workspaceIdentity.action == "unknown" then false
+              elif .workspaceIdentity.action == "blocked" then (
+                .workspace.action == "create"
+                and all(
+                  .workspaceIdentity.roleAssignments[]?;
+                  .action == "blocked"
+                )
+              ) elif (
+                .workspaceIdentity.action == "create"
+                or .workspaceIdentity.action == "update"
+                or .workspaceIdentity.action == "no-op"
+              ) then (
+                if .workspaceIdentity.action == "create" then
+                  all(
+                    .workspaceIdentity.roleAssignments[]?;
+                    .action == "blocked"
+                  )
+                else
+                  all(
+                    .workspaceIdentity.roleAssignments[]?;
+                    .action != "blocked"
+                    and .action != "unknown"
+                  )
+                end
+              ) else false
+              end
             )
             and (
               .networkProtection == null
@@ -477,6 +514,8 @@ jobs:
           allow-workspace-create: ${{ inputs.allow_workspace_create }}
           allow-workspace-update: ${{ inputs.allow_workspace_update }}
           allow-capacity-assignment: ${{ inputs.allow_capacity_assignment }}
+          allow-workspace-identity-provision: ${{ inputs.allow_workspace_identity_provision }}
+          allow-workspace-identity-role-assign: ${{ inputs.allow_workspace_identity_role_assign }}
           allow-lakehouse-schema-create: ${{ inputs.allow_lakehouse_schema_create }}
           allow-lakehouse-table-create: ${{ inputs.allow_lakehouse_table_create }}
           allow-onelake-artifact-create: ${{ inputs.allow_onelake_artifact_create }}

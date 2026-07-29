@@ -51,6 +51,7 @@ import { assertSparkJobArtifactEndpoints } from "./fabric/spark-job-artifacts";
 import { SparkJobAdapter } from "./fabric/spark-job";
 import { FabricTagAdapter } from "./fabric/tags";
 import { WorkspaceAdapter } from "./fabric/workspace";
+import { WorkspaceIdentityAdapter } from "./fabric/workspace-identity";
 import {
   loadManifest,
   loadManifestItemDirectoriesForSafety,
@@ -397,6 +398,9 @@ export async function run(): Promise<void> {
     let sparkCustomPoolAdapter: SparkCustomPoolAdapter | undefined;
     let tagAdapter: FabricTagAdapter | undefined;
     let workspaceAdapter: WorkspaceAdapter | undefined;
+    let workspaceIdentityAdapter:
+      | WorkspaceIdentityAdapter
+      | undefined;
     let lakehouseTablesAdapter: LakehouseTablesAdapter | undefined;
     let networkProtectionAdapter: NetworkProtectionAdapter | undefined;
     let managedPrivateEndpointAdapter:
@@ -445,6 +449,8 @@ export async function run(): Promise<void> {
       sparkCustomPoolAdapter = new SparkCustomPoolAdapter(client);
       tagAdapter = new FabricTagAdapter(client);
       workspaceAdapter = new WorkspaceAdapter(client);
+      workspaceIdentityAdapter =
+        new WorkspaceIdentityAdapter(client);
       managedPrivateEndpointAdapter =
         new ManagedPrivateEndpointAdapter(client);
       networkProtectionAdapter = new NetworkProtectionAdapter(
@@ -553,6 +559,7 @@ export async function run(): Promise<void> {
     if ((mode === "plan" || mode === "apply") && authMode !== "none") {
       if (
         !workspaceAdapter ||
+        !workspaceIdentityAdapter ||
         !itemDeletionAdapter ||
         !lakehouseAdapter ||
         !eventhouseAdapter ||
@@ -577,6 +584,7 @@ export async function run(): Promise<void> {
       }
       plan = await enrichPlanWithFabric(plan, loadedManifest, {
         workspace: workspaceAdapter,
+        workspaceIdentity: workspaceIdentityAdapter,
         deletion: itemDeletionAdapter,
         lakehouse: lakehouseAdapter,
         eventhouse: eventhouseAdapter,
@@ -639,6 +647,22 @@ export async function run(): Promise<void> {
     core.setOutput(
       "workspace-action",
       plan.workspace?.action ?? "target",
+    );
+    core.setOutput(
+      "workspace-identity-action",
+      plan.workspaceIdentity?.action ?? "not-configured",
+    );
+    core.setOutput(
+      "workspace-identity-application-id",
+      plan.workspaceIdentity?.applicationId ?? "",
+    );
+    core.setOutput(
+      "workspace-identity-service-principal-id",
+      plan.workspaceIdentity?.servicePrincipalId ?? "",
+    );
+    core.setOutput(
+      "workspace-identity-role-assignment-count",
+      String(plan.workspaceIdentity?.roleAssignments.length ?? 0),
     );
     core.setOutput(
       "network-protection-action",
@@ -719,7 +743,8 @@ export async function run(): Promise<void> {
         !dataAgentAdapter ||
         !sparkCustomPoolAdapter ||
         !tagAdapter ||
-        !workspaceAdapter
+        !workspaceAdapter ||
+        !workspaceIdentityAdapter
         || !lakehouseTablesAdapter ||
         !networkProtectionAdapter ||
         !managedPrivateEndpointAdapter ||
@@ -748,6 +773,7 @@ export async function run(): Promise<void> {
         sparkCustomPoolAdapter,
         tagAdapter,
         workspaceAdapter,
+        workspaceIdentityAdapter,
         lakehouseTablesAdapter,
         networkProtectionAdapter,
         managedPrivateEndpointAdapter,
@@ -768,6 +794,12 @@ export async function run(): Promise<void> {
         ),
         allowCapacityAssignment: readBooleanInput(
           "allow-capacity-assignment",
+        ),
+        allowWorkspaceIdentityProvision: readBooleanInput(
+          "allow-workspace-identity-provision",
+        ),
+        allowWorkspaceIdentityRoleAssign: readBooleanInput(
+          "allow-workspace-identity-role-assign",
         ),
         allowLakehouseSchemaCreate: readBooleanInput(
           "allow-lakehouse-schema-create",
@@ -801,6 +833,29 @@ export async function run(): Promise<void> {
       core.setOutput(
         "workspace-action",
         approvedPlan.workspace?.action ?? "target",
+      );
+      core.setOutput(
+        "workspace-identity-action",
+        approvedPlan.workspaceIdentity?.action ?? "not-configured",
+      );
+      core.setOutput(
+        "workspace-identity-application-id",
+        result.workspaceIdentity?.applicationId ??
+          approvedPlan.workspaceIdentity?.applicationId ??
+          "",
+      );
+      core.setOutput(
+        "workspace-identity-service-principal-id",
+        result.workspaceIdentity?.servicePrincipalId ??
+          approvedPlan.workspaceIdentity?.servicePrincipalId ??
+          "",
+      );
+      core.setOutput(
+        "workspace-identity-role-assignment-count",
+        String(
+          approvedPlan.workspaceIdentity?.roleAssignments.length ??
+            0,
+        ),
       );
       core.setOutput(
         "network-protection-action",

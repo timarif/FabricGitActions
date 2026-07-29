@@ -85,6 +85,18 @@ const examples: ExampleCase[] = [
     itemCount: 0,
   },
   {
+    name: "workspace identity",
+    manifestPath: "workspace-identity/fabric/deployment.yaml",
+    options: {
+      variables: {
+        FABRIC_WORKSPACE_ID: WORKSPACE_ID,
+        SHARED_WORKSPACE_ID:
+          "00000000-0000-0000-0000-000000000002",
+      },
+    },
+    itemCount: 0,
+  },
+  {
     name: "Fabric tags",
     manifestPath: "tags/fabric/deployment.yaml",
     options: { workspaceIdOverride: WORKSPACE_ID },

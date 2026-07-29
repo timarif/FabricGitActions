@@ -67,6 +67,49 @@ describe("approved plan loading", () => {
     expect(loadApprovedPlan(planPath).planHash).toBe(plan.planHash);
   });
 
+  it("loads a workspace identity plan with scoped role proof", () => {
+    const root = mkdtempSync(path.join(tmpdir(), "fabric-plan-"));
+    const planPath = path.join(root, "plan.json");
+    const plan = createPlan();
+    plan.workspaceIdentity = {
+      desiredHash: "a".repeat(64),
+      observedStateHash: "b".repeat(64),
+      applicationId: "application-1",
+      servicePrincipalId: "principal-1",
+      action: "update",
+      reason: "role assignment required",
+      roleAssignments: [
+        {
+          targetWorkspaceId: "workspace",
+          role: "Contributor",
+          desiredHash: "c".repeat(64),
+          observedStateHash: "d".repeat(64),
+          action: "create",
+          reason: "missing",
+        },
+      ],
+    };
+    const approved = rehashPlan(plan);
+    writeFileSync(planPath, JSON.stringify(approved), "utf8");
+
+    expect(loadApprovedPlan(planPath).workspaceIdentity).toMatchObject({
+      action: "update",
+      servicePrincipalId: "principal-1",
+      roleAssignments: [{ role: "Contributor" }],
+    });
+
+    approved.workspaceIdentity!.roleAssignments[0]!.role =
+      "Owner" as never;
+    writeFileSync(
+      planPath,
+      JSON.stringify(rehashPlan(approved)),
+      "utf8",
+    );
+    expect(() => loadApprovedPlan(planPath)).toThrow(
+      "invalid structure",
+    );
+  });
+
   it("rejects a plan changed after hashing", () => {
     const root = mkdtempSync(path.join(tmpdir(), "fabric-plan-"));
     const planPath = path.join(root, "plan.json");

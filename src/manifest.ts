@@ -170,6 +170,7 @@ export function loadManifest(
 
   const manifest = resolved as DeploymentManifest;
   validateWorkspaceDefinition(manifest);
+  validateWorkspaceIdentityDefinition(manifest);
   validateNetworkProtectionDefinition(manifest);
   validateLogicalIds(manifest);
   validateDependencies(manifest);
@@ -579,6 +580,36 @@ function validateWorkspaceDefinition(
     throw new Error(
       "Managed workspace displayName cannot use the reserved name 'Admin monitoring'.",
     );
+  }
+}
+
+function validateWorkspaceIdentityDefinition(
+  manifest: DeploymentManifest,
+): void {
+  const identity = manifest.workspaceIdentity;
+  if (!identity) {
+    return;
+  }
+
+  const targets = new Set<string>();
+  const deploymentWorkspaceId = manifest.workspace?.id?.trim();
+  for (const assignment of identity.roleAssignments ?? []) {
+    const target =
+      assignment.workspaceId === undefined
+        ? deploymentWorkspaceId ?? "<deployment-workspace>"
+        : assignment.workspaceId.trim();
+    if (target === "") {
+      throw new Error(
+        "Workspace identity role assignment workspaceId must contain non-whitespace characters.",
+      );
+    }
+    const canonicalTarget = target.toLocaleLowerCase("en-US");
+    if (targets.has(canonicalTarget)) {
+      throw new Error(
+        `Workspace identity role assignments contain duplicate target '${target}'.`,
+      );
+    }
+    targets.add(canonicalTarget);
   }
 }
 

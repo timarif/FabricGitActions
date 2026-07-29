@@ -134,12 +134,39 @@ creation. Capacity assignment additionally requires Workspace Admin plus
 contributor or administrator permission on the target capacity. Workspace
 deletion and capacity unassignment are intentionally unsupported.
 
+## Workspace identity
+
+Use the optional `workspaceIdentity` section to provision the Fabric-managed
+identity for the deployment workspace and add explicit workspace roles for its
+service principal:
+
+```yaml
+workspaceIdentity:
+  provision: true
+  roleAssignments:
+    - role: Contributor
+    - workspaceId: ${var.SHARED_WORKSPACE_ID}
+      role: Viewer
+```
+
+An omitted assignment `workspaceId` targets the deployment workspace. Identity
+provisioning and role grants use separate safeguards and separate approved
+plans when the identity does not yet exist:
+
+- `allow-workspace-identity-provision`
+- `allow-workspace-identity-role-assign`
+
+Role changes, removals, and identity deprovisioning are blocked. See
+[Workspace identity](docs/WORKSPACE_IDENTITY.md) for the staged workflow,
+permissions, recovery model, and API contract.
+
 Without authentication, `plan` is offline and reports item actions as
-`unknown`. With Fabric authentication configured, Lakehouses, Environments, Notebooks,
-LakehouseTables bundles, Fabric tags, Spark Job Definitions, Data Pipelines,
-Copy Jobs, Semantic Models, Power BI Reports, and workspace custom Spark pools are
-classified as `create`, `update`, `delete`, `no-op`, or `blocked`; later workload
-adapters remain `unknown`.
+`unknown`. With Fabric authentication configured, workspace identities and
+role grants, Lakehouses, Environments, Notebooks, LakehouseTables bundles,
+Fabric tags, Spark Job Definitions, Data Pipelines, Copy Jobs, Semantic Models,
+Power BI Reports, and workspace custom Spark pools are classified as `create`,
+`update`, `delete`, `no-op`, or `blocked`; later workload adapters remain
+`unknown`.
 
 ## Network protection
 

@@ -33,18 +33,11 @@ on:
         required: true
         default: false
         type: boolean
-      allow_workspace_create:
+      workspace_safeguards:
+        description: JSON object containing the five independent workspace safeguards.
         required: true
-        default: false
-        type: boolean
-      allow_workspace_update:
-        required: true
-        default: false
-        type: boolean
-      allow_capacity_assignment:
-        required: true
-        default: false
-        type: boolean
+        default: '{"allow_workspace_create":false,"allow_workspace_update":false,"allow_capacity_assignment":false,"allow_workspace_identity_provision":false,"allow_workspace_identity_role_assign":false}'
+        type: string
       allow_lakehouse_schema_create:
         required: true
         default: false
@@ -130,9 +123,11 @@ jobs:
       allow_update: ${{ inputs.allow_update }}
       allow_delete: ${{ inputs.allow_delete }}
       allow_lakehouse_data_loss: ${{ inputs.allow_lakehouse_data_loss }}
-      allow_workspace_create: ${{ inputs.allow_workspace_create }}
-      allow_workspace_update: ${{ inputs.allow_workspace_update }}
-      allow_capacity_assignment: ${{ inputs.allow_capacity_assignment }}
+      allow_workspace_create: ${{ toJSON(fromJSON(inputs.workspace_safeguards).allow_workspace_create) == 'true' }}
+      allow_workspace_update: ${{ toJSON(fromJSON(inputs.workspace_safeguards).allow_workspace_update) == 'true' }}
+      allow_capacity_assignment: ${{ toJSON(fromJSON(inputs.workspace_safeguards).allow_capacity_assignment) == 'true' }}
+      allow_workspace_identity_provision: ${{ toJSON(fromJSON(inputs.workspace_safeguards).allow_workspace_identity_provision) == 'true' }}
+      allow_workspace_identity_role_assign: ${{ toJSON(fromJSON(inputs.workspace_safeguards).allow_workspace_identity_role_assign) == 'true' }}
       allow_lakehouse_schema_create: ${{ inputs.allow_lakehouse_schema_create }}
       allow_lakehouse_table_create: ${{ inputs.allow_lakehouse_table_create }}
       allow_onelake_artifact_create: ${{ inputs.allow_onelake_artifact_create }}
@@ -166,9 +161,11 @@ jobs:
       allow_update: ${{ inputs.allow_update }}
       allow_delete: ${{ inputs.allow_delete }}
       allow_lakehouse_data_loss: ${{ inputs.allow_lakehouse_data_loss }}
-      allow_workspace_create: ${{ inputs.allow_workspace_create }}
-      allow_workspace_update: ${{ inputs.allow_workspace_update }}
-      allow_capacity_assignment: ${{ inputs.allow_capacity_assignment }}
+      allow_workspace_create: ${{ toJSON(fromJSON(inputs.workspace_safeguards).allow_workspace_create) == 'true' }}
+      allow_workspace_update: ${{ toJSON(fromJSON(inputs.workspace_safeguards).allow_workspace_update) == 'true' }}
+      allow_capacity_assignment: ${{ toJSON(fromJSON(inputs.workspace_safeguards).allow_capacity_assignment) == 'true' }}
+      allow_workspace_identity_provision: ${{ toJSON(fromJSON(inputs.workspace_safeguards).allow_workspace_identity_provision) == 'true' }}
+      allow_workspace_identity_role_assign: ${{ toJSON(fromJSON(inputs.workspace_safeguards).allow_workspace_identity_role_assign) == 'true' }}
       allow_lakehouse_schema_create: ${{ inputs.allow_lakehouse_schema_create }}
       allow_lakehouse_table_create: ${{ inputs.allow_lakehouse_table_create }}
       allow_onelake_artifact_create: ${{ inputs.allow_onelake_artifact_create }}
@@ -202,9 +199,11 @@ jobs:
       allow_update: ${{ inputs.allow_update }}
       allow_delete: ${{ inputs.allow_delete }}
       allow_lakehouse_data_loss: ${{ inputs.allow_lakehouse_data_loss }}
-      allow_workspace_create: ${{ inputs.allow_workspace_create }}
-      allow_workspace_update: ${{ inputs.allow_workspace_update }}
-      allow_capacity_assignment: ${{ inputs.allow_capacity_assignment }}
+      allow_workspace_create: ${{ toJSON(fromJSON(inputs.workspace_safeguards).allow_workspace_create) == 'true' }}
+      allow_workspace_update: ${{ toJSON(fromJSON(inputs.workspace_safeguards).allow_workspace_update) == 'true' }}
+      allow_capacity_assignment: ${{ toJSON(fromJSON(inputs.workspace_safeguards).allow_capacity_assignment) == 'true' }}
+      allow_workspace_identity_provision: ${{ toJSON(fromJSON(inputs.workspace_safeguards).allow_workspace_identity_provision) == 'true' }}
+      allow_workspace_identity_role_assign: ${{ toJSON(fromJSON(inputs.workspace_safeguards).allow_workspace_identity_role_assign) == 'true' }}
       allow_lakehouse_schema_create: ${{ inputs.allow_lakehouse_schema_create }}
       allow_lakehouse_table_create: ${{ inputs.allow_lakehouse_table_create }}
       allow_onelake_artifact_create: ${{ inputs.allow_onelake_artifact_create }}

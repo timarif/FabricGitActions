@@ -107,6 +107,7 @@ import {
 } from "./fabric/spark-job-artifacts";
 import type { OneLakeArtifactStager } from "./fabric/onelake-artifacts";
 import type { WorkspaceAdapter } from "./fabric/workspace";
+import type { WorkspaceIdentityAdapter } from "./fabric/workspace-identity";
 import type { NetworkProtectionAdapter } from "./fabric/network-protection";
 import {
   managedPrivateEndpointRequestMessages,
@@ -145,6 +146,10 @@ import {
 } from "./checkpoint";
 import { applyManagedWorkspace } from "./workspace-apply";
 import {
+  applyWorkspaceIdentity,
+  preflightWorkspaceIdentity,
+} from "./workspace-identity-apply";
+import {
   applyNetworkProtection,
   finalizeNetworkProtectionCheckpoint,
   preflightNetworkProtection,
@@ -160,6 +165,7 @@ import type {
   ApplyNetworkProtectionResult,
   ApplyResult,
   ApplyWorkspaceResult,
+  ApplyWorkspaceIdentityResult,
   DefinitionItemUpdateRecoveryState,
   DeploymentPlan,
   ItemDefinition,
@@ -245,6 +251,15 @@ export interface ApplyPlanOptions {
     WorkspaceAdapter,
     "create" | "resumeCreate" | "update" | "resumeUpdate" | "verify"
   >;
+  workspaceIdentityAdapter?: Pick<
+    WorkspaceIdentityAdapter,
+    | "provision"
+    | "resumeProvision"
+    | "verifyIdentity"
+    | "createRoleAssignment"
+    | "resumeRoleAssignment"
+    | "verifyRoleAssignment"
+  >;
   lakehouseTablesAdapter?: Pick<
     LakehouseTablesAdapter,
     | "apply"
@@ -297,6 +312,8 @@ export interface ApplyPlanOptions {
   allowWorkspaceCreate?: boolean;
   allowWorkspaceUpdate?: boolean;
   allowCapacityAssignment?: boolean;
+  allowWorkspaceIdentityProvision?: boolean;
+  allowWorkspaceIdentityRoleAssign?: boolean;
   allowLakehouseSchemaCreate?: boolean;
   allowLakehouseTableCreate?: boolean;
   allowOneLakeArtifactCreate?: boolean;
@@ -349,6 +366,9 @@ export async function applyApprovedPlan(
   );
   let resultWritable = false;
   let workspaceResult: ApplyWorkspaceResult | undefined;
+  let workspaceIdentityResult:
+    | ApplyWorkspaceIdentityResult
+    | undefined;
   let networkProtectionResult: ApplyNetworkProtectionResult | undefined;
   let runtimeWorkspaceId = options.approvedPlan.workspaceId;
   let requiresItemReplan = false;
@@ -395,6 +415,30 @@ export async function applyApprovedPlan(
       );
     }
     if (options.approvedPlan.workspace?.action !== "create") {
+      preflightWorkspaceIdentity({
+        approvedPlan: options.approvedPlan,
+        currentPlan: options.currentPlan,
+        desired:
+          options.loadedManifest.manifest.workspaceIdentity,
+        adapter: options.workspaceIdentityAdapter,
+        checkpoint,
+        checkpointFile: options.checkpointFile,
+        allowProvision:
+          options.allowWorkspaceIdentityProvision ?? false,
+        allowRoleAssign:
+          options.allowWorkspaceIdentityRoleAssign ?? false,
+        now,
+      });
+    }
+    const deferItemRecoveryPreflightForIdentity =
+      (options.approvedPlan.workspaceIdentity?.action === "create" &&
+        options.approvedPlan.workspaceIdentity.roleAssignments
+          .length > 0) ||
+      checkpoint.workspaceIdentity !== undefined;
+    if (
+      options.approvedPlan.workspace?.action !== "create" &&
+      !deferItemRecoveryPreflightForIdentity
+    ) {
       preflightBeforeRecovery(
         options,
         checkpoint,
@@ -460,11 +504,52 @@ export async function applyApprovedPlan(
         [],
         runtimeWorkspaceId,
         workspaceResult,
+        workspaceIdentityResult,
         true,
         networkProtectionResult,
       );
       writeApplyResult(options.resultFile, result);
       return result;
+    }
+    const workspaceIdentityOutcome = await applyWorkspaceIdentity({
+      approvedPlan: runtimeOptions.approvedPlan,
+      currentPlan: runtimeOptions.currentPlan,
+      desired:
+        runtimeOptions.loadedManifest.manifest.workspaceIdentity,
+      adapter: runtimeOptions.workspaceIdentityAdapter,
+      checkpoint,
+      checkpointFile: runtimeOptions.checkpointFile,
+      allowProvision:
+        runtimeOptions.allowWorkspaceIdentityProvision ?? false,
+      allowRoleAssign:
+        runtimeOptions.allowWorkspaceIdentityRoleAssign ?? false,
+      now,
+    });
+    workspaceIdentityResult = workspaceIdentityOutcome.result;
+    requiresItemReplan =
+      workspaceIdentityOutcome.requiresItemReplan;
+    if (requiresItemReplan) {
+      const result = buildResult(
+        options.approvedPlan,
+        "succeeded",
+        startedAt,
+        now(),
+        [],
+        runtimeWorkspaceId,
+        workspaceResult,
+        workspaceIdentityResult,
+        true,
+      );
+      writeApplyResult(options.resultFile, result);
+      return result;
+    }
+    if (deferItemRecoveryPreflightForIdentity) {
+      preflightBeforeRecovery(
+        runtimeOptions,
+        checkpoint,
+        approvedItems,
+        currentItems,
+      );
     }
     // Validate every configured network surface before any recovery path can
     // dispatch a network or item mutation.
@@ -757,6 +842,7 @@ export async function applyApprovedPlan(
       results,
       runtimeWorkspaceId,
       workspaceResult,
+      workspaceIdentityResult,
       false,
       networkProtectionResult,
     );
@@ -789,6 +875,7 @@ export async function applyApprovedPlan(
       results,
       runtimeWorkspaceId,
       workspaceResult,
+      workspaceIdentityResult,
       requiresItemReplan,
       networkProtectionResult,
     );
@@ -6799,6 +6886,7 @@ function buildResult(
   items: ApplyItemResult[],
   workspaceId: string = plan.workspaceId,
   workspace?: ApplyWorkspaceResult,
+  workspaceIdentity?: ApplyWorkspaceIdentityResult,
   requiresItemReplan = false,
   networkProtection?: ApplyNetworkProtectionResult,
 ): ApplyResult {
@@ -6813,6 +6901,7 @@ function buildResult(
     startedAt: new Date(startedAt).toISOString(),
     completedAt: new Date(completedAt).toISOString(),
     ...(workspace ? { workspace } : {}),
+    ...(workspaceIdentity ? { workspaceIdentity } : {}),
     ...(requiresItemReplan
       ? { requiresItemReplan: true }
       : {}),
