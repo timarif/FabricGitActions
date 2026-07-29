@@ -24,6 +24,7 @@ import {
   type PlannedNetworkProtection,
   type PlannedNetworkSurface,
   type PlannedWorkspace,
+  type PlannedWorkspaceIdentity,
 } from "./types";
 
 const PLANNED_ACTIONS = new Set<PlannedAction>([
@@ -89,6 +90,8 @@ function isDeploymentPlan(value: unknown): value is DeploymentPlan {
     typeof plan.workspaceId === "string" &&
     (plan.workspace === undefined ||
       isPlannedWorkspace(plan.workspace)) &&
+    (plan.workspaceIdentity === undefined ||
+      isPlannedWorkspaceIdentity(plan.workspaceIdentity)) &&
     (plan.networkProtection === undefined ||
       isPlannedNetworkProtection(plan.networkProtection)) &&
     typeof plan.sourceHash === "string" &&
@@ -173,6 +176,69 @@ function isPlannedWorkspace(
     (workspace.capacityAssignmentRequired === undefined ||
       typeof workspace.capacityAssignmentRequired === "boolean")
   );
+}
+
+function isPlannedWorkspaceIdentity(
+  value: unknown,
+): value is PlannedWorkspaceIdentity {
+  if (value === null || typeof value !== "object") {
+    return false;
+  }
+  const identity = value as Partial<PlannedWorkspaceIdentity>;
+  if (
+    typeof identity.desiredHash !== "string" ||
+    !/^[a-f0-9]{64}$/.test(identity.desiredHash) ||
+    typeof identity.observedStateHash !== "string" ||
+    !/^[a-f0-9]{64}$/.test(identity.observedStateHash) ||
+    !(
+      identity.action === "create" ||
+      identity.action === "update" ||
+      identity.action === "no-op" ||
+      identity.action === "blocked" ||
+      identity.action === "unknown"
+    ) ||
+    typeof identity.reason !== "string" ||
+    (identity.applicationId !== undefined &&
+      typeof identity.applicationId !== "string") ||
+    (identity.servicePrincipalId !== undefined &&
+      typeof identity.servicePrincipalId !== "string") ||
+    !Array.isArray(identity.roleAssignments)
+  ) {
+    return false;
+  }
+
+  const targets = new Set<string>();
+  return identity.roleAssignments.every((assignment) => {
+    if (
+      assignment === null ||
+      typeof assignment !== "object" ||
+      typeof assignment.targetWorkspaceId !== "string" ||
+      typeof assignment.desiredHash !== "string" ||
+      !/^[a-f0-9]{64}$/.test(assignment.desiredHash) ||
+      typeof assignment.observedStateHash !== "string" ||
+      !/^[a-f0-9]{64}$/.test(assignment.observedStateHash) ||
+      !(
+        assignment.role === "Admin" ||
+        assignment.role === "Member" ||
+        assignment.role === "Contributor" ||
+        assignment.role === "Viewer"
+      ) ||
+      !(
+        assignment.action === "create" ||
+        assignment.action === "no-op" ||
+        assignment.action === "blocked" ||
+        assignment.action === "unknown"
+      ) ||
+      typeof assignment.reason !== "string" ||
+      (assignment.assignmentId !== undefined &&
+        typeof assignment.assignmentId !== "string") ||
+      targets.has(assignment.targetWorkspaceId)
+    ) {
+      return false;
+    }
+    targets.add(assignment.targetWorkspaceId);
+    return true;
+  });
 }
 
 function isPlannedNetworkProtection(

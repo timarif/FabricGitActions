@@ -70,6 +70,22 @@ export interface WorkspaceDefinition {
   capacityId?: string;
 }
 
+export type WorkspaceRole =
+  | "Admin"
+  | "Member"
+  | "Contributor"
+  | "Viewer";
+
+export interface WorkspaceIdentityRoleAssignmentDefinition {
+  workspaceId?: string;
+  role: WorkspaceRole;
+}
+
+export interface WorkspaceIdentityDefinition {
+  provision: true;
+  roleAssignments?: WorkspaceIdentityRoleAssignmentDefinition[];
+}
+
 export type NetworkDefaultAction = "Allow" | "Deny";
 
 export interface NetworkCommunicationPolicyManifest {
@@ -154,6 +170,7 @@ export interface DeploymentManifest {
     deploymentId: string;
   };
   workspace?: WorkspaceDefinition;
+  workspaceIdentity?: WorkspaceIdentityDefinition;
   networkProtection?: NetworkProtectionManifest;
   items: DeploymentItem[];
 }
@@ -279,6 +296,32 @@ export interface PlannedWorkspace {
   reason: string;
 }
 
+export interface PlannedWorkspaceIdentityRoleAssignment {
+  targetWorkspaceId: string;
+  role: WorkspaceRole;
+  desiredHash: string;
+  observedStateHash: string;
+  assignmentId?: string;
+  action: Extract<
+    PlannedAction,
+    "create" | "no-op" | "blocked" | "unknown"
+  >;
+  reason: string;
+}
+
+export interface PlannedWorkspaceIdentity {
+  desiredHash: string;
+  observedStateHash: string;
+  applicationId?: string;
+  servicePrincipalId?: string;
+  action: Extract<
+    PlannedAction,
+    "create" | "update" | "no-op" | "blocked" | "unknown"
+  >;
+  reason: string;
+  roleAssignments: PlannedWorkspaceIdentityRoleAssignment[];
+}
+
 export type NetworkSurfaceAction = Extract<
   PlannedAction,
   "update" | "no-op" | "blocked" | "unknown"
@@ -360,6 +403,7 @@ export interface DeploymentPlan {
   environment: string;
   workspaceId: string;
   workspace?: PlannedWorkspace;
+  workspaceIdentity?: PlannedWorkspaceIdentity;
   networkProtection?: PlannedNetworkProtection;
   sourceCommit?: string;
   sourceHash: string;
@@ -409,6 +453,7 @@ export interface ApplyResult {
   startedAt: string;
   completedAt: string;
   workspace?: ApplyWorkspaceResult;
+  workspaceIdentity?: ApplyWorkspaceIdentityResult;
   requiresItemReplan?: boolean;
   items: ApplyItemResult[];
   networkProtection?: ApplyNetworkProtectionResult;
@@ -418,6 +463,24 @@ export interface ApplyWorkspaceResult {
   action: PlannedAction;
   status: ApplyItemStatus;
   physicalId: string;
+  durationMs: number;
+  error?: string;
+}
+
+export interface ApplyWorkspaceIdentityRoleAssignmentResult {
+  targetWorkspaceId: string;
+  role: WorkspaceRole;
+  assignmentId: string;
+  status: Extract<ApplyItemStatus, "created" | "verified" | "resumed">;
+  durationMs: number;
+}
+
+export interface ApplyWorkspaceIdentityResult {
+  action: PlannedWorkspaceIdentity["action"];
+  status: Extract<ApplyItemStatus, "created" | "updated" | "verified" | "resumed">;
+  applicationId: string;
+  servicePrincipalId: string;
+  roleAssignments: ApplyWorkspaceIdentityRoleAssignmentResult[];
   durationMs: number;
   error?: string;
 }
@@ -558,7 +621,36 @@ export interface ApplyCheckpoint {
   lakehouseTables?: Record<string, ApplyCheckpointLakehouseTables>;
   oneLakeArtifacts?: Record<string, ApplyCheckpointOneLakeArtifacts>;
   tagAssignments?: Record<string, ApplyCheckpointTagAssignment>;
+  workspaceIdentity?: ApplyCheckpointWorkspaceIdentity;
   networkProtection?: ApplyCheckpointNetworkProtection;
+}
+
+export interface ApplyCheckpointWorkspaceIdentityProvision {
+  phase: "submitting" | "accepted" | "verified";
+  operationId?: string;
+  operationLocation?: string;
+  applicationId?: string;
+  servicePrincipalId?: string;
+  updatedAt: string;
+}
+
+export interface ApplyCheckpointWorkspaceIdentityRoleAssignment {
+  targetWorkspaceId: string;
+  role: WorkspaceRole;
+  desiredHash: string;
+  phase: "submitting" | "accepted" | "verified";
+  assignmentId?: string;
+  updatedAt: string;
+}
+
+export interface ApplyCheckpointWorkspaceIdentity {
+  workspaceId: string;
+  desiredHash: string;
+  provision?: ApplyCheckpointWorkspaceIdentityProvision;
+  roleAssignments: Record<
+    string,
+    ApplyCheckpointWorkspaceIdentityRoleAssignment
+  >;
 }
 
 export interface ApplyCheckpointNetworkSurface {

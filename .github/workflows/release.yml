@@ -124,16 +124,23 @@ jobs:
             "release/SHA256SUMS"
           )
           if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
-            target_commit="$(
+            release_json="$(
               gh release view "$RELEASE_TAG" \
-                --json targetCommitish \
-                --jq '.targetCommitish'
+                --json isDraft,isPrerelease
             )"
-            if [[ "$target_commit" != "$GITHUB_SHA" ]]; then
-              echo "::error::Existing release ${RELEASE_TAG} targets ${target_commit}, not ${GITHUB_SHA}."
+            is_draft="$(jq -r '.isDraft' <<<"$release_json")"
+            is_prerelease="$(jq -r '.isPrerelease' <<<"$release_json")"
+            if [[ "$is_prerelease" == "true" ]]; then
+              echo "::error::Existing release ${RELEASE_TAG} is marked as a prerelease."
               exit 1
             fi
             gh release upload "$RELEASE_TAG" "${assets[@]}" --clobber
+            if [[ "$is_draft" == "true" ]]; then
+              gh release edit "$RELEASE_TAG" \
+                --verify-tag \
+                --draft=false \
+                --latest
+            fi
           else
             gh release create "$RELEASE_TAG" "${assets[@]}" \
               --verify-tag \

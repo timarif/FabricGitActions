@@ -88,6 +88,14 @@ jobs:
           variables: >-
             {"WORKSPACE_NAME":"CI Managed Workspace","FABRIC_CAPACITY_ID":"00000000-0000-0000-0000-000000000002"}
 
+      - name: Validate workspace identity example
+        uses: ./
+        with:
+          mode: validate
+          manifest: examples/workspace-identity/fabric/deployment.yaml
+          variables: >-
+            {"FABRIC_WORKSPACE_ID":"00000000-0000-0000-0000-000000000001","SHARED_WORKSPACE_ID":"00000000-0000-0000-0000-000000000002"}
+
       - name: Validate Fabric tags example
         uses: ./
         with:

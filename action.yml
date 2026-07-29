@@ -117,6 +117,14 @@ inputs:
     description: Allow apply mode to assign the managed workspace to a Fabric capacity.
     required: false
     default: "false"
+  allow-workspace-identity-provision:
+    description: Allow apply mode to provision the Fabric-managed identity for the deployment workspace.
+    required: false
+    default: "false"
+  allow-workspace-identity-role-assign:
+    description: Allow apply mode to add approved workspace role assignments for the provisioned workspace identity.
+    required: false
+    default: "false"
   allow-network-policy-update:
     description: Allow apply mode to update the workspace network communication policy.
     required: false
@@ -208,6 +216,14 @@ outputs:
     description: Physical ID of the resolved or provisioned Fabric workspace.
   workspace-action:
     description: Planned action for the managed workspace.
+  workspace-identity-action:
+    description: Planned or applied action for the deployment workspace identity, or not-configured.
+  workspace-identity-application-id:
+    description: Microsoft Entra application ID of the provisioned workspace identity.
+  workspace-identity-service-principal-id:
+    description: Microsoft Entra service principal object ID of the provisioned workspace identity.
+  workspace-identity-role-assignment-count:
+    description: Number of declared workspace role assignments for the workspace identity.
   network-protection-action:
     description: Planned or applied action for the workspace network communication policy, or not-configured when networkProtection is absent from the manifest.
   inbound-firewall-action:

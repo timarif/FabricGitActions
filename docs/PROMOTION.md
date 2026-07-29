@@ -76,6 +76,21 @@ Managed private endpoint creation and deletion use independent
 `allow_managed_private_endpoint_delete` approvals. Endpoint creation may
 complete with external private-link approval still pending; approve it and
 generate a new plan before promoting an outbound `Allow` -> `Deny` policy.
+Workspace identity provisioning and additive role grants use independent
+`allow_workspace_identity_provision` and
+`allow_workspace_identity_role_assign` approvals.
+
+The promotion dispatcher groups the five workspace approvals into the
+`workspace_safeguards` JSON input to remain within GitHub's 25-input limit.
+Pass every key explicitly:
+
+```json
+{"allow_workspace_create":false,"allow_workspace_update":false,"allow_capacity_assignment":false,"allow_workspace_identity_provision":false,"allow_workspace_identity_role_assign":false}
+```
+
+Set only the operations approved for that promotion to `true`. Missing,
+non-boolean values remain false through exact JSON-type comparison, and
+malformed JSON fails workflow evaluation.
 
 Do not reuse a plan across environments. Plans bind the deployment
 environment, workspace, source commit, dependency graph, physical IDs, and

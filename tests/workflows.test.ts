@@ -42,6 +42,124 @@ describe("deployment workflow metadata", () => {
     ).toBeDefined();
   });
 
+  it("exposes and forwards workspace identity safeguards", () => {
+    const action = loadYaml("action.yml");
+    const actionInputs = action.inputs as Record<
+      string,
+      Record<string, unknown>
+    >;
+    for (const name of [
+      "allow-workspace-identity-provision",
+      "allow-workspace-identity-role-assign",
+    ]) {
+      expect(actionInputs[name]?.default).toBe("false");
+      expect(actionInputs[name]?.required).toBe(false);
+    }
+    for (const name of [
+      "workspace-identity-action",
+      "workspace-identity-application-id",
+      "workspace-identity-service-principal-id",
+      "workspace-identity-role-assignment-count",
+    ]) {
+      expect(
+        (action.outputs as Record<string, unknown>)[name],
+      ).toBeDefined();
+    }
+
+    const reusable = loadYaml(
+      ".github/workflows/reusable-fabric-deploy.yml",
+    );
+    const callInputs = (
+      reusable.on as {
+        workflow_call: { inputs: Record<string, unknown> };
+      }
+    ).workflow_call.inputs;
+    expect(callInputs).toMatchObject({
+      allow_workspace_identity_provision: {
+        default: false,
+        type: "boolean",
+      },
+      allow_workspace_identity_role_assign: {
+        default: false,
+        type: "boolean",
+      },
+    });
+    const reusableApply = workflowSteps(reusable, "apply").find(
+      (step) => step.name === "Apply approved Fabric plan",
+    )?.with as Record<string, string>;
+    expect(
+      reusableApply["allow-workspace-identity-provision"],
+    ).toBe("${{ inputs.allow_workspace_identity_provision }}");
+    expect(
+      reusableApply["allow-workspace-identity-role-assign"],
+    ).toBe("${{ inputs.allow_workspace_identity_role_assign }}");
+    const reusableInspect = workflowSteps(reusable, "plan").find(
+      (step) => step.name === "Inspect approved plan",
+    )?.run as string;
+    expect(reusableInspect).toContain(".workspaceIdentity.action");
+    expect(reusableInspect).toContain(
+      ".workspaceIdentity.roleAssignments",
+    );
+    expect(reusableInspect).toContain(
+      '.workspaceIdentity.action == "blocked"',
+    );
+    expect(reusableInspect).toContain(
+      '.workspaceIdentity.action == "unknown"',
+    );
+
+    const promote = loadYaml(".github/workflows/promote-fabric.yml");
+    const promoteInputs = (
+      promote.on as {
+        workflow_dispatch: { inputs: Record<string, unknown> };
+      }
+    ).workflow_dispatch.inputs;
+    expect(promoteInputs).toMatchObject({
+      workspace_safeguards: {
+        required: true,
+        default:
+          '{"allow_workspace_create":false,"allow_workspace_update":false,"allow_capacity_assignment":false,"allow_workspace_identity_provision":false,"allow_workspace_identity_role_assign":false}',
+        type: "string",
+      },
+    });
+    expect(Object.keys(promoteInputs)).toHaveLength(23);
+    expect(Object.keys(promoteInputs).length).toBeLessThanOrEqual(25);
+    expect(
+      promoteInputs.allow_workspace_identity_provision,
+    ).toBeUndefined();
+    expect(
+      promoteInputs.allow_workspace_identity_role_assign,
+    ).toBeUndefined();
+    const jobs = promote.jobs as Record<
+      string,
+      Record<string, unknown>
+    >;
+    for (const jobName of ["dev", "test", "prod"]) {
+      const withInputs = jobs[jobName]?.with as Record<
+        string,
+        string
+      >;
+      expect(withInputs.allow_workspace_create).toBe(
+        "${{ toJSON(fromJSON(inputs.workspace_safeguards).allow_workspace_create) == 'true' }}",
+      );
+      expect(withInputs.allow_workspace_update).toBe(
+        "${{ toJSON(fromJSON(inputs.workspace_safeguards).allow_workspace_update) == 'true' }}",
+      );
+      expect(withInputs.allow_capacity_assignment).toBe(
+        "${{ toJSON(fromJSON(inputs.workspace_safeguards).allow_capacity_assignment) == 'true' }}",
+      );
+      expect(
+        withInputs.allow_workspace_identity_provision,
+      ).toBe(
+        "${{ toJSON(fromJSON(inputs.workspace_safeguards).allow_workspace_identity_provision) == 'true' }}",
+      );
+      expect(
+        withInputs.allow_workspace_identity_role_assign,
+      ).toBe(
+        "${{ toJSON(fromJSON(inputs.workspace_safeguards).allow_workspace_identity_role_assign) == 'true' }}",
+      );
+    }
+  });
+
   it("exposes the network protection safeguards, all defaulting to false", () => {
     const action = loadYaml("action.yml");
     const inputs = action.inputs as Record<
@@ -617,7 +735,10 @@ describe("deployment workflow metadata", () => {
     );
     expect(commands).toContain("npm sbom");
     expect(commands).toContain("gh release create");
-    expect(commands).toContain("targetCommitish");
+    expect(commands).toContain("isDraft");
+    expect(commands).toContain("--draft=false");
+    expect(commands).not.toContain("targetCommitish");
+    expect(commands).toContain('git rev-list -n 1 "$RELEASE_TAG"');
     expect(commands).toContain("latest_release");
     expect(commands).toContain(
       'git push origin "refs/tags/${major_tag}" --force',

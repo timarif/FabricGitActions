@@ -169,6 +169,40 @@ function assertCheckpointMatchesPlan(
       );
     }
   }
+  if (checkpoint.workspaceIdentity) {
+    const planned = plan.workspaceIdentity;
+    if (
+      !planned ||
+      checkpoint.workspaceIdentity.workspaceId !== plan.workspaceId ||
+      checkpoint.workspaceIdentity.desiredHash !== planned.desiredHash
+    ) {
+      throw new Error(
+        "Checkpoint workspace identity does not match the approved deployment plan.",
+      );
+    }
+    const plannedAssignments = new Map(
+      planned.roleAssignments.map((assignment) => [
+        assignment.targetWorkspaceId,
+        assignment,
+      ]),
+    );
+    for (const [targetWorkspaceId, assignment] of Object.entries(
+      checkpoint.workspaceIdentity.roleAssignments,
+    )) {
+      const plannedAssignment =
+        plannedAssignments.get(targetWorkspaceId);
+      if (
+        !plannedAssignment ||
+        assignment.targetWorkspaceId !== targetWorkspaceId ||
+        assignment.role !== plannedAssignment.role ||
+        assignment.desiredHash !== plannedAssignment.desiredHash
+      ) {
+        throw new Error(
+          "Checkpoint workspace identity role assignment does not match the approved deployment plan.",
+        );
+      }
+    }
+  }
   if (checkpoint.networkProtection) {
     const planned = plan.networkProtection;
     if (!planned || !planned.workspaceId) {
@@ -698,6 +732,10 @@ function isCheckpoint(value: unknown): value is ApplyCheckpoint {
         !Array.isArray(checkpoint.tagAssignments))) &&
     (checkpoint.workspace === undefined ||
       isCheckpointWorkspace(checkpoint.workspace)) &&
+    (checkpoint.workspaceIdentity === undefined ||
+      isCheckpointWorkspaceIdentity(
+        checkpoint.workspaceIdentity,
+      )) &&
     (checkpoint.networkProtection === undefined ||
       isCheckpointNetworkProtection(checkpoint.networkProtection)) &&
     (checkpoint.sourceCommit === undefined ||
@@ -1120,6 +1158,85 @@ function isCheckpointWorkspace(value: unknown): boolean {
       typeof workspace.physicalId === "string") &&
     typeof workspace.updatedAt === "string" &&
     !Number.isNaN(Date.parse(workspace.updatedAt))
+  );
+}
+
+function isCheckpointWorkspaceIdentity(value: unknown): boolean {
+  if (value === null || typeof value !== "object") {
+    return false;
+  }
+  const identity = value as NonNullable<
+    ApplyCheckpoint["workspaceIdentity"]
+  >;
+  if (
+    typeof identity.workspaceId !== "string" ||
+    identity.workspaceId.length === 0 ||
+    typeof identity.desiredHash !== "string" ||
+    !/^[a-f0-9]{64}$/.test(identity.desiredHash) ||
+    identity.roleAssignments === null ||
+    typeof identity.roleAssignments !== "object" ||
+    Array.isArray(identity.roleAssignments)
+  ) {
+    return false;
+  }
+
+  if (identity.provision !== undefined) {
+    const provision = identity.provision;
+    const validPhase =
+      provision.phase === "submitting" ||
+      provision.phase === "accepted" ||
+      provision.phase === "verified";
+    const operationReferenceValid =
+      provision.phase !== "accepted" ||
+      (typeof provision.operationId === "string" &&
+        provision.operationId.length > 0) ||
+      (typeof provision.operationLocation === "string" &&
+        provision.operationLocation.length > 0);
+    const verifiedIdentityValid =
+      provision.phase !== "verified" ||
+      (typeof provision.applicationId === "string" &&
+        provision.applicationId.length > 0 &&
+        typeof provision.servicePrincipalId === "string" &&
+        provision.servicePrincipalId.length > 0);
+    if (
+      !validPhase ||
+      !operationReferenceValid ||
+      !verifiedIdentityValid ||
+      (provision.operationId !== undefined &&
+        typeof provision.operationId !== "string") ||
+      (provision.operationLocation !== undefined &&
+        typeof provision.operationLocation !== "string") ||
+      (provision.applicationId !== undefined &&
+        typeof provision.applicationId !== "string") ||
+      (provision.servicePrincipalId !== undefined &&
+        typeof provision.servicePrincipalId !== "string") ||
+      typeof provision.updatedAt !== "string" ||
+      Number.isNaN(Date.parse(provision.updatedAt))
+    ) {
+      return false;
+    }
+  }
+
+  return Object.entries(identity.roleAssignments).every(
+    ([targetWorkspaceId, assignment]) =>
+      assignment !== null &&
+      typeof assignment === "object" &&
+      assignment.targetWorkspaceId === targetWorkspaceId &&
+      targetWorkspaceId.length > 0 &&
+      (assignment.role === "Admin" ||
+        assignment.role === "Member" ||
+        assignment.role === "Contributor" ||
+        assignment.role === "Viewer") &&
+      typeof assignment.desiredHash === "string" &&
+      /^[a-f0-9]{64}$/.test(assignment.desiredHash) &&
+      (assignment.phase === "submitting" ||
+        assignment.phase === "accepted" ||
+        assignment.phase === "verified") &&
+      (assignment.phase === "submitting" ||
+        (typeof assignment.assignmentId === "string" &&
+          assignment.assignmentId.length > 0)) &&
+      typeof assignment.updatedAt === "string" &&
+      !Number.isNaN(Date.parse(assignment.updatedAt)),
   );
 }
 

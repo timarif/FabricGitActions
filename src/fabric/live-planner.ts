@@ -47,6 +47,7 @@ import {
   requireSparkJobArtifactTarget,
 } from "./spark-job-artifacts";
 import type { WorkspaceAdapter } from "./workspace";
+import type { WorkspaceIdentityAdapter } from "./workspace-identity";
 import {
   materializeSparkJobDefinitionWithProof,
   materializeReportDefinitionWithProof,
@@ -56,6 +57,7 @@ import {
 
 export interface FabricPlanAdapters {
   workspace?: Pick<WorkspaceAdapter, "plan">;
+  workspaceIdentity?: Pick<WorkspaceIdentityAdapter, "plan">;
   deletion?: Pick<ItemDeletionAdapter, "plan">;
   lakehouse: Pick<LakehouseAdapter, "plan">;
   eventhouse?: Pick<EventhouseAdapter, "plan">;
@@ -92,6 +94,7 @@ export async function enrichPlanWithFabric(
   validateManifestLogicalReferences(loadedManifest);
   let workspaceId = plan.workspaceId;
   let plannedWorkspace = plan.workspace;
+  let plannedWorkspaceIdentity = plan.workspaceIdentity;
   if (plannedWorkspace) {
     const desiredWorkspace = loadedManifest.manifest.workspace;
     if (!desiredWorkspace?.displayName) {
@@ -136,6 +139,25 @@ export async function enrichPlanWithFabric(
       workspaceResult.action === "create" ||
       workspaceResult.action === "blocked"
     ) {
+      if (plannedWorkspaceIdentity) {
+        const reason =
+          workspaceResult.action === "create"
+            ? "The managed workspace must be provisioned and replanned before its workspace identity can be managed."
+            : "The managed workspace plan is blocked, so its workspace identity cannot be managed.";
+        plannedWorkspaceIdentity = {
+          ...plannedWorkspaceIdentity,
+          action: "blocked",
+          reason,
+          roleAssignments:
+            plannedWorkspaceIdentity.roleAssignments.map(
+              (assignment) => ({
+                ...assignment,
+                action: "blocked",
+                reason,
+              }),
+            ),
+        };
+      }
       const networkProtection = await planNetworkProtectionIfConfigured(
         loadedManifest,
         workspaceId,
@@ -148,6 +170,9 @@ export async function enrichPlanWithFabric(
         ...plan,
         workspaceId,
         workspace: plannedWorkspace,
+        ...(plannedWorkspaceIdentity
+          ? { workspaceIdentity: plannedWorkspaceIdentity }
+          : {}),
         ...(networkProtection ? { networkProtection } : {}),
         items: plan.items.map((item) =>
           blockItemUntilWorkspaceExists(
@@ -165,6 +190,41 @@ export async function enrichPlanWithFabric(
         `Managed workspace planning returned '${workspaceResult.action}' without a physical ID.`,
       );
     }
+  }
+
+  if (plannedWorkspaceIdentity) {
+    const desiredIdentity =
+      loadedManifest.manifest.workspaceIdentity;
+    if (!desiredIdentity) {
+      throw new Error(
+        "The workspace identity definition is missing from the loaded manifest.",
+      );
+    }
+    if (!adapters.workspaceIdentity) {
+      throw new Error(
+        "Online workspace identity planning requires a workspace identity adapter.",
+      );
+    }
+    const identityResult = await adapters.workspaceIdentity.plan(
+      workspaceId,
+      desiredIdentity,
+    );
+    plannedWorkspaceIdentity = {
+      ...plannedWorkspaceIdentity,
+      action: identityResult.action,
+      reason: identityResult.reason,
+      observedStateHash: identityResult.observedStateHash,
+      ...(identityResult.applicationId
+        ? { applicationId: identityResult.applicationId }
+        : {}),
+      ...(identityResult.servicePrincipalId
+        ? {
+            servicePrincipalId:
+              identityResult.servicePrincipalId,
+          }
+        : {}),
+      roleAssignments: identityResult.roleAssignments,
+    };
   }
 
   const plannedItems = new Map<string, PlannedItem>();
@@ -785,6 +845,9 @@ export async function enrichPlanWithFabric(
     ...plan,
     workspaceId,
     ...(plannedWorkspace ? { workspace: plannedWorkspace } : {}),
+    ...(plannedWorkspaceIdentity
+      ? { workspaceIdentity: plannedWorkspaceIdentity }
+      : {}),
     ...(networkProtection ? { networkProtection } : {}),
     items: taggedItems,
   });
