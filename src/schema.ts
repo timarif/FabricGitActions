@@ -8,6 +8,126 @@ const networkDefaultActionSchema = {
   enum: ["Allow", "Deny"],
 } as const;
 
+const virtualNetworkGatewaySchema = {
+  type: "object",
+  additionalProperties: false,
+  required: [
+    "logicalId",
+    "displayName",
+    "virtualNetworkAzureResource",
+  ],
+  allOf: [
+    {
+      if: {
+        properties: {
+          desiredState: { const: "absent" },
+        },
+        required: ["desiredState"],
+      },
+      then: { required: ["id"] },
+      else: {
+        required: [
+          "capacityId",
+          "inactivityMinutesBeforeSleep",
+        ],
+        oneOf: [
+          {
+            required: ["numberOfMemberGateways"],
+            not: {
+              anyOf: [
+                { required: ["minMemberGatewayCount"] },
+                { required: ["maxMemberGatewayCount"] },
+              ],
+            },
+          },
+          {
+            required: [
+              "minMemberGatewayCount",
+              "maxMemberGatewayCount",
+            ],
+            not: { required: ["numberOfMemberGateways"] },
+          },
+        ],
+      },
+    },
+  ],
+  properties: {
+    logicalId: {
+      type: "string",
+      minLength: 1,
+      pattern: "^[A-Za-z][A-Za-z0-9_-]*$",
+    },
+    id: {
+      type: "string",
+      pattern: GUID_PATTERN,
+    },
+    desiredState: {
+      type: "string",
+      enum: ["present", "absent"],
+    },
+    displayName: {
+      type: "string",
+      minLength: 1,
+      maxLength: 200,
+      pattern: "^\\S(?:[\\s\\S]*\\S)?$",
+    },
+    capacityId: {
+      type: "string",
+      pattern: GUID_PATTERN,
+    },
+    virtualNetworkAzureResource: {
+      type: "object",
+      additionalProperties: false,
+      required: [
+        "subscriptionId",
+        "resourceGroupName",
+        "virtualNetworkName",
+        "subnetName",
+      ],
+      properties: {
+        subscriptionId: {
+          type: "string",
+          pattern: GUID_PATTERN,
+        },
+        resourceGroupName: {
+          type: "string",
+          minLength: 1,
+          pattern: "^\\S(?:[\\s\\S]*\\S)?$",
+        },
+        virtualNetworkName: {
+          type: "string",
+          minLength: 1,
+          pattern: "^\\S(?:[\\s\\S]*\\S)?$",
+        },
+        subnetName: {
+          type: "string",
+          minLength: 1,
+          pattern: "^\\S(?:[\\s\\S]*\\S)?$",
+        },
+      },
+    },
+    inactivityMinutesBeforeSleep: {
+      type: "integer",
+      enum: [30, 60, 90, 120, 150, 240, 360, 480, 720, 1440],
+    },
+    numberOfMemberGateways: {
+      type: "integer",
+      minimum: 1,
+      maximum: 9,
+    },
+    minMemberGatewayCount: {
+      type: "integer",
+      minimum: 1,
+      maximum: 9,
+    },
+    maxMemberGatewayCount: {
+      type: "integer",
+      minimum: 1,
+      maximum: 9,
+    },
+  },
+} as const;
+
 export const deploymentSchema = {
   $id: "https://github.com/fabric-deploy/schemas/deployment-v1alpha1.json",
   type: "object",
@@ -30,6 +150,9 @@ export const deploymentSchema = {
         },
         {
           required: ["workspaceIdentity"],
+        },
+        {
+          required: ["virtualNetworkGateways"],
         },
         {
           required: ["networkProtection"],
@@ -118,6 +241,12 @@ export const deploymentSchema = {
           },
         },
       },
+    },
+    virtualNetworkGateways: {
+      type: "array",
+      minItems: 1,
+      maxItems: 100,
+      items: virtualNetworkGatewaySchema,
     },
     networkProtection: {
       type: "object",

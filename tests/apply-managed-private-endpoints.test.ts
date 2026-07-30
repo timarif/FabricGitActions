@@ -8,16 +8,22 @@ import { applyApprovedPlan } from "../src/apply";
 import { FabricApiError } from "../src/fabric/client";
 import {
   hashCommunicationPolicy,
+  hashOutboundGatewayRules,
   normalizeNetworkProtection,
 } from "../src/fabric/network-protection";
 import {
   planManagedPrivateEndpoints,
   type LiveManagedPrivateEndpoint,
 } from "../src/fabric/managed-private-endpoints";
+import {
+  hashObservedVirtualNetworkGateway,
+  type VirtualNetworkGateway,
+} from "../src/fabric/virtual-network-gateway";
 import { buildPlan, rehashPlan } from "../src/planner";
 import type {
   LoadedManifest,
   NetworkProtectionManifest,
+  VirtualNetworkGatewayDefinition,
 } from "../src/types";
 
 const WORKSPACE_ID = "11111111-1111-4111-8111-111111111111";
@@ -158,6 +164,20 @@ function approvedPlan(
         ? { blockedByManagedPrivateEndpoints: ["alpha"] }
         : {}),
     },
+    ...(canonical.outboundGatewayRules
+      ? {
+          outboundGatewayRules: {
+            action: "no-op" as const,
+            reason: "matches",
+            desiredHash: hashOutboundGatewayRules(
+              canonical.outboundGatewayRules,
+            ),
+            observedStateHash: hashOutboundGatewayRules(
+              canonical.outboundGatewayRules,
+            ),
+          },
+        }
+      : {}),
     managedPrivateEndpoints: planManagedPrivateEndpoints(
       canonical.managedPrivateEndpoints ?? [],
       observedEndpoints,
@@ -376,10 +396,27 @@ describe("managed private endpoint apply integration", () => {
   });
 
   it("creates the endpoint but defers outbound Deny until approval and replan", async () => {
+    const retiredGateway: VirtualNetworkGatewayDefinition = {
+      logicalId: "retiredGateway",
+      id: ZETA_ID,
+      desiredState: "absent",
+      displayName: "Retired Gateway",
+      virtualNetworkAzureResource: {
+        subscriptionId:
+          "44444444-4444-4444-8444-444444444444",
+        resourceGroupName: "fabric-network",
+        virtualNetworkName: "fabric-vnet",
+        subnetName: "retired-gateway",
+      },
+    };
     const desired: NetworkProtectionManifest = {
       communicationPolicy: {
         inboundDefaultAction: "Allow",
         outboundDefaultAction: "Deny",
+      },
+      outboundGatewayRules: {
+        defaultAction: "Deny",
+        allowedGateways: [],
       },
       managedPrivateEndpoints: [
         {
@@ -390,11 +427,32 @@ describe("managed private endpoint apply integration", () => {
       ],
     };
     const loaded = loadedManifest(desired, false);
-    const approved = approvedPlan(
+    loaded.manifest.virtualNetworkGateways = [retiredGateway];
+    const plan = approvedPlan(
       loaded,
       [],
       "managed-private-endpoint-block",
     );
+    const existingGateway: VirtualNetworkGateway = {
+      id: ZETA_ID,
+      type: "VirtualNetwork",
+      displayName: retiredGateway.displayName,
+      capacityId: ALPHA_ID,
+      virtualNetworkAzureResource:
+        retiredGateway.virtualNetworkAzureResource,
+      inactivityMinutesBeforeSleep: 30,
+      numberOfMemberGateways: 1,
+    };
+    plan.virtualNetworkGateways =
+      plan.virtualNetworkGateways!.map((gateway) => ({
+        ...gateway,
+        action: "delete",
+        reason: "retire",
+        physicalId: ZETA_ID,
+        observedStateHash:
+          hashObservedVirtualNetworkGateway(existingGateway),
+      }));
+    const approved = rehashPlan(plan);
     const networkAdapter = {
       plan: vi.fn(),
       getCommunicationPolicy: vi.fn(),
@@ -430,12 +488,32 @@ describe("managed private endpoint apply integration", () => {
       getManagedPrivateEndpoint: vi.fn(),
       deleteManagedPrivateEndpoint: vi.fn(),
     };
+    const gatewayAdapter = {
+      plan: vi.fn(async () => ({
+        action: "delete" as const,
+        reason: "retire",
+        physicalId: ZETA_ID,
+        desiredHash:
+          approved.virtualNetworkGateways![0]!.desiredHash,
+        observedStateHash:
+          approved.virtualNetworkGateways![0]!.observedStateHash,
+      })),
+      create: vi.fn(),
+      resumeCreate: vi.fn(),
+      update: vi.fn(),
+      resumeUpdate: vi.fn(),
+      delete: vi.fn(),
+      resumeDelete: vi.fn(),
+      verifyPresent: vi.fn(),
+      verifyAbsent: vi.fn(),
+    };
 
     const result = await applyApprovedPlan({
       approvedPlan: approved,
       currentPlan: approved,
       loadedManifest: loaded,
       lakehouseAdapter: lakehouseAdapter([]),
+      virtualNetworkGatewayAdapter: gatewayAdapter,
       networkProtectionAdapter: networkAdapter,
       managedPrivateEndpointAdapter: mpeAdapter,
       allowCreate: false,
@@ -444,12 +522,16 @@ describe("managed private endpoint apply integration", () => {
       allowNetworkPolicyRelaxation: false,
       allowManagedPrivateEndpointCreate: true,
       allowManagedPrivateEndpointDelete: false,
+      allowVirtualNetworkGatewayDelete: true,
       ...outputFiles(),
     });
 
     expect(result.status).toBe("succeeded");
     expect(
       result.networkProtection?.communicationPolicy.status,
+    ).toBe("deferred");
+    expect(
+      result.networkProtection?.outboundGatewayRules?.status,
     ).toBe("deferred");
     expect(
       result.networkProtection?.managedPrivateEndpoints?.[0],
@@ -459,6 +541,7 @@ describe("managed private endpoint apply integration", () => {
     });
     expect(networkAdapter.putCommunicationPolicy).not.toHaveBeenCalled();
     expect(networkAdapter.plan).not.toHaveBeenCalled();
+    expect(gatewayAdapter.delete).not.toHaveBeenCalled();
   });
 
   it("resumes an approved endpoint without auto-tightening the originally deferred OAP plan", async () => {

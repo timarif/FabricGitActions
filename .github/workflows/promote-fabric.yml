@@ -38,6 +38,11 @@ on:
         required: true
         default: '{"allow_workspace_create":false,"allow_workspace_update":false,"allow_capacity_assignment":false,"allow_workspace_identity_provision":false,"allow_workspace_identity_role_assign":false}'
         type: string
+      gateway_safeguards:
+        description: JSON object containing the three independent Fabric-managed virtual network gateway safeguards.
+        required: true
+        default: '{"allow_vnet_gateway_create":false,"allow_vnet_gateway_update":false,"allow_vnet_gateway_delete":false}'
+        type: string
       allow_lakehouse_schema_create:
         required: true
         default: false
@@ -128,6 +133,9 @@ jobs:
       allow_capacity_assignment: ${{ toJSON(fromJSON(inputs.workspace_safeguards).allow_capacity_assignment) == 'true' }}
       allow_workspace_identity_provision: ${{ toJSON(fromJSON(inputs.workspace_safeguards).allow_workspace_identity_provision) == 'true' }}
       allow_workspace_identity_role_assign: ${{ toJSON(fromJSON(inputs.workspace_safeguards).allow_workspace_identity_role_assign) == 'true' }}
+      allow_vnet_gateway_create: ${{ toJSON(fromJSON(inputs.gateway_safeguards).allow_vnet_gateway_create) == 'true' }}
+      allow_vnet_gateway_update: ${{ toJSON(fromJSON(inputs.gateway_safeguards).allow_vnet_gateway_update) == 'true' }}
+      allow_vnet_gateway_delete: ${{ toJSON(fromJSON(inputs.gateway_safeguards).allow_vnet_gateway_delete) == 'true' }}
       allow_lakehouse_schema_create: ${{ inputs.allow_lakehouse_schema_create }}
       allow_lakehouse_table_create: ${{ inputs.allow_lakehouse_table_create }}
       allow_onelake_artifact_create: ${{ inputs.allow_onelake_artifact_create }}
@@ -166,6 +174,9 @@ jobs:
       allow_capacity_assignment: ${{ toJSON(fromJSON(inputs.workspace_safeguards).allow_capacity_assignment) == 'true' }}
       allow_workspace_identity_provision: ${{ toJSON(fromJSON(inputs.workspace_safeguards).allow_workspace_identity_provision) == 'true' }}
       allow_workspace_identity_role_assign: ${{ toJSON(fromJSON(inputs.workspace_safeguards).allow_workspace_identity_role_assign) == 'true' }}
+      allow_vnet_gateway_create: ${{ toJSON(fromJSON(inputs.gateway_safeguards).allow_vnet_gateway_create) == 'true' }}
+      allow_vnet_gateway_update: ${{ toJSON(fromJSON(inputs.gateway_safeguards).allow_vnet_gateway_update) == 'true' }}
+      allow_vnet_gateway_delete: ${{ toJSON(fromJSON(inputs.gateway_safeguards).allow_vnet_gateway_delete) == 'true' }}
       allow_lakehouse_schema_create: ${{ inputs.allow_lakehouse_schema_create }}
       allow_lakehouse_table_create: ${{ inputs.allow_lakehouse_table_create }}
       allow_onelake_artifact_create: ${{ inputs.allow_onelake_artifact_create }}
@@ -204,6 +215,9 @@ jobs:
       allow_capacity_assignment: ${{ toJSON(fromJSON(inputs.workspace_safeguards).allow_capacity_assignment) == 'true' }}
       allow_workspace_identity_provision: ${{ toJSON(fromJSON(inputs.workspace_safeguards).allow_workspace_identity_provision) == 'true' }}
       allow_workspace_identity_role_assign: ${{ toJSON(fromJSON(inputs.workspace_safeguards).allow_workspace_identity_role_assign) == 'true' }}
+      allow_vnet_gateway_create: ${{ toJSON(fromJSON(inputs.gateway_safeguards).allow_vnet_gateway_create) == 'true' }}
+      allow_vnet_gateway_update: ${{ toJSON(fromJSON(inputs.gateway_safeguards).allow_vnet_gateway_update) == 'true' }}
+      allow_vnet_gateway_delete: ${{ toJSON(fromJSON(inputs.gateway_safeguards).allow_vnet_gateway_delete) == 'true' }}
       allow_lakehouse_schema_create: ${{ inputs.allow_lakehouse_schema_create }}
       allow_lakehouse_table_create: ${{ inputs.allow_lakehouse_table_create }}
       allow_onelake_artifact_create: ${{ inputs.allow_onelake_artifact_create }}

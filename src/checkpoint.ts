@@ -48,6 +48,8 @@ export function loadCheckpoint(
     lakehouseTables: parsed.lakehouseTables ?? {},
     oneLakeArtifacts: parsed.oneLakeArtifacts ?? {},
     tagAssignments: parsed.tagAssignments ?? {},
+    virtualNetworkGateways:
+      parsed.virtualNetworkGateways ?? {},
   };
   assertCheckpointMatchesPlan(checkpoint, approvedPlan);
   return checkpoint;
@@ -69,6 +71,7 @@ export function createCheckpoint(plan: DeploymentPlan): ApplyCheckpoint {
     lakehouseTables: {},
     oneLakeArtifacts: {},
     tagAssignments: {},
+    virtualNetworkGateways: {},
   };
 }
 
@@ -199,6 +202,48 @@ function assertCheckpointMatchesPlan(
       ) {
         throw new Error(
           "Checkpoint workspace identity role assignment does not match the approved deployment plan.",
+        );
+      }
+    }
+  }
+  if (checkpoint.virtualNetworkGateways) {
+    const plannedByLogicalId = new Map(
+      (plan.virtualNetworkGateways ?? []).map((gateway) => [
+        gateway.logicalId,
+        gateway,
+      ]),
+    );
+    for (const [logicalId, state] of Object.entries(
+      checkpoint.virtualNetworkGateways,
+    )) {
+      const planned = plannedByLogicalId.get(logicalId);
+      if (
+        !planned ||
+        state.logicalId !== logicalId ||
+        state.desiredHash !== planned.desiredHash ||
+        state.action !== planned.action
+      ) {
+        throw new Error(
+          `Checkpoint virtual network gateway '${logicalId}' does not match the approved deployment plan.`,
+        );
+      }
+      if (
+        (state.action === "update" ||
+          state.action === "delete" ||
+          state.action === "no-op") &&
+        planned.physicalId !== state.physicalId
+      ) {
+        throw new Error(
+          `Checkpoint virtual network gateway '${logicalId}' physical ID does not match the approved deployment plan.`,
+        );
+      }
+      if (
+        state.phase === "verified" &&
+        planned.desiredState === "present" &&
+        !state.physicalId
+      ) {
+        throw new Error(
+          `Checkpoint virtual network gateway '${logicalId}' is verified without a physical ID.`,
         );
       }
     }
@@ -736,6 +781,10 @@ function isCheckpoint(value: unknown): value is ApplyCheckpoint {
       isCheckpointWorkspaceIdentity(
         checkpoint.workspaceIdentity,
       )) &&
+    (checkpoint.virtualNetworkGateways === undefined ||
+      (checkpoint.virtualNetworkGateways !== null &&
+        typeof checkpoint.virtualNetworkGateways === "object" &&
+        !Array.isArray(checkpoint.virtualNetworkGateways))) &&
     (checkpoint.networkProtection === undefined ||
       isCheckpointNetworkProtection(checkpoint.networkProtection)) &&
     (checkpoint.sourceCommit === undefined ||
@@ -769,6 +818,11 @@ function isCheckpoint(value: unknown): value is ApplyCheckpoint {
       Object.entries(checkpoint.tagAssignments ?? {}).every(
         ([logicalId, state]) =>
           isCheckpointTagAssignment(logicalId, state),
+      ) &&
+      Object.entries(
+        checkpoint.virtualNetworkGateways ?? {},
+      ).every(([logicalId, state]) =>
+        isCheckpointVirtualNetworkGateway(logicalId, state),
       )
     );
   }
@@ -1106,6 +1160,82 @@ function isCheckpoint(value: unknown): value is ApplyCheckpoint {
     );
   }
   return false;
+}
+
+function isCheckpointVirtualNetworkGateway(
+  logicalId: string,
+  value: unknown,
+): boolean {
+  if (
+    value === null ||
+    typeof value !== "object" ||
+    Array.isArray(value)
+  ) {
+    return false;
+  }
+  const allowedKeys = new Set([
+    "logicalId",
+    "desiredHash",
+    "action",
+    "phase",
+    "physicalId",
+    "observedStateHash",
+    "updatedAt",
+  ]);
+  const state = value as Record<string, unknown>;
+  if (Object.keys(state).some((key) => !allowedKeys.has(key))) {
+    return false;
+  }
+  const action =
+    state.action === "create" ||
+    state.action === "update" ||
+    state.action === "delete" ||
+    state.action === "no-op"
+      ? state.action
+      : undefined;
+  const phase =
+    state.phase === "submitting" ||
+    state.phase === "accepted" ||
+    state.phase === "verified"
+      ? state.phase
+      : undefined;
+  if (
+    state.logicalId !== logicalId ||
+    typeof state.desiredHash !== "string" ||
+    !/^[a-f0-9]{64}$/.test(state.desiredHash) ||
+    !action ||
+    !phase ||
+    (state.physicalId !== undefined &&
+      (typeof state.physicalId !== "string" ||
+        !GUID_PATTERN.test(state.physicalId))) ||
+    (state.observedStateHash !== undefined &&
+      (typeof state.observedStateHash !== "string" ||
+        !/^[a-f0-9]{64}$/.test(state.observedStateHash))) ||
+    typeof state.updatedAt !== "string" ||
+    Number.isNaN(Date.parse(state.updatedAt))
+  ) {
+    return false;
+  }
+  if (action === "no-op" && phase !== "verified") {
+    return false;
+  }
+  if (
+    phase === "accepted" &&
+    typeof state.physicalId !== "string"
+  ) {
+    return false;
+  }
+  if (
+    action === "create" &&
+    phase === "verified" &&
+    typeof state.physicalId !== "string"
+  ) {
+    return false;
+  }
+  return (
+    action === "create" ||
+    typeof state.physicalId === "string"
+  );
 }
 
 function isCheckpointWorkspace(value: unknown): boolean {

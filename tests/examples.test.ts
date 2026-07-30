@@ -97,6 +97,21 @@ const examples: ExampleCase[] = [
     itemCount: 0,
   },
   {
+    name: "managed virtual network gateway",
+    manifestPath:
+      "virtual-network-gateway/fabric/deployment.yaml",
+    options: {
+      variables: {
+        FABRIC_WORKSPACE_ID: WORKSPACE_ID,
+        FABRIC_CAPACITY_ID:
+          "00000000-0000-4000-8000-000000000002",
+        AZURE_SUBSCRIPTION_ID:
+          "00000000-0000-4000-8000-000000000003",
+      },
+    },
+    itemCount: 0,
+  },
+  {
     name: "Fabric tags",
     manifestPath: "tags/fabric/deployment.yaml",
     options: { workspaceIdOverride: WORKSPACE_ID },

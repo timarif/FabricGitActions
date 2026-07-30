@@ -125,6 +125,18 @@ inputs:
     description: Allow apply mode to add approved workspace role assignments for the provisioned workspace identity.
     required: false
     default: "false"
+  allow-vnet-gateway-create:
+    description: Allow apply mode to create approved Fabric-managed virtual network data gateways.
+    required: false
+    default: "false"
+  allow-vnet-gateway-update:
+    description: Allow apply mode to update mutable settings on approved Fabric-managed virtual network data gateways.
+    required: false
+    default: "false"
+  allow-vnet-gateway-delete:
+    description: Allow apply mode to delete the exact approved Fabric-managed virtual network data gateway physical ID.
+    required: false
+    default: "false"
   allow-network-policy-update:
     description: Allow apply mode to update the workspace network communication policy.
     required: false
@@ -224,6 +236,26 @@ outputs:
     description: Microsoft Entra service principal object ID of the provisioned workspace identity.
   workspace-identity-role-assignment-count:
     description: Number of declared workspace role assignments for the workspace identity.
+  virtual-network-gateway-count:
+    description: Number of declared Fabric-managed virtual network data gateways.
+  virtual-network-gateway-create-count:
+    description: Number of virtual network gateways planned for creation.
+  virtual-network-gateway-update-count:
+    description: Number of virtual network gateways planned for mutable configuration updates.
+  virtual-network-gateway-delete-count:
+    description: Number of virtual network gateways planned for deletion.
+  virtual-network-gateway-noop-count:
+    description: Number of virtual network gateways requiring no lifecycle mutation.
+  virtual-network-gateway-blocked-count:
+    description: Number of virtual network gateway actions blocked by fail-closed planning.
+  virtual-network-gateway-unknown-count:
+    description: Number of virtual network gateway actions with unknown live state.
+  virtual-network-gateway-applied-count:
+    description: Number of virtual network gateway operations applied or verified.
+  virtual-network-gateway-resumed-count:
+    description: Number of virtual network gateway operations resumed from checkpoint state.
+  virtual-network-gateway-ids:
+    description: JSON object mapping present virtual network gateway logical IDs to physical IDs.
   network-protection-action:
     description: Planned or applied action for the workspace network communication policy, or not-configured when networkProtection is absent from the manifest.
   inbound-firewall-action:

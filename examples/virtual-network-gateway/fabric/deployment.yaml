@@ -1,0 +1,23 @@
+apiVersion: fabric.deploy/v1alpha1
+kind: FabricDeployment
+
+metadata:
+  deploymentId: managed-vnet-gateway
+
+workspace:
+  id: ${var.FABRIC_WORKSPACE_ID}
+
+virtualNetworkGateways:
+  - logicalId: primaryGateway
+    displayName: Fabric Deploy Managed VNet Gateway
+    capacityId: ${var.FABRIC_CAPACITY_ID}
+    virtualNetworkAzureResource:
+      subscriptionId: ${var.AZURE_SUBSCRIPTION_ID}
+      resourceGroupName: fabric-network
+      virtualNetworkName: fabric-vnet
+      subnetName: fabric-gateway
+    inactivityMinutesBeforeSleep: 30
+    minMemberGatewayCount: 2
+    maxMemberGatewayCount: 4
+
+items: []

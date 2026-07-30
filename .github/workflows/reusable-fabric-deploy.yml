@@ -85,6 +85,18 @@ on:
         required: false
         default: false
         type: boolean
+      allow_vnet_gateway_create:
+        required: false
+        default: false
+        type: boolean
+      allow_vnet_gateway_update:
+        required: false
+        default: false
+        type: boolean
+      allow_vnet_gateway_delete:
+        required: false
+        default: false
+        type: boolean
       allow_lakehouse_schema_create:
         required: false
         default: false
@@ -312,6 +324,11 @@ jobs:
               ) else false
               end
             )
+            and all(
+              .virtualNetworkGateways[]?;
+              .action != "blocked"
+              and .action != "unknown"
+            )
             and (
               .networkProtection == null
               or if (
@@ -516,6 +533,9 @@ jobs:
           allow-capacity-assignment: ${{ inputs.allow_capacity_assignment }}
           allow-workspace-identity-provision: ${{ inputs.allow_workspace_identity_provision }}
           allow-workspace-identity-role-assign: ${{ inputs.allow_workspace_identity_role_assign }}
+          allow-vnet-gateway-create: ${{ inputs.allow_vnet_gateway_create }}
+          allow-vnet-gateway-update: ${{ inputs.allow_vnet_gateway_update }}
+          allow-vnet-gateway-delete: ${{ inputs.allow_vnet_gateway_delete }}
           allow-lakehouse-schema-create: ${{ inputs.allow_lakehouse_schema_create }}
           allow-lakehouse-table-create: ${{ inputs.allow_lakehouse_table_create }}
           allow-onelake-artifact-create: ${{ inputs.allow_onelake_artifact_create }}

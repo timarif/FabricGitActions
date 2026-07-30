@@ -23,6 +23,7 @@ import {
   type PlannedItem,
   type PlannedNetworkProtection,
   type PlannedNetworkSurface,
+  type PlannedVirtualNetworkGateway,
   type PlannedWorkspace,
   type PlannedWorkspaceIdentity,
 } from "./types";
@@ -47,6 +48,9 @@ const MANAGED_PRIVATE_ENDPOINT_ACTIONS = new Set([
 const NETWORK_DEFAULT_ACTIONS = new Set(["Allow", "Deny"]);
 const GUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const VIRTUAL_NETWORK_GATEWAY_SLEEP_MINUTES = new Set([
+  30, 60, 90, 120, 150, 240, 360, 480, 720, 1440,
+]);
 
 export function loadApprovedPlan(planFile: string): DeploymentPlan {
   const absolutePath = path.resolve(planFile);
@@ -92,6 +96,10 @@ function isDeploymentPlan(value: unknown): value is DeploymentPlan {
       isPlannedWorkspace(plan.workspace)) &&
     (plan.workspaceIdentity === undefined ||
       isPlannedWorkspaceIdentity(plan.workspaceIdentity)) &&
+    (plan.virtualNetworkGateways === undefined ||
+      isPlannedVirtualNetworkGateways(
+        plan.virtualNetworkGateways,
+      )) &&
     (plan.networkProtection === undefined ||
       isPlannedNetworkProtection(plan.networkProtection)) &&
     typeof plan.sourceHash === "string" &&
@@ -107,6 +115,15 @@ function isDeploymentPlan(value: unknown): value is DeploymentPlan {
     }
 
     const itemIds = items.map((item) => (item as PlannedItem).logicalId);
+    const canonicalItemIds = new Set(
+      itemIds.map((logicalId) =>
+        logicalId.toLocaleLowerCase("en-US"),
+      ),
+    );
+    const gatewayIds =
+      plan.virtualNetworkGateways?.map(
+        (gateway) => gateway.logicalId,
+      ) ?? [];
     const plannedItems = new Map(
       items.map((item) => {
         const planned = item as PlannedItem;
@@ -144,6 +161,12 @@ function isDeploymentPlan(value: unknown): value is DeploymentPlan {
     }
     return (
       new Set(itemIds).size === itemIds.length &&
+      gatewayIds.every(
+        (logicalId) =>
+          !canonicalItemIds.has(
+            logicalId.toLocaleLowerCase("en-US"),
+          ),
+      ) &&
       new Set(stagedIds).size === stagedIds.length &&
       itemIds.length === stagedIds.length &&
       itemIds.every((logicalId) => stagedIds.includes(logicalId)) &&
@@ -152,6 +175,140 @@ function isDeploymentPlan(value: unknown): value is DeploymentPlan {
     );
   }
   return false;
+}
+
+function isPlannedVirtualNetworkGateways(
+  value: unknown,
+): value is PlannedVirtualNetworkGateway[] {
+  if (!Array.isArray(value) || value.length === 0) {
+    return false;
+  }
+  const logicalIds = new Set<string>();
+  const physicalIds = new Set<string>();
+  const displayNames = new Set<string>();
+  for (const entry of value) {
+    if (
+      entry === null ||
+      typeof entry !== "object" ||
+      Array.isArray(entry)
+    ) {
+      return false;
+    }
+    const gateway = entry as Partial<PlannedVirtualNetworkGateway>;
+    const virtualNetwork = gateway.virtualNetworkAzureResource;
+    const fixed = gateway.numberOfMemberGateways;
+    const min = gateway.minMemberGatewayCount;
+    const max = gateway.maxMemberGatewayCount;
+    const logicalId =
+      typeof gateway.logicalId === "string"
+        ? gateway.logicalId.toLocaleLowerCase("en-US")
+        : "";
+    const displayName =
+      typeof gateway.displayName === "string"
+        ? gateway.displayName.toLocaleLowerCase("en-US")
+        : "";
+    const scalingValid =
+      fixed === undefined
+        ? isMemberCount(min) &&
+          isMemberCount(max) &&
+          min! <= max!
+        : isMemberCount(fixed) &&
+          min === undefined &&
+          max === undefined;
+    const configurationValid =
+      gateway.desiredState === "absent"
+        ? gateway.capacityId === undefined &&
+          gateway.inactivityMinutesBeforeSleep === undefined &&
+          fixed === undefined &&
+          min === undefined &&
+          max === undefined
+        : isGuid(gateway.capacityId) &&
+          VIRTUAL_NETWORK_GATEWAY_SLEEP_MINUTES.has(
+            gateway.inactivityMinutesBeforeSleep as number,
+          ) &&
+          scalingValid;
+    if (
+      typeof gateway.logicalId !== "string" ||
+      logicalIds.has(logicalId) ||
+      (gateway.desiredState !== "present" &&
+        gateway.desiredState !== "absent") ||
+      typeof gateway.displayName !== "string" ||
+      gateway.displayName.trim() === "" ||
+      displayNames.has(displayName) ||
+      !isVirtualNetworkResource(virtualNetwork) ||
+      !configurationValid ||
+      typeof gateway.desiredHash !== "string" ||
+      !/^[a-f0-9]{64}$/.test(gateway.desiredHash) ||
+      typeof gateway.observedStateHash !== "string" ||
+      !/^[a-f0-9]{64}$/.test(gateway.observedStateHash) ||
+      !PLANNED_ACTIONS.has(gateway.action as PlannedAction) ||
+      typeof gateway.reason !== "string" ||
+      (gateway.physicalId !== undefined &&
+        !isGuid(gateway.physicalId)) ||
+      (gateway.desiredState === "absent" &&
+        gateway.physicalId === undefined) ||
+      (gateway.desiredState === "present" &&
+        gateway.action === "delete") ||
+      (gateway.desiredState === "absent" &&
+        (gateway.action === "create" ||
+          gateway.action === "update")) ||
+      (gateway.action === "create" &&
+        gateway.physicalId !== undefined) ||
+      ((gateway.action === "update" ||
+        gateway.action === "delete" ||
+        gateway.action === "no-op") &&
+        gateway.physicalId === undefined)
+    ) {
+      return false;
+    }
+    logicalIds.add(logicalId);
+    displayNames.add(displayName);
+    if (gateway.physicalId) {
+      const physicalId =
+        gateway.physicalId.toLocaleLowerCase("en-US");
+      if (physicalIds.has(physicalId)) {
+        return false;
+      }
+      physicalIds.add(physicalId);
+    }
+  }
+  return true;
+}
+
+function isVirtualNetworkResource(
+  value: unknown,
+): boolean {
+  if (
+    value === null ||
+    typeof value !== "object" ||
+    Array.isArray(value)
+  ) {
+    return false;
+  }
+  const resource = value as Record<string, unknown>;
+  return (
+    isGuid(resource.subscriptionId) &&
+    isNonBlankString(resource.resourceGroupName) &&
+    isNonBlankString(resource.virtualNetworkName) &&
+    isNonBlankString(resource.subnetName)
+  );
+}
+
+function isMemberCount(value: unknown): value is number {
+  return (
+    typeof value === "number" &&
+    Number.isInteger(value) &&
+    value >= 1 &&
+    value <= 9
+  );
+}
+
+function isGuid(value: unknown): value is string {
+  return typeof value === "string" && GUID_PATTERN.test(value);
+}
+
+function isNonBlankString(value: unknown): value is string {
+  return typeof value === "string" && value.trim() !== "";
 }
 
 function isPlannedWorkspace(

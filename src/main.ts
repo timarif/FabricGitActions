@@ -52,14 +52,21 @@ import { SparkJobAdapter } from "./fabric/spark-job";
 import { FabricTagAdapter } from "./fabric/tags";
 import { WorkspaceAdapter } from "./fabric/workspace";
 import { WorkspaceIdentityAdapter } from "./fabric/workspace-identity";
+import { VirtualNetworkGatewayAdapter } from "./fabric/virtual-network-gateway";
 import {
   loadManifest,
   loadManifestItemDirectoriesForSafety,
   loadNetworkProtectionManifest,
+  loadVirtualNetworkGatewaysManifest,
 } from "./manifest";
 import { loadApprovedPlan } from "./plan-artifact";
 import { buildPlan } from "./planner";
 import { recoverInterruptedNetworkProtection } from "./network-apply";
+import {
+  preflightVirtualNetworkGateways,
+  recoverInterruptedVirtualNetworkGateways,
+  virtualNetworkGatewaysRequireRecovery,
+} from "./virtual-network-gateway-apply";
 import {
   assertDistinctFilePaths,
   assertOutputPathOutsideItems,
@@ -313,6 +320,18 @@ export async function run(): Promise<void> {
             "allow-managed-private-endpoint-delete",
           )
         : false;
+    const allowVirtualNetworkGatewayCreate =
+      mode === "apply"
+        ? readBooleanInput("allow-vnet-gateway-create")
+        : false;
+    const allowVirtualNetworkGatewayUpdate =
+      mode === "apply"
+        ? readBooleanInput("allow-vnet-gateway-update")
+        : false;
+    const allowVirtualNetworkGatewayDelete =
+      mode === "apply"
+        ? readBooleanInput("allow-vnet-gateway-delete")
+        : false;
     if (returnLivyApiEndpoint && mode !== "apply") {
       throw new Error(
         "return-livy-api-endpoint is supported only when mode is apply.",
@@ -401,6 +420,9 @@ export async function run(): Promise<void> {
     let workspaceIdentityAdapter:
       | WorkspaceIdentityAdapter
       | undefined;
+    let virtualNetworkGatewayAdapter:
+      | VirtualNetworkGatewayAdapter
+      | undefined;
     let lakehouseTablesAdapter: LakehouseTablesAdapter | undefined;
     let networkProtectionAdapter: NetworkProtectionAdapter | undefined;
     let managedPrivateEndpointAdapter:
@@ -451,6 +473,8 @@ export async function run(): Promise<void> {
       workspaceAdapter = new WorkspaceAdapter(client);
       workspaceIdentityAdapter =
         new WorkspaceIdentityAdapter(client);
+      virtualNetworkGatewayAdapter =
+        new VirtualNetworkGatewayAdapter(client);
       managedPrivateEndpointAdapter =
         new ManagedPrivateEndpointAdapter(client);
       networkProtectionAdapter = new NetworkProtectionAdapter(
@@ -471,10 +495,35 @@ export async function run(): Promise<void> {
         !approvedPlan ||
         !applyCheckpoint ||
         !checkpointFile ||
+        !virtualNetworkGatewayAdapter ||
         !networkProtectionAdapter
       ) {
         throw new Error(
           "Network protection recovery was not initialized for apply mode.",
+        );
+      }
+      if (
+        virtualNetworkGatewaysRequireRecovery(applyCheckpoint)
+      ) {
+        const desiredVirtualNetworkGateways =
+          loadVirtualNetworkGatewaysManifest(manifestPath, {
+            variables,
+            workspaceIdOverride: workspaceId,
+          });
+        const recoveryOptions = {
+          approvedPlan,
+          currentPlan: approvedPlan,
+          desired: desiredVirtualNetworkGateways,
+          adapter: virtualNetworkGatewayAdapter,
+          checkpoint: applyCheckpoint,
+          checkpointFile,
+          allowCreate: allowVirtualNetworkGatewayCreate,
+          allowUpdate: allowVirtualNetworkGatewayUpdate,
+          allowDelete: allowVirtualNetworkGatewayDelete,
+        };
+        preflightVirtualNetworkGateways(recoveryOptions);
+        await recoverInterruptedVirtualNetworkGateways(
+          recoveryOptions,
         );
       }
       // Load only the security declaration first so unrelated item paths or
@@ -560,6 +609,7 @@ export async function run(): Promise<void> {
       if (
         !workspaceAdapter ||
         !workspaceIdentityAdapter ||
+        !virtualNetworkGatewayAdapter ||
         !itemDeletionAdapter ||
         !lakehouseAdapter ||
         !eventhouseAdapter ||
@@ -585,6 +635,7 @@ export async function run(): Promise<void> {
       plan = await enrichPlanWithFabric(plan, loadedManifest, {
         workspace: workspaceAdapter,
         workspaceIdentity: workspaceIdentityAdapter,
+        virtualNetworkGateways: virtualNetworkGatewayAdapter,
         deletion: itemDeletionAdapter,
         lakehouse: lakehouseAdapter,
         eventhouse: eventhouseAdapter,
@@ -664,6 +715,44 @@ export async function run(): Promise<void> {
       "workspace-identity-role-assignment-count",
       String(plan.workspaceIdentity?.roleAssignments.length ?? 0),
     );
+    const virtualNetworkGateways =
+      plan.virtualNetworkGateways ?? [];
+    core.setOutput(
+      "virtual-network-gateway-count",
+      String(virtualNetworkGateways.length),
+    );
+    for (const action of [
+      "create",
+      "update",
+      "delete",
+      "no-op",
+      "blocked",
+      "unknown",
+    ] as const) {
+      core.setOutput(
+        `virtual-network-gateway-${action === "no-op" ? "noop" : action}-count`,
+        String(
+          virtualNetworkGateways.filter(
+            (gateway) => gateway.action === action,
+          ).length,
+        ),
+      );
+    }
+    core.setOutput(
+      "virtual-network-gateway-ids",
+      JSON.stringify(
+        Object.fromEntries(
+          virtualNetworkGateways.flatMap((gateway) =>
+            gateway.desiredState === "present" &&
+            gateway.physicalId
+              ? [[gateway.logicalId, gateway.physicalId]]
+              : [],
+          ),
+        ),
+      ),
+    );
+    core.setOutput("virtual-network-gateway-applied-count", "0");
+    core.setOutput("virtual-network-gateway-resumed-count", "0");
     core.setOutput(
       "network-protection-action",
       plan.networkProtection?.communicationPolicy.action ?? "not-configured",
@@ -745,6 +834,7 @@ export async function run(): Promise<void> {
         !tagAdapter ||
         !workspaceAdapter ||
         !workspaceIdentityAdapter
+        || !virtualNetworkGatewayAdapter
         || !lakehouseTablesAdapter ||
         !networkProtectionAdapter ||
         !managedPrivateEndpointAdapter ||
@@ -774,6 +864,7 @@ export async function run(): Promise<void> {
         tagAdapter,
         workspaceAdapter,
         workspaceIdentityAdapter,
+        virtualNetworkGatewayAdapter,
         lakehouseTablesAdapter,
         networkProtectionAdapter,
         managedPrivateEndpointAdapter,
@@ -801,6 +892,9 @@ export async function run(): Promise<void> {
         allowWorkspaceIdentityRoleAssign: readBooleanInput(
           "allow-workspace-identity-role-assign",
         ),
+        allowVirtualNetworkGatewayCreate,
+        allowVirtualNetworkGatewayUpdate,
+        allowVirtualNetworkGatewayDelete,
         allowLakehouseSchemaCreate: readBooleanInput(
           "allow-lakehouse-schema-create",
         ),
@@ -855,6 +949,37 @@ export async function run(): Promise<void> {
         String(
           approvedPlan.workspaceIdentity?.roleAssignments.length ??
             0,
+        ),
+      );
+      const virtualNetworkGatewayResults =
+        result.virtualNetworkGateways ?? [];
+      core.setOutput(
+        "virtual-network-gateway-applied-count",
+        String(
+          virtualNetworkGatewayResults.filter(
+            (gateway) => gateway.status !== "resumed",
+          ).length,
+        ),
+      );
+      core.setOutput(
+        "virtual-network-gateway-resumed-count",
+        String(
+          virtualNetworkGatewayResults.filter(
+            (gateway) => gateway.status === "resumed",
+          ).length,
+        ),
+      );
+      core.setOutput(
+        "virtual-network-gateway-ids",
+        JSON.stringify(
+          Object.fromEntries(
+            virtualNetworkGatewayResults.flatMap((gateway) =>
+              gateway.status !== "deleted" &&
+              gateway.physicalId
+                ? [[gateway.logicalId, gateway.physicalId]]
+                : [],
+            ),
+          ),
         ),
       );
       core.setOutput(

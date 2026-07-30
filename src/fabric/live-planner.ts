@@ -9,6 +9,7 @@ import type {
   LoadedManifest,
   PlannedItem,
   PlannedNetworkProtection,
+  PlannedVirtualNetworkGateway,
 } from "../types";
 import type { EnvironmentAdapter } from "./environment";
 import type { EventhouseAdapter } from "./eventhouse";
@@ -48,6 +49,7 @@ import {
 } from "./spark-job-artifacts";
 import type { WorkspaceAdapter } from "./workspace";
 import type { WorkspaceIdentityAdapter } from "./workspace-identity";
+import type { VirtualNetworkGatewayAdapter } from "./virtual-network-gateway";
 import {
   materializeSparkJobDefinitionWithProof,
   materializeReportDefinitionWithProof,
@@ -58,6 +60,10 @@ import {
 export interface FabricPlanAdapters {
   workspace?: Pick<WorkspaceAdapter, "plan">;
   workspaceIdentity?: Pick<WorkspaceIdentityAdapter, "plan">;
+  virtualNetworkGateways?: Pick<
+    VirtualNetworkGatewayAdapter,
+    "planAll"
+  >;
   deletion?: Pick<ItemDeletionAdapter, "plan">;
   lakehouse: Pick<LakehouseAdapter, "plan">;
   eventhouse?: Pick<EventhouseAdapter, "plan">;
@@ -95,6 +101,12 @@ export async function enrichPlanWithFabric(
   let workspaceId = plan.workspaceId;
   let plannedWorkspace = plan.workspace;
   let plannedWorkspaceIdentity = plan.workspaceIdentity;
+  const plannedVirtualNetworkGateways =
+    await planVirtualNetworkGatewaysIfConfigured(
+      plan,
+      loadedManifest,
+      adapters.virtualNetworkGateways,
+    );
   if (plannedWorkspace) {
     const desiredWorkspace = loadedManifest.manifest.workspace;
     if (!desiredWorkspace?.displayName) {
@@ -172,6 +184,12 @@ export async function enrichPlanWithFabric(
         workspace: plannedWorkspace,
         ...(plannedWorkspaceIdentity
           ? { workspaceIdentity: plannedWorkspaceIdentity }
+          : {}),
+        ...(plannedVirtualNetworkGateways
+          ? {
+              virtualNetworkGateways:
+                plannedVirtualNetworkGateways,
+            }
           : {}),
         ...(networkProtection ? { networkProtection } : {}),
         items: plan.items.map((item) =>
@@ -848,8 +866,56 @@ export async function enrichPlanWithFabric(
     ...(plannedWorkspaceIdentity
       ? { workspaceIdentity: plannedWorkspaceIdentity }
       : {}),
+    ...(plannedVirtualNetworkGateways
+      ? {
+          virtualNetworkGateways:
+            plannedVirtualNetworkGateways,
+        }
+      : {}),
     ...(networkProtection ? { networkProtection } : {}),
     items: taggedItems,
+  });
+}
+
+async function planVirtualNetworkGatewaysIfConfigured(
+  plan: DeploymentPlan,
+  loadedManifest: LoadedManifest,
+  adapter:
+    | Pick<VirtualNetworkGatewayAdapter, "planAll">
+    | undefined,
+): Promise<PlannedVirtualNetworkGateway[] | undefined> {
+  const desired = loadedManifest.manifest.virtualNetworkGateways;
+  if (!desired) {
+    return undefined;
+  }
+  if (!plan.virtualNetworkGateways) {
+    throw new Error(
+      "Offline virtual network gateway plans are missing.",
+    );
+  }
+  if (!adapter) {
+    throw new Error(
+      "Online virtual network gateway planning requires a virtual network gateway adapter.",
+    );
+  }
+  const results = await adapter.planAll(desired);
+  if (results.length !== plan.virtualNetworkGateways.length) {
+    throw new Error(
+      "Virtual network gateway planning returned an unexpected result count.",
+    );
+  }
+  return plan.virtualNetworkGateways.map((gateway, index) => {
+    const result = results[index]!;
+    return {
+      ...gateway,
+      action: result.action,
+      reason: result.reason,
+      desiredHash: result.desiredHash,
+      observedStateHash: result.observedStateHash,
+      ...(result.physicalId
+        ? { physicalId: result.physicalId }
+        : {}),
+    };
   });
 }
 

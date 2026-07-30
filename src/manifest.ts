@@ -31,6 +31,7 @@ import { loadDataAgentDefinition } from "./fabric/data-agent-definition";
 import { loadLakehouseTablesDefinition } from "./fabric/lakehouse-tables-definition";
 import { loadSparkCustomPoolDefinition } from "./fabric/spark-custom-pool-definition";
 import { normalizeNetworkProtection } from "./fabric/network-protection";
+import { normalizeVirtualNetworkGatewayDefinitions } from "./fabric/virtual-network-gateway";
 import { requireSparkJobArtifactTarget } from "./fabric/spark-job-artifacts";
 import { loadSparkJobDefinitionBundle } from "./fabric/spark-job-definition";
 import { validateLogicalReferenceDeclarations } from "./fabric/logical-references";
@@ -42,6 +43,7 @@ import type {
   ItemDefinition,
   LoadedManifest,
   NetworkProtectionManifest,
+  VirtualNetworkGatewayDefinition,
 } from "./types";
 
 export interface LoadManifestOptions {
@@ -84,6 +86,44 @@ export function loadNetworkProtectionManifest(
     options.variables ?? {},
   ) as NetworkProtectionManifest;
   normalizeNetworkProtection(resolved);
+  return resolved;
+}
+
+/**
+ * Loads only the global virtual network gateway declarations so an
+ * interrupted gateway mutation can be reconciled before unrelated item
+ * definitions are opened.
+ */
+export function loadVirtualNetworkGatewaysManifest(
+  manifestPath: string,
+  options: LoadManifestOptions = {},
+): VirtualNetworkGatewayDefinition[] | undefined {
+  const absoluteManifestPath = path.resolve(manifestPath);
+  if (!existsSync(absoluteManifestPath)) {
+    throw new Error(`Deployment manifest not found: ${absoluteManifestPath}`);
+  }
+  const parsed = parse(
+    readFileSync(absoluteManifestPath, "utf8"),
+    { prettyErrors: false },
+  ) as unknown;
+  if (
+    parsed === null ||
+    typeof parsed !== "object" ||
+    Array.isArray(parsed)
+  ) {
+    throw new Error("Deployment manifest must be a YAML object.");
+  }
+  const virtualNetworkGateways = (
+    parsed as Record<string, unknown>
+  ).virtualNetworkGateways;
+  if (virtualNetworkGateways === undefined) {
+    return undefined;
+  }
+  const resolved = substituteVariables(
+    virtualNetworkGateways,
+    options.variables ?? {},
+  ) as VirtualNetworkGatewayDefinition[];
+  normalizeVirtualNetworkGatewayDefinitions(resolved);
   return resolved;
 }
 
@@ -171,7 +211,11 @@ export function loadManifest(
   const manifest = resolved as DeploymentManifest;
   validateWorkspaceDefinition(manifest);
   validateWorkspaceIdentityDefinition(manifest);
+  normalizeVirtualNetworkGatewayDefinitions(
+    manifest.virtualNetworkGateways,
+  );
   validateNetworkProtectionDefinition(manifest);
+  validateVirtualNetworkGatewayReferences(manifest);
   validateLogicalIds(manifest);
   validateDependencies(manifest);
 
@@ -1265,11 +1309,45 @@ function applyWorkspaceOverride(parsed: unknown, workspaceIdOverride?: string): 
 
 function validateLogicalIds(manifest: DeploymentManifest): void {
   const seen = new Set<string>();
+  for (const gateway of manifest.virtualNetworkGateways ?? []) {
+    if (seen.has(gateway.logicalId)) {
+      throw new Error(`Duplicate logicalId '${gateway.logicalId}'.`);
+    }
+    seen.add(gateway.logicalId);
+  }
   for (const item of manifest.items) {
     if (seen.has(item.logicalId)) {
       throw new Error(`Duplicate logicalId '${item.logicalId}'.`);
     }
     seen.add(item.logicalId);
+  }
+}
+
+function validateVirtualNetworkGatewayReferences(
+  manifest: DeploymentManifest,
+): void {
+  const absentGatewayIds = new Map(
+    (manifest.virtualNetworkGateways ?? [])
+      .filter(
+        (gateway) =>
+          gateway.desiredState === "absent" && gateway.id,
+      )
+      .map((gateway) => [
+        gateway.id!.toLocaleLowerCase("en-US"),
+        gateway.logicalId,
+      ]),
+  );
+  for (const gateway of
+    manifest.networkProtection?.outboundGatewayRules
+      ?.allowedGateways ?? []) {
+    const logicalId = absentGatewayIds.get(
+      gateway.id.toLocaleLowerCase("en-US"),
+    );
+    if (logicalId) {
+      throw new Error(
+        `Virtual network gateway '${logicalId}' cannot be absent while networkProtection.outboundGatewayRules still allows its ID.`,
+      );
+    }
   }
 }
 

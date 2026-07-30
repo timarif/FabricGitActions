@@ -108,6 +108,7 @@ import {
 import type { OneLakeArtifactStager } from "./fabric/onelake-artifacts";
 import type { WorkspaceAdapter } from "./fabric/workspace";
 import type { WorkspaceIdentityAdapter } from "./fabric/workspace-identity";
+import type { VirtualNetworkGatewayAdapter } from "./fabric/virtual-network-gateway";
 import type { NetworkProtectionAdapter } from "./fabric/network-protection";
 import {
   managedPrivateEndpointRequestMessages,
@@ -150,6 +151,11 @@ import {
   preflightWorkspaceIdentity,
 } from "./workspace-identity-apply";
 import {
+  applyVirtualNetworkGateways,
+  preflightVirtualNetworkGateways,
+  recoverInterruptedVirtualNetworkGateways,
+} from "./virtual-network-gateway-apply";
+import {
   applyNetworkProtection,
   finalizeNetworkProtectionCheckpoint,
   preflightNetworkProtection,
@@ -164,6 +170,7 @@ import type {
   ApplyItemResult,
   ApplyNetworkProtectionResult,
   ApplyResult,
+  ApplyVirtualNetworkGatewayResult,
   ApplyWorkspaceResult,
   ApplyWorkspaceIdentityResult,
   DefinitionItemUpdateRecoveryState,
@@ -260,6 +267,18 @@ export interface ApplyPlanOptions {
     | "resumeRoleAssignment"
     | "verifyRoleAssignment"
   >;
+  virtualNetworkGatewayAdapter?: Pick<
+    VirtualNetworkGatewayAdapter,
+    | "plan"
+    | "create"
+    | "resumeCreate"
+    | "update"
+    | "resumeUpdate"
+    | "delete"
+    | "resumeDelete"
+    | "verifyPresent"
+    | "verifyAbsent"
+  >;
   lakehouseTablesAdapter?: Pick<
     LakehouseTablesAdapter,
     | "apply"
@@ -314,6 +333,9 @@ export interface ApplyPlanOptions {
   allowCapacityAssignment?: boolean;
   allowWorkspaceIdentityProvision?: boolean;
   allowWorkspaceIdentityRoleAssign?: boolean;
+  allowVirtualNetworkGatewayCreate?: boolean;
+  allowVirtualNetworkGatewayUpdate?: boolean;
+  allowVirtualNetworkGatewayDelete?: boolean;
   allowLakehouseSchemaCreate?: boolean;
   allowLakehouseTableCreate?: boolean;
   allowOneLakeArtifactCreate?: boolean;
@@ -369,6 +391,9 @@ export async function applyApprovedPlan(
   let workspaceIdentityResult:
     | ApplyWorkspaceIdentityResult
     | undefined;
+  let virtualNetworkGatewayResults:
+    | ApplyVirtualNetworkGatewayResult[]
+    | undefined;
   let networkProtectionResult: ApplyNetworkProtectionResult | undefined;
   let runtimeWorkspaceId = options.approvedPlan.workspaceId;
   let requiresItemReplan = false;
@@ -395,6 +420,17 @@ export async function applyApprovedPlan(
       ...options,
       checkpoint,
     };
+    preflightRuntimeVirtualNetworkGateways(
+      preWorkspaceRuntimeOptions,
+      checkpoint,
+    );
+    await recoverInterruptedVirtualNetworkGateways(
+      virtualNetworkGatewayApplyOptions(
+        preWorkspaceRuntimeOptions,
+        checkpoint,
+        now,
+      ),
+    );
     const canAddressNetworkBeforeWorkspace =
       options.approvedPlan.workspace?.action !== "create" ||
       options.loadedManifest.manifest.networkProtection?.workspaceId !==
@@ -478,6 +514,17 @@ export async function applyApprovedPlan(
       checkpoint,
     };
     if (requiresItemReplan) {
+      virtualNetworkGatewayResults =
+        mergeVirtualNetworkGatewayResults(
+          runtimeOptions.approvedPlan,
+          virtualNetworkGatewayResults,
+          await applyRuntimeVirtualNetworkGateways(
+            runtimeOptions,
+            checkpoint,
+            now,
+            "present",
+          ),
+        );
       // An explicit network target is independent of the newly provisioned
       // deployment workspace and remains safe to apply before child items are
       // replanned against the new workspace ID.
@@ -496,6 +543,24 @@ export async function applyApprovedPlan(
             now,
           );
       }
+      if (
+        canApplyAbsentVirtualNetworkGateways(
+          runtimeOptions,
+          networkProtectionResult,
+        )
+      ) {
+        virtualNetworkGatewayResults =
+          mergeVirtualNetworkGatewayResults(
+            runtimeOptions.approvedPlan,
+            virtualNetworkGatewayResults,
+            await applyRuntimeVirtualNetworkGateways(
+              runtimeOptions,
+              checkpoint,
+              now,
+              "absent",
+            ),
+          );
+      }
       const result = buildResult(
         options.approvedPlan,
         "succeeded",
@@ -507,6 +572,7 @@ export async function applyApprovedPlan(
         workspaceIdentityResult,
         true,
         networkProtectionResult,
+        virtualNetworkGatewayResults,
       );
       writeApplyResult(options.resultFile, result);
       return result;
@@ -529,6 +595,35 @@ export async function applyApprovedPlan(
     requiresItemReplan =
       workspaceIdentityOutcome.requiresItemReplan;
     if (requiresItemReplan) {
+      virtualNetworkGatewayResults =
+        mergeVirtualNetworkGatewayResults(
+          runtimeOptions.approvedPlan,
+          virtualNetworkGatewayResults,
+          await applyRuntimeVirtualNetworkGateways(
+            runtimeOptions,
+            checkpoint,
+            now,
+            "present",
+          ),
+        );
+      if (
+        canApplyAbsentVirtualNetworkGateways(
+          runtimeOptions,
+          undefined,
+        )
+      ) {
+        virtualNetworkGatewayResults =
+          mergeVirtualNetworkGatewayResults(
+            runtimeOptions.approvedPlan,
+            virtualNetworkGatewayResults,
+            await applyRuntimeVirtualNetworkGateways(
+              runtimeOptions,
+              checkpoint,
+              now,
+              "absent",
+            ),
+          );
+      }
       const result = buildResult(
         options.approvedPlan,
         "succeeded",
@@ -539,6 +634,8 @@ export async function applyApprovedPlan(
         workspaceResult,
         workspaceIdentityResult,
         true,
+        undefined,
+        virtualNetworkGatewayResults,
       );
       writeApplyResult(options.resultFile, result);
       return result;
@@ -628,6 +725,17 @@ export async function applyApprovedPlan(
       now,
       preverifiedDurations,
     );
+    virtualNetworkGatewayResults =
+      mergeVirtualNetworkGatewayResults(
+        runtimeOptions.approvedPlan,
+        virtualNetworkGatewayResults,
+        await applyRuntimeVirtualNetworkGateways(
+          runtimeOptions,
+          checkpoint,
+          now,
+          "present",
+        ),
+      );
 
     for (const stage of runtimeOptions.approvedPlan.stages) {
       for (const logicalId of stage) {
@@ -833,6 +941,24 @@ export async function applyApprovedPlan(
         checkpoint,
         now,
       );
+    if (
+      canApplyAbsentVirtualNetworkGateways(
+        runtimeOptions,
+        networkProtectionResult,
+      )
+    ) {
+      virtualNetworkGatewayResults =
+        mergeVirtualNetworkGatewayResults(
+          runtimeOptions.approvedPlan,
+          virtualNetworkGatewayResults,
+          await applyRuntimeVirtualNetworkGateways(
+            runtimeOptions,
+            checkpoint,
+            now,
+            "absent",
+          ),
+        );
+    }
 
     const result = buildResult(
       options.approvedPlan,
@@ -845,6 +971,7 @@ export async function applyApprovedPlan(
       workspaceIdentityResult,
       false,
       networkProtectionResult,
+      virtualNetworkGatewayResults,
     );
     writeApplyResult(options.resultFile, result);
     return result;
@@ -878,6 +1005,7 @@ export async function applyApprovedPlan(
       workspaceIdentityResult,
       requiresItemReplan,
       networkProtectionResult,
+      virtualNetworkGatewayResults,
     );
     if (resultWritable) {
       try {
@@ -1168,6 +1296,95 @@ function networkProtectionApplyOptions(
       runtimeOptions.allowManagedPrivateEndpointDelete ?? false,
     now,
   };
+}
+
+function virtualNetworkGatewayApplyOptions(
+  runtimeOptions: ApplyPlanOptions,
+  checkpoint: ApplyCheckpoint,
+  now: () => number,
+): Parameters<typeof applyVirtualNetworkGateways>[0] {
+  return {
+    approvedPlan: runtimeOptions.approvedPlan,
+    currentPlan: runtimeOptions.currentPlan,
+    desired:
+      runtimeOptions.loadedManifest.manifest.virtualNetworkGateways,
+    adapter: runtimeOptions.virtualNetworkGatewayAdapter,
+    checkpoint,
+    checkpointFile: runtimeOptions.checkpointFile,
+    allowCreate:
+      runtimeOptions.allowVirtualNetworkGatewayCreate ?? false,
+    allowUpdate:
+      runtimeOptions.allowVirtualNetworkGatewayUpdate ?? false,
+    allowDelete:
+      runtimeOptions.allowVirtualNetworkGatewayDelete ?? false,
+    now,
+  };
+}
+
+function preflightRuntimeVirtualNetworkGateways(
+  runtimeOptions: ApplyPlanOptions,
+  checkpoint: ApplyCheckpoint,
+): void {
+  preflightVirtualNetworkGateways(
+    virtualNetworkGatewayApplyOptions(
+      runtimeOptions,
+      checkpoint,
+      runtimeOptions.now ?? Date.now,
+    ),
+  );
+}
+
+async function applyRuntimeVirtualNetworkGateways(
+  runtimeOptions: ApplyPlanOptions,
+  checkpoint: ApplyCheckpoint,
+  now: () => number,
+  desiredState?: "present" | "absent",
+): Promise<ApplyVirtualNetworkGatewayResult[] | undefined> {
+  return applyVirtualNetworkGateways(
+    virtualNetworkGatewayApplyOptions(
+      runtimeOptions,
+      checkpoint,
+      now,
+    ),
+    desiredState,
+  );
+}
+
+function mergeVirtualNetworkGatewayResults(
+  plan: DeploymentPlan,
+  current: ApplyVirtualNetworkGatewayResult[] | undefined,
+  next: ApplyVirtualNetworkGatewayResult[] | undefined,
+): ApplyVirtualNetworkGatewayResult[] | undefined {
+  if (!current && !next) {
+    return undefined;
+  }
+  const byLogicalId = new Map(
+    [...(current ?? []), ...(next ?? [])].map((result) => [
+      result.logicalId,
+      result,
+    ]),
+  );
+  return (plan.virtualNetworkGateways ?? []).flatMap((gateway) => {
+    const result = byLogicalId.get(gateway.logicalId);
+    return result ? [result] : [];
+  });
+}
+
+function canApplyAbsentVirtualNetworkGateways(
+  runtimeOptions: ApplyPlanOptions,
+  networkProtectionResult: ApplyNetworkProtectionResult | undefined,
+): boolean {
+  if (
+    runtimeOptions.loadedManifest.manifest.networkProtection
+      ?.outboundGatewayRules === undefined
+  ) {
+    return true;
+  }
+  return (
+    networkProtectionResult?.outboundGatewayRules?.status !==
+      "deferred" &&
+    networkProtectionResult?.outboundGatewayRules !== undefined
+  );
 }
 
 function preflightRuntimeNetworkProtection(
@@ -6889,6 +7106,7 @@ function buildResult(
   workspaceIdentity?: ApplyWorkspaceIdentityResult,
   requiresItemReplan = false,
   networkProtection?: ApplyNetworkProtectionResult,
+  virtualNetworkGateways?: ApplyVirtualNetworkGatewayResult[],
 ): ApplyResult {
   return {
     schemaVersion: "1",
@@ -6907,5 +7125,8 @@ function buildResult(
       : {}),
     items,
     ...(networkProtection ? { networkProtection } : {}),
+    ...(virtualNetworkGateways
+      ? { virtualNetworkGateways }
+      : {}),
   };
 }
