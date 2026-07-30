@@ -1,12 +1,18 @@
 import { sha256, stableJson } from "./hash";
 import { buildOfflineTagAssignment } from "./fabric/tag-assignment";
 import { buildUnknownNetworkProtectionPlan } from "./fabric/network-protection";
+import {
+  hashDesiredVirtualNetworkGateway,
+  hashObservedVirtualNetworkGateway,
+  normalizeVirtualNetworkGatewayDefinitions,
+} from "./fabric/virtual-network-gateway";
 import { buildDeploymentStages } from "./graph";
 import type {
   ActionMode,
   DeploymentPlan,
   LoadedManifest,
   PlannedItem,
+  PlannedVirtualNetworkGateway,
   PlannedWorkspace,
   PlannedWorkspaceIdentity,
   WorkspaceDefinition,
@@ -78,6 +84,15 @@ export function buildPlan(
           ),
         }
       : {}),
+    ...(loadedManifest.manifest.virtualNetworkGateways
+      ? {
+          virtualNetworkGateways:
+            buildOfflineVirtualNetworkGatewayPlans(
+              loadedManifest.manifest.virtualNetworkGateways,
+              options.mode,
+            ),
+        }
+      : {}),
     ...(loadedManifest.manifest.networkProtection
       ? {
           networkProtection: buildUnknownNetworkProtectionPlan(
@@ -106,6 +121,7 @@ export function rehashPlan(plan: DeploymentPlan): DeploymentPlan {
     workspaceId: plan.workspaceId,
     workspace: plan.workspace,
     workspaceIdentity: plan.workspaceIdentity,
+    virtualNetworkGateways: plan.virtualNetworkGateways,
     networkProtection: plan.networkProtection,
     sourceCommit: plan.sourceCommit,
     sourceHash: plan.sourceHash,
@@ -119,6 +135,50 @@ export function rehashPlan(plan: DeploymentPlan): DeploymentPlan {
     schemaVersion: "1",
     planHash: sha256(stableJson(hashInput)),
   };
+}
+
+function buildOfflineVirtualNetworkGatewayPlans(
+  definitions: NonNullable<
+    LoadedManifest["manifest"]["virtualNetworkGateways"]
+  >,
+  mode: ActionMode,
+): PlannedVirtualNetworkGateway[] {
+  return normalizeVirtualNetworkGatewayDefinitions(definitions).map(
+    (definition) => ({
+      logicalId: definition.logicalId,
+      desiredState: definition.desiredState,
+      displayName: definition.displayName,
+      virtualNetworkAzureResource:
+        definition.virtualNetworkAzureResource,
+      ...(definition.desiredState === "present"
+        ? {
+            capacityId: definition.capacityId,
+            inactivityMinutesBeforeSleep:
+              definition.inactivityMinutesBeforeSleep,
+            ...(definition.numberOfMemberGateways === undefined
+              ? {
+                  minMemberGatewayCount:
+                    definition.minMemberGatewayCount,
+                  maxMemberGatewayCount:
+                    definition.maxMemberGatewayCount,
+                }
+              : {
+                  numberOfMemberGateways:
+                    definition.numberOfMemberGateways,
+                }),
+          }
+        : {}),
+      desiredHash: hashDesiredVirtualNetworkGateway(definition),
+      observedStateHash:
+        hashObservedVirtualNetworkGateway(undefined),
+      ...(definition.id ? { physicalId: definition.id } : {}),
+      action: "unknown",
+      reason:
+        mode === "validate"
+          ? "Virtual network gateway manifest validation completed."
+          : "Online Fabric virtual network gateway discovery is disabled because authentication is not configured.",
+    }),
+  );
 }
 
 function buildOfflineWorkspacePlan(

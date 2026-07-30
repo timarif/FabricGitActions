@@ -45,6 +45,7 @@ For operational help and release verification, see
 ## Supported workload scope
 
 - Workspace
+- Fabric-managed virtual network data gateways
 - Lakehouse
 - Eventhouse
 - KQL Database
@@ -160,13 +161,62 @@ Role changes, removals, and identity deprovisioning are blocked. See
 [Workspace identity](docs/WORKSPACE_IDENTITY.md) for the staged workflow,
 permissions, recovery model, and API contract.
 
+## Fabric-managed virtual network data gateways
+
+Use the top-level `virtualNetworkGateways` section to create, update, verify,
+or delete Microsoft-managed Virtual Network data gateways:
+
+```yaml
+virtualNetworkGateways:
+  - logicalId: primaryGateway
+    displayName: Fabric Deploy Managed VNet Gateway
+    capacityId: ${var.FABRIC_CAPACITY_ID}
+    virtualNetworkAzureResource:
+      subscriptionId: ${var.AZURE_SUBSCRIPTION_ID}
+      resourceGroupName: fabric-network
+      virtualNetworkName: fabric-vnet
+      subnetName: fabric-gateway
+    inactivityMinutesBeforeSleep: 30
+    minMemberGatewayCount: 2
+    maxMemberGatewayCount: 4
+```
+
+Choose exactly one scaling mode: `numberOfMemberGateways` for a fixed count,
+or both `minMemberGatewayCount` and `maxMemberGatewayCount` for autoscaling.
+Counts must be from 1 through 9. Supported sleep values are 30, 60, 90, 120,
+150, 240, 360, 480, 720, or 1440 minutes.
+
+Gateway placement is immutable. A change to the subscription, resource group,
+virtual network, or subnet is blocked rather than patched. Deletion requires
+`desiredState: absent`, the exact gateway `id`, and matching display-name and
+virtual-network placement proof. Apply uses independent safeguards that all
+default to `false`:
+
+- `allow-vnet-gateway-create`
+- `allow-vnet-gateway-update`
+- `allow-vnet-gateway-delete`
+
+Present gateways are created or updated before workspace network protection.
+Absent gateways are deleted only after configured outbound gateway rules have
+been verified, so one approved deployment can remove a gateway from the allow
+list before deleting it. A deferred outbound policy also defers the deletion.
+
+The subnet and required Azure delegation must already exist; the action does
+not provision Azure VNets, subnets, or virtual machines. Fabric Virtual
+Network data gateways are Microsoft-managed and cannot be associated with a
+customer VM. VM-hosted on-premises data gateways are a separate product and
+are outside this action's service-principal/OIDC deployment model. See
+[Virtual network data gateways](docs/VIRTUAL_NETWORK_GATEWAYS.md) and the
+[`examples/virtual-network-gateway`](examples/virtual-network-gateway)
+manifest.
+
 Without authentication, `plan` is offline and reports item actions as
 `unknown`. With Fabric authentication configured, workspace identities and
-role grants, Lakehouses, Environments, Notebooks, LakehouseTables bundles,
-Fabric tags, Spark Job Definitions, Data Pipelines, Copy Jobs, Semantic Models,
-Power BI Reports, and workspace custom Spark pools are classified as `create`,
-`update`, `delete`, `no-op`, or `blocked`; later workload adapters remain
-`unknown`.
+role grants, Virtual Network data gateways, Lakehouses, Environments,
+Notebooks, LakehouseTables bundles, Fabric tags, Spark Job Definitions, Data
+Pipelines, Copy Jobs, Semantic Models, Power BI Reports, and workspace custom
+Spark pools are classified as `create`, `update`, `delete`, `no-op`, or
+`blocked`; later workload adapters remain `unknown`.
 
 ## Network protection
 

@@ -120,8 +120,14 @@ describe("deployment workflow metadata", () => {
           '{"allow_workspace_create":false,"allow_workspace_update":false,"allow_capacity_assignment":false,"allow_workspace_identity_provision":false,"allow_workspace_identity_role_assign":false}',
         type: "string",
       },
+      gateway_safeguards: {
+        required: true,
+        default:
+          '{"allow_vnet_gateway_create":false,"allow_vnet_gateway_update":false,"allow_vnet_gateway_delete":false}',
+        type: "string",
+      },
     });
-    expect(Object.keys(promoteInputs)).toHaveLength(23);
+    expect(Object.keys(promoteInputs)).toHaveLength(24);
     expect(Object.keys(promoteInputs).length).toBeLessThanOrEqual(25);
     expect(
       promoteInputs.allow_workspace_identity_provision,
@@ -156,6 +162,107 @@ describe("deployment workflow metadata", () => {
         withInputs.allow_workspace_identity_role_assign,
       ).toBe(
         "${{ toJSON(fromJSON(inputs.workspace_safeguards).allow_workspace_identity_role_assign) == 'true' }}",
+      );
+    }
+  });
+
+  it("exposes and forwards virtual network gateway safeguards", () => {
+    const action = loadYaml("action.yml");
+    const actionInputs = action.inputs as Record<
+      string,
+      Record<string, unknown>
+    >;
+    for (const name of [
+      "allow-vnet-gateway-create",
+      "allow-vnet-gateway-update",
+      "allow-vnet-gateway-delete",
+    ]) {
+      expect(actionInputs[name]?.default).toBe("false");
+      expect(actionInputs[name]?.required).toBe(false);
+    }
+    const outputs = action.outputs as Record<string, unknown>;
+    for (const name of [
+      "virtual-network-gateway-count",
+      "virtual-network-gateway-create-count",
+      "virtual-network-gateway-update-count",
+      "virtual-network-gateway-delete-count",
+      "virtual-network-gateway-noop-count",
+      "virtual-network-gateway-blocked-count",
+      "virtual-network-gateway-unknown-count",
+      "virtual-network-gateway-applied-count",
+      "virtual-network-gateway-resumed-count",
+      "virtual-network-gateway-ids",
+    ]) {
+      expect(outputs[name]).toBeDefined();
+    }
+
+    const reusable = loadYaml(
+      ".github/workflows/reusable-fabric-deploy.yml",
+    );
+    const callInputs = (
+      reusable.on as {
+        workflow_call: { inputs: Record<string, unknown> };
+      }
+    ).workflow_call.inputs;
+    expect(callInputs).toMatchObject({
+      allow_vnet_gateway_create: {
+        default: false,
+        type: "boolean",
+      },
+      allow_vnet_gateway_update: {
+        default: false,
+        type: "boolean",
+      },
+      allow_vnet_gateway_delete: {
+        default: false,
+        type: "boolean",
+      },
+    });
+    const reusableApply = workflowSteps(reusable, "apply").find(
+      (step) => step.name === "Apply approved Fabric plan",
+    )?.with as Record<string, string>;
+    expect(reusableApply["allow-vnet-gateway-create"]).toBe(
+      "${{ inputs.allow_vnet_gateway_create }}",
+    );
+    expect(reusableApply["allow-vnet-gateway-update"]).toBe(
+      "${{ inputs.allow_vnet_gateway_update }}",
+    );
+    expect(reusableApply["allow-vnet-gateway-delete"]).toBe(
+      "${{ inputs.allow_vnet_gateway_delete }}",
+    );
+    const reusableInspect = workflowSteps(reusable, "plan").find(
+      (step) => step.name === "Inspect approved plan",
+    )?.run as string;
+    expect(reusableInspect).toContain(
+      ".virtualNetworkGateways[]?",
+    );
+
+    const promote = loadYaml(".github/workflows/promote-fabric.yml");
+    const promoteInputs = (
+      promote.on as {
+        workflow_dispatch: { inputs: Record<string, unknown> };
+      }
+    ).workflow_dispatch.inputs;
+    expect(promoteInputs.allow_vnet_gateway_create).toBeUndefined();
+    expect(promoteInputs.allow_vnet_gateway_update).toBeUndefined();
+    expect(promoteInputs.allow_vnet_gateway_delete).toBeUndefined();
+    const jobs = promote.jobs as Record<
+      string,
+      Record<string, unknown>
+    >;
+    for (const jobName of ["dev", "test", "prod"]) {
+      const withInputs = jobs[jobName]?.with as Record<
+        string,
+        string
+      >;
+      expect(withInputs.allow_vnet_gateway_create).toBe(
+        "${{ toJSON(fromJSON(inputs.gateway_safeguards).allow_vnet_gateway_create) == 'true' }}",
+      );
+      expect(withInputs.allow_vnet_gateway_update).toBe(
+        "${{ toJSON(fromJSON(inputs.gateway_safeguards).allow_vnet_gateway_update) == 'true' }}",
+      );
+      expect(withInputs.allow_vnet_gateway_delete).toBe(
+        "${{ toJSON(fromJSON(inputs.gateway_safeguards).allow_vnet_gateway_delete) == 'true' }}",
       );
     }
   });

@@ -86,6 +86,38 @@ export interface WorkspaceIdentityDefinition {
   roleAssignments?: WorkspaceIdentityRoleAssignmentDefinition[];
 }
 
+export type VirtualNetworkGatewaySleepMinutes =
+  | 30
+  | 60
+  | 90
+  | 120
+  | 150
+  | 240
+  | 360
+  | 480
+  | 720
+  | 1440;
+
+export interface VirtualNetworkAzureResourceDefinition {
+  subscriptionId: string;
+  resourceGroupName: string;
+  virtualNetworkName: string;
+  subnetName: string;
+}
+
+export interface VirtualNetworkGatewayDefinition {
+  logicalId: string;
+  id?: string;
+  desiredState?: DesiredState;
+  displayName: string;
+  capacityId?: string;
+  virtualNetworkAzureResource: VirtualNetworkAzureResourceDefinition;
+  inactivityMinutesBeforeSleep?: VirtualNetworkGatewaySleepMinutes;
+  numberOfMemberGateways?: number;
+  minMemberGatewayCount?: number;
+  maxMemberGatewayCount?: number;
+}
+
 export type NetworkDefaultAction = "Allow" | "Deny";
 
 export interface NetworkCommunicationPolicyManifest {
@@ -171,6 +203,7 @@ export interface DeploymentManifest {
   };
   workspace?: WorkspaceDefinition;
   workspaceIdentity?: WorkspaceIdentityDefinition;
+  virtualNetworkGateways?: VirtualNetworkGatewayDefinition[];
   networkProtection?: NetworkProtectionManifest;
   items: DeploymentItem[];
 }
@@ -322,6 +355,23 @@ export interface PlannedWorkspaceIdentity {
   roleAssignments: PlannedWorkspaceIdentityRoleAssignment[];
 }
 
+export interface PlannedVirtualNetworkGateway {
+  logicalId: string;
+  desiredState: DesiredState;
+  displayName: string;
+  capacityId?: string;
+  virtualNetworkAzureResource: VirtualNetworkAzureResourceDefinition;
+  inactivityMinutesBeforeSleep?: VirtualNetworkGatewaySleepMinutes;
+  numberOfMemberGateways?: number;
+  minMemberGatewayCount?: number;
+  maxMemberGatewayCount?: number;
+  desiredHash: string;
+  observedStateHash: string;
+  physicalId?: string;
+  action: PlannedAction;
+  reason: string;
+}
+
 export type NetworkSurfaceAction = Extract<
   PlannedAction,
   "update" | "no-op" | "blocked" | "unknown"
@@ -404,6 +454,7 @@ export interface DeploymentPlan {
   workspaceId: string;
   workspace?: PlannedWorkspace;
   workspaceIdentity?: PlannedWorkspaceIdentity;
+  virtualNetworkGateways?: PlannedVirtualNetworkGateway[];
   networkProtection?: PlannedNetworkProtection;
   sourceCommit?: string;
   sourceHash: string;
@@ -454,6 +505,7 @@ export interface ApplyResult {
   completedAt: string;
   workspace?: ApplyWorkspaceResult;
   workspaceIdentity?: ApplyWorkspaceIdentityResult;
+  virtualNetworkGateways?: ApplyVirtualNetworkGatewayResult[];
   requiresItemReplan?: boolean;
   items: ApplyItemResult[];
   networkProtection?: ApplyNetworkProtectionResult;
@@ -481,6 +533,18 @@ export interface ApplyWorkspaceIdentityResult {
   applicationId: string;
   servicePrincipalId: string;
   roleAssignments: ApplyWorkspaceIdentityRoleAssignmentResult[];
+  durationMs: number;
+  error?: string;
+}
+
+export interface ApplyVirtualNetworkGatewayResult {
+  logicalId: string;
+  action: PlannedAction;
+  status: Extract<
+    ApplyItemStatus,
+    "created" | "updated" | "deleted" | "verified" | "resumed"
+  >;
+  physicalId?: string;
   durationMs: number;
   error?: string;
 }
@@ -622,7 +686,24 @@ export interface ApplyCheckpoint {
   oneLakeArtifacts?: Record<string, ApplyCheckpointOneLakeArtifacts>;
   tagAssignments?: Record<string, ApplyCheckpointTagAssignment>;
   workspaceIdentity?: ApplyCheckpointWorkspaceIdentity;
+  virtualNetworkGateways?: Record<
+    string,
+    ApplyCheckpointVirtualNetworkGateway
+  >;
   networkProtection?: ApplyCheckpointNetworkProtection;
+}
+
+export interface ApplyCheckpointVirtualNetworkGateway {
+  logicalId: string;
+  desiredHash: string;
+  action: Extract<
+    PlannedAction,
+    "create" | "update" | "delete" | "no-op"
+  >;
+  phase: "submitting" | "accepted" | "verified";
+  physicalId?: string;
+  observedStateHash?: string;
+  updatedAt: string;
 }
 
 export interface ApplyCheckpointWorkspaceIdentityProvision {

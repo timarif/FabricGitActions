@@ -223,6 +223,31 @@ export async function writeJobSummary(plan: DeploymentPlan): Promise<void> {
     }
   }
 
+  if ((plan.virtualNetworkGateways?.length ?? 0) > 0) {
+    core.summary
+      .addHeading("Virtual network data gateways", 2)
+      .addTable([
+        [
+          { data: "Logical ID", header: true },
+          { data: "Display name", header: true },
+          { data: "Desired state", header: true },
+          { data: "Action", header: true },
+          { data: "Capacity", header: true },
+          { data: "Virtual network / subnet", header: true },
+          { data: "Reason", header: true },
+        ],
+        ...plan.virtualNetworkGateways!.map((gateway) => [
+          gateway.logicalId,
+          gateway.displayName,
+          gateway.desiredState,
+          gateway.action,
+          gateway.capacityId ?? "-",
+          `${gateway.virtualNetworkAzureResource.virtualNetworkName} / ${gateway.virtualNetworkAzureResource.subnetName}`,
+          gateway.reason,
+        ]),
+      ]);
+  }
+
   if (plan.networkProtection) {
     const networkProtection = plan.networkProtection;
     const surfaceRows: Array<[string, string, string, string]> = [
