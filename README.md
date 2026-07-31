@@ -2,7 +2,7 @@
 
 A GitHub Marketplace action for declarative Microsoft Fabric deployments,
 covering core Data Engineering, Data Factory, Power BI, network protection,
-Data Warehouse, and Real-Time Intelligence workloads.
+Data Warehouse, Real-Time Intelligence, and Ontology workloads.
 
 > [!IMPORTANT]
 > Fabric Deploy is an independent community project. It is not an official
@@ -29,7 +29,9 @@ Data Warehouse, and Real-Time Intelligence workloads.
 > KQL Database, and Warehouse disposable live validation is complete.
 > Eventstream definition deployment (topology, retention, and throughput),
 > guarded Copy Job deployment, and explicit on-demand Data Pipeline execution
-> are also implemented. See
+> are also implemented. Preview Fabric Ontologies support deterministic
+> definition deployment, guarded lifecycle operations, and soft deletion;
+> disposable create/no-op/update/delete live validation is complete. See
 > [the roadmap](docs/ROADMAP.md).
 
 For sequential environment deployment, see the
@@ -38,6 +40,8 @@ The [live sandbox E2E guide](docs/LIVE_E2E.md) describes disposable
 workspace validation and cleanup.
 The [Fabric platform expansion plan](docs/PHASE5_PLAN.md) defines the network
 protection, Semantic Model, Power BI report, and remaining item roadmap.
+The [Ontology guide](docs/ONTOLOGY.md) documents the preview definition
+contract, permissions, and current source-binding limitations.
 For operational help and release verification, see
 [`SUPPORT.md`](SUPPORT.md), [`SECURITY.md`](SECURITY.md), and the
 [release guide](docs/RELEASING.md).
@@ -61,6 +65,7 @@ For operational help and release verification, see
 - Power BI Report
 - Eventstream
 - Data Agent
+- Ontology
 
 ## Quickstart
 
@@ -214,9 +219,9 @@ Without authentication, `plan` is offline and reports item actions as
 `unknown`. With Fabric authentication configured, workspace identities and
 role grants, Virtual Network data gateways, Lakehouses, Environments,
 Notebooks, LakehouseTables bundles, Fabric tags, Spark Job Definitions, Data
-Pipelines, Copy Jobs, Semantic Models, Power BI Reports, and workspace custom
-Spark pools are classified as `create`, `update`, `delete`, `no-op`, or
-`blocked`; later workload adapters remain `unknown`.
+Pipelines, Copy Jobs, Semantic Models, Power BI Reports, Ontologies, and
+workspace custom Spark pools are classified as `create`, `update`, `delete`,
+`no-op`, or `blocked`; later workload adapters remain `unknown`.
 
 ## Network protection
 
@@ -584,9 +589,10 @@ management, Shortcut databases, and deletion are intentionally deferred. See
 
 ### Guarded item deletion
 
-Lakehouse, Environment, Notebook, Spark Job Definition, Data Pipeline, Copy Job, and
-Semantic Model items can declare `desiredState: absent`. Deletion intent must
-be explicit in both the deployment manifest and `item.yaml`:
+Lakehouse, Environment, Notebook, Spark Job Definition, Data Pipeline, Copy
+Job, Semantic Model, Eventstream, and Ontology items can declare
+`desiredState: absent`. Deletion intent must be explicit in both the deployment
+manifest and `item.yaml`:
 
 ```yaml
 # deployment.yaml
@@ -617,8 +623,8 @@ deleted before their dependencies. A present item cannot depend on an absent
 item. Lakehouse deletion additionally requires
 `allow-lakehouse-data-loss: "true"` so a generic delete approval cannot remove
 Lakehouse data. Eventhouse, KQL Database, FabricTag, LakehouseTables, and
-workspace custom Spark pool, and Data Agent
-deletion remain unsupported.
+workspace custom Spark pool, Data Agent, Report, and Warehouse deletion remain
+unsupported.
 
 See [`examples/deletion`](examples/deletion) for a Lakehouse and dependent
 Data Pipeline retirement manifest.
@@ -689,6 +695,7 @@ deletion-only items use only `item.yaml` as described above.
 | Copy Job | `definition/copyjob-content.json` containing `{ "properties": { "jobMode": "Batch" } }` or `"CDC"` |
 | Semantic Model | TMSL: `definition/model.bim` plus `definition/definition.pbism`; TMDL: `definition/definition.pbism` plus one or more `definition/definition/**/*.tmdl` files; optional `definition/diagramLayout.json`, `definition/.platform`, and `definition/Copilot/*.json` / `definition/Copilot/*.md` |
 | Report | PBIR: `definition/definition.pbir`, `definition/definition/report.json`, `definition/definition/version.json`, and supported pages/visuals/bookmarks; PBIR-Legacy: `definition/definition.pbir` plus root `definition/report.json`; optional `definition/StaticResources/**`, `definition/semanticModelDiagramLayout.json`, and `definition/.platform` |
+| Ontology | JSON definition with `definition/definition.json` containing `{}`, `definition/.platform`, and optional documented `EntityTypes/**` and `RelationshipTypes/**` parts |
 | Workspace custom Spark pool | `definition/pool.yaml` with node family, node size, autoscale, and dynamic executor allocation settings |
 
 ### Lakehouse table DDL
@@ -1045,6 +1052,38 @@ deleted from the agent on the next deployment. See
 See [`examples/data-agent`](examples/data-agent) for a complete working example
 with a full definition agent and a shell agent.
 
+### Ontology
+
+Ontologies (`type: Ontology`) use the preview
+`/v1/workspaces/{workspaceId}/ontologies` API and the Fabric JSON definition
+format:
+
+```yaml
+items:
+  - logicalId: assetOntology
+    type: Ontology
+    path: items/ontologies/assets
+```
+
+Each present Ontology requires `definition/definition.json` containing `{}`,
+`definition/.platform`, and any exported entity or relationship definition
+parts. Entity and relationship directory IDs must be positive signed 64-bit
+integers and must match the `id` in their `definition.json`.
+
+JSON formatting and property order do not create drift. Service-managed
+`.platform.config.logicalId`, generated `$schema` fields, and empty optional
+entity collections are normalized while display name and description are
+verified through item metadata. Create, metadata update, definition update,
+read-back verification, checkpoint recovery, no-op planning, and guarded soft
+deletion are supported.
+
+The preview create API does not document `folderId`, so Ontology folder
+placement is rejected. Logical Lakehouse and KQL source binding materialization
+is also deferred; exported data bindings must currently contain explicit
+physical Fabric workspace and item IDs. See
+[`docs/ONTOLOGY.md`](docs/ONTOLOGY.md) and
+[`examples/ontology`](examples/ontology).
+
 Optional non-sensitive deployment variables can be passed explicitly:
 
 ```yaml
@@ -1114,6 +1153,7 @@ The action currently implements:
 - Copy Job definition mapping, create/update, guarded deletion, and read-back verification
 - Semantic Model TMSL/TMDL mapping, create/update, and read-back verification
 - Report PBIR/PBIR-Legacy mapping, symbolic Semantic Model binding, create/update, and read-back verification
+- Ontology JSON definition mapping, create/update, guarded deletion, and read-back verification
 - Workspace custom Spark pool mapping, create/update, and read-back verification
 - Fabric tenant/domain tag creation and additive item tag assignment
 - Published Environment definition proof and target-version advancement checks
@@ -1121,7 +1161,7 @@ The action currently implements:
 - Authenticated create/update/no-op planning
 - Approved-plan integrity and source-commit binding
 - Pre-mutation drift and authorization checks
-- Lakehouse, Eventhouse, KQL Database, Warehouse, Environment, Notebook, Spark Job Definition, Data Pipeline, Copy Job, Semantic Model, Report, Eventstream, workspace custom Spark pool, and Data Agent create/update/no-op apply
+- Lakehouse, Eventhouse, KQL Database, Warehouse, Environment, Notebook, Spark Job Definition, Data Pipeline, Copy Job, Semantic Model, Report, Eventstream, Ontology, workspace custom Spark pool, and Data Agent create/update/no-op apply
 - Data Agent shell-create with physicalId+shellDefinitionHash proof checkpoint; definition staging with checkpointed phases; strict desired-schema validation
 - Data Agent `desiredState: absent` intentionally deferred pending definition-aware drift proof
 - Checkpoint and result artifacts

@@ -31,6 +31,10 @@ describe("generic Fabric item deletion adapter", () => {
     );
   });
 
+  it("treats Ontology as a generic soft-deletable item type", () => {
+    expect(isDeletableFabricItemType("Ontology")).toBe(true);
+  });
+
   it("does not permit name-based Report deletion", () => {
     expect(isDeletableFabricItemType("Report")).toBe(false);
   });

@@ -28,6 +28,7 @@ import {
 } from "./fabric/semantic-model-definition";
 import { loadEventstreamDefinition } from "./fabric/eventstream-definition";
 import { loadDataAgentDefinition } from "./fabric/data-agent-definition";
+import { loadOntologyDefinition } from "./fabric/ontology-definition";
 import { loadLakehouseTablesDefinition } from "./fabric/lakehouse-tables-definition";
 import { loadSparkCustomPoolDefinition } from "./fabric/spark-custom-pool-definition";
 import { normalizeNetworkProtection } from "./fabric/network-protection";
@@ -401,6 +402,20 @@ export function loadManifest(
         ),
       ]),
   );
+  const ontologyDefinitions = Object.fromEntries(
+    manifest.items
+      .filter(
+        (item) =>
+          item.type === "Ontology" &&
+          item.desiredState !== "absent",
+      )
+      .map((item) => [
+        item.logicalId,
+        loadOntologyDefinition(
+          itemContent.directories[item.logicalId] ?? "",
+        ),
+      ]),
+  );
   const lakehouseTablesDefinitions = Object.fromEntries(
     manifest.items
       .filter(
@@ -461,6 +476,11 @@ export function loadManifest(
     itemDefinitions,
     eventstreamDefinitions,
   );
+  validateOntologyPlatformMetadata(
+    manifest,
+    itemDefinitions,
+    ontologyDefinitions,
+  );
   validateUniqueSemanticModelPlatformLogicalIds(
     manifest,
     semanticModelDefinitions,
@@ -519,6 +539,8 @@ export function loadManifest(
             eventstreamDefinitions[item.logicalId] ?? null,
           capturedDataAgentDefinition:
             dataAgentDefinitions[item.logicalId] ?? null,
+          capturedOntologyDefinition:
+            ontologyDefinitions[item.logicalId] ?? null,
           capturedSparkCustomPoolDefinition:
             sparkCustomPoolDefinitions[item.logicalId] ?? null,
           capturedLakehouseTablesDefinition:
@@ -547,6 +569,7 @@ export function loadManifest(
     reportDefinitions,
     eventstreamDefinitions,
     dataAgentDefinitions,
+    ontologyDefinitions,
     sparkCustomPoolDefinitions,
     lakehouseTablesDefinitions,
   };
@@ -721,6 +744,32 @@ function validateEventstreamPlatformMetadata(
   }
 }
 
+function validateOntologyPlatformMetadata(
+  manifest: DeploymentManifest,
+  definitions: LoadedManifest["itemDefinitions"],
+  ontologyDefinitions: LoadedManifest["ontologyDefinitions"],
+): void {
+  for (const item of manifest.items) {
+    if (item.type !== "Ontology") {
+      continue;
+    }
+    const desired = definitions[item.logicalId];
+    const fabricDefinition = ontologyDefinitions?.[item.logicalId];
+    const platformPart = fabricDefinition?.parts.find(
+      (part) => part.path === ".platform",
+    );
+    if (!desired || !platformPart) {
+      continue;
+    }
+    validatePlatformMetadata(
+      item.logicalId,
+      "Ontology",
+      desired,
+      platformPart.payload,
+    );
+  }
+}
+
 function validateCopyJobPlatformMetadata(
   manifest: DeploymentManifest,
   definitions: LoadedManifest["itemDefinitions"],
@@ -863,7 +912,8 @@ function validatePlatformMetadata(
     | "CopyJob"
     | "SemanticModel"
     | "Report"
-    | "Eventstream",
+    | "Eventstream"
+    | "Ontology",
   desired: LoadedManifest["itemDefinitions"][string],
   payload: string,
 ): void {
@@ -911,6 +961,17 @@ function validatePlatformMetadata(
     throw new Error(
       `${type} item '${logicalId}' .platform displayName must match item.yaml.`,
     );
+  }
+  if (type === "Ontology") {
+    if (
+      values.description !== undefined &&
+      (values.description ?? "") !== (desired.description ?? "")
+    ) {
+      throw new Error(
+        `${type} item '${logicalId}' .platform description must match item.yaml when provided.`,
+      );
+    }
+    return;
   }
   if (desired.description === undefined) {
     throw new Error(
@@ -1093,7 +1154,8 @@ function validateUniqueDesiredIdentities(
     | "SemanticModel"
     | "Report"
     | "Eventstream"
-    | "DataAgent",
+    | "DataAgent"
+    | "Ontology",
     Map<string, string>
   >([
     ["Lakehouse", new Map()],
@@ -1110,6 +1172,7 @@ function validateUniqueDesiredIdentities(
     ["Report", new Map()],
     ["Eventstream", new Map()],
     ["DataAgent", new Map()],
+    ["Ontology", new Map()],
   ]);
   for (const item of manifest.items) {
     if (
@@ -1126,7 +1189,8 @@ function validateUniqueDesiredIdentities(
       item.type !== "SemanticModel" &&
       item.type !== "Report" &&
       item.type !== "Eventstream" &&
-      item.type !== "DataAgent"
+      item.type !== "DataAgent" &&
+      item.type !== "Ontology"
     ) {
       continue;
     }

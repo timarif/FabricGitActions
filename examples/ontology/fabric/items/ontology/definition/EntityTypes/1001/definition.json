@@ -1,0 +1,22 @@
+{
+  "id": "1001",
+  "namespace": "usertypes",
+  "baseEntityTypeId": null,
+  "name": "Asset",
+  "entityIdParts": [
+    "2001"
+  ],
+  "displayNamePropertyId": "2001",
+  "namespaceType": "Custom",
+  "visibility": "Visible",
+  "properties": [
+    {
+      "id": "2001",
+      "name": "AssetId",
+      "redefines": null,
+      "baseTypeNamespaceType": null,
+      "valueType": "String"
+    }
+  ],
+  "timeseriesProperties": []
+}

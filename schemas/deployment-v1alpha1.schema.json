@@ -507,7 +507,8 @@
               "Report",
               "Warehouse",
               "Eventstream",
-              "DataAgent"
+              "DataAgent",
+              "Ontology"
             ]
           },
           "path": {

@@ -11,6 +11,7 @@ import { parse } from "yaml";
 import { loadEnvironmentDefinition } from "./fabric/definition";
 import { loadEventstreamDefinition } from "./fabric/eventstream-definition";
 import { loadDataAgentDefinition } from "./fabric/data-agent-definition";
+import { loadOntologyDefinition } from "./fabric/ontology-definition";
 import { loadNotebookDefinition } from "./fabric/notebook-definition";
 import { loadCopyJobDefinition } from "./fabric/copy-job-definition";
 import { loadReportDefinition } from "./fabric/report-definition";
@@ -203,6 +204,7 @@ function validateDeletionDefinition(
     case "CopyJob":
     case "SemanticModel":
     case "Eventstream":
+    case "Ontology":
       return;
     case "DataAgent":
       throw new Error(
@@ -471,6 +473,28 @@ function validateTypeSpecificDefinition(
       // Files/Config/ directory is optional — shell creation (no definition) is supported.
       // Eagerly validate the definition if the directory is present.
       loadDataAgentDefinition(itemDirectory);
+      return;
+    case "Ontology":
+      if (!/^[A-Za-z][A-Za-z0-9_]{0,98}$/.test(definition.displayName)) {
+        throw new Error(
+          `Item '${item.logicalId}' Ontology displayName must begin with a letter, contain only letters, numbers, and underscores, and be at most 99 characters.`,
+        );
+      }
+      if (definition.folderId !== undefined) {
+        throw new Error(
+          `Item '${item.logicalId}' Ontology folder placement is not supported because the preview Create Ontology API does not document folderId.`,
+        );
+      }
+      if (
+        definition.references !== undefined ||
+        definition.bindings !== undefined
+      ) {
+        throw new Error(
+          `Item '${item.logicalId}' Ontology logical source bindings are not supported in this release; use an exported definition with explicit Fabric workspace and item IDs.`,
+        );
+      }
+      definitionDirectory(item, itemDirectory);
+      loadOntologyDefinition(itemDirectory);
       return;
     default:
       assertNever(item.type);

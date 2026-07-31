@@ -52,6 +52,11 @@ import {
   notebookIncludesPlatformPart,
 } from "./fabric/notebook-definition";
 import type {
+  OntologyAdapter,
+  OntologyOperationReference,
+} from "./fabric/ontology";
+import { hashOntologyDefinition } from "./fabric/ontology-definition";
+import type {
   PipelineAdapter,
   PipelineOperationReference,
 } from "./fabric/pipeline";
@@ -211,6 +216,10 @@ export interface ApplyPlanOptions {
   >;
   notebookAdapter?: Pick<
     NotebookAdapter,
+    "create" | "update" | "verify" | "resumeCreate" | "plan"
+  >;
+  ontologyAdapter?: Pick<
+    OntologyAdapter,
     "create" | "update" | "verify" | "resumeCreate" | "plan"
   >;
   sparkJobAdapter?: Pick<
@@ -1761,6 +1770,7 @@ function assertSupportedApplyItem(
     item.type !== "Environment" &&
     item.type !== "SparkCustomPool" &&
     item.type !== "Notebook" &&
+    item.type !== "Ontology" &&
     item.type !== "SparkJobDefinition" &&
     item.type !== "DataPipeline" &&
     item.type !== "CopyJob" &&
@@ -1809,6 +1819,15 @@ function assertSupportedApplyItem(
   ) {
     throw new Error(
       `Notebook adapter was not initialized for item '${item.logicalId}'.`,
+    );
+  }
+  if (
+    item.desiredState !== "absent" &&
+    item.type === "Ontology" &&
+    !options.ontologyAdapter
+  ) {
+    throw new Error(
+      `Ontology adapter was not initialized for item '${item.logicalId}'.`,
     );
   }
   if (
@@ -2110,6 +2129,7 @@ async function resumePendingOperations(
           approvedItem.type !== "Environment" &&
           approvedItem.type !== "SparkCustomPool" &&
           approvedItem.type !== "Notebook" &&
+          approvedItem.type !== "Ontology" &&
           approvedItem.type !== "SparkJobDefinition" &&
           approvedItem.type !== "DataPipeline" &&
           approvedItem.type !== "CopyJob" &&
@@ -2286,6 +2306,7 @@ async function reconcilePendingCreates(
           approvedItem.type !== "Environment" &&
           approvedItem.type !== "SparkCustomPool" &&
           approvedItem.type !== "Notebook" &&
+          approvedItem.type !== "Ontology" &&
           approvedItem.type !== "SparkJobDefinition" &&
           approvedItem.type !== "DataPipeline" &&
           approvedItem.type !== "CopyJob" &&
@@ -2394,6 +2415,7 @@ async function reconcilePendingUpdates(
           approvedItem.type !== "Environment" &&
           approvedItem.type !== "SparkCustomPool" &&
           approvedItem.type !== "Notebook" &&
+          approvedItem.type !== "Ontology" &&
           approvedItem.type !== "SparkJobDefinition" &&
           approvedItem.type !== "DataPipeline" &&
           approvedItem.type !== "CopyJob" &&
@@ -2426,6 +2448,13 @@ async function reconcilePendingUpdates(
           )) ||
           (approvedItem.type === "Notebook" &&
             hasNotebookRecoveryProof(
+              options,
+              approvedItem,
+              live,
+              intent,
+            )) ||
+          (approvedItem.type === "Ontology" &&
+            hasOntologyRecoveryProof(
               options,
               approvedItem,
               live,
@@ -4670,6 +4699,7 @@ async function applyItem(
       | KqlDatabaseOperationReference
       | EnvironmentOperationReference
       | NotebookOperationReference
+      | OntologyOperationReference
       | SparkJobOperationReference
       | PipelineOperationReference
       | SemanticModelOperationReference
@@ -4693,6 +4723,7 @@ async function applyItem(
     item.type !== "Environment" &&
     item.type !== "SparkCustomPool" &&
     item.type !== "Notebook" &&
+    item.type !== "Ontology" &&
     item.type !== "SparkJobDefinition" &&
     item.type !== "DataPipeline" &&
     item.type !== "CopyJob" &&
@@ -4991,6 +5022,7 @@ async function resumeCompletedItem(
     item.type !== "Environment" &&
     item.type !== "SparkCustomPool" &&
     item.type !== "Notebook" &&
+    item.type !== "Ontology" &&
     item.type !== "SparkJobDefinition" &&
     item.type !== "DataPipeline" &&
     item.type !== "CopyJob" &&
@@ -5113,6 +5145,13 @@ async function planDesiredItem(
       options.approvedPlan.workspaceId,
       desired,
       requireNotebookDefinition(options, item.logicalId),
+    );
+  }
+  if (item.type === "Ontology") {
+    return requireOntologyAdapter(options, item.logicalId).plan(
+      options.approvedPlan.workspaceId,
+      desired,
+      requireOntologyDefinition(options, item.logicalId),
     );
   }
   if (item.type === "SparkJobDefinition") {
@@ -5239,6 +5278,7 @@ async function createDesiredItem(
       | WarehouseOperationReference
       | EnvironmentOperationReference
       | NotebookOperationReference
+      | OntologyOperationReference
       | SparkJobOperationReference
       | PipelineOperationReference
       | SemanticModelOperationReference
@@ -5347,6 +5387,17 @@ async function createDesiredItem(
       onCreateRejected,
     );
   }
+  if (item.type === "Ontology") {
+    return requireOntologyAdapter(options, item.logicalId).create(
+      options.approvedPlan.workspaceId,
+      desired,
+      requireOntologyDefinition(options, item.logicalId),
+      onMutationAccepted,
+      onOperationAccepted,
+      onCreateSubmitting,
+      onCreateRejected,
+    );
+  }
   if (item.type === "SparkJobDefinition") {
     return requireSparkJobAdapter(options, item.logicalId).create(
       options.approvedPlan.workspaceId,
@@ -5448,6 +5499,7 @@ async function resumeCreateDesiredItem(
     | WarehouseOperationReference
     | EnvironmentOperationReference
     | NotebookOperationReference
+    | OntologyOperationReference
     | SparkJobOperationReference
     | PipelineOperationReference
     | CopyJobOperationReference
@@ -5516,6 +5568,18 @@ async function resumeCreateDesiredItem(
       options.approvedPlan.workspaceId,
       desired,
       requireNotebookDefinition(options, item.logicalId),
+      operation,
+      onMutationAccepted,
+    );
+  }
+  if (item.type === "Ontology") {
+    return requireOntologyAdapter(
+      options,
+      item.logicalId,
+    ).resumeCreate(
+      options.approvedPlan.workspaceId,
+      desired,
+      requireOntologyDefinition(options, item.logicalId),
       operation,
       onMutationAccepted,
     );
@@ -5720,6 +5784,17 @@ async function updateDesiredItem(
       onUpdateRejected,
     );
   }
+  if (item.type === "Ontology") {
+    return requireOntologyAdapter(options, item.logicalId).update(
+      options.approvedPlan.workspaceId,
+      physicalId,
+      desired,
+      requireOntologyDefinition(options, item.logicalId),
+      onMutationAccepted,
+      onUpdateSubmitting,
+      onUpdateRejected,
+    );
+  }
   if (item.type === "SparkJobDefinition") {
     return requireSparkJobAdapter(options, item.logicalId).update(
       options.approvedPlan.workspaceId,
@@ -5875,6 +5950,14 @@ async function verifyDesiredItem(
       physicalId,
       desired,
       requireNotebookDefinition(options, item.logicalId),
+    );
+  }
+  if (item.type === "Ontology") {
+    return requireOntologyAdapter(options, item.logicalId).verify(
+      options.approvedPlan.workspaceId,
+      physicalId,
+      desired,
+      requireOntologyDefinition(options, item.logicalId),
     );
   }
   if (item.type === "SparkJobDefinition") {
@@ -6125,6 +6208,32 @@ function requireNotebookDefinition(
   if (!definition) {
     throw new Error(
       `Notebook definition snapshot is missing for '${logicalId}'.`,
+    );
+  }
+  return definition;
+}
+
+function requireOntologyAdapter(
+  options: ApplyPlanOptions,
+  logicalId: string,
+): NonNullable<ApplyPlanOptions["ontologyAdapter"]> {
+  if (!options.ontologyAdapter) {
+    throw new Error(
+      `Ontology adapter was not initialized for item '${logicalId}'.`,
+    );
+  }
+  return options.ontologyAdapter;
+}
+
+function requireOntologyDefinition(
+  options: ApplyPlanOptions,
+  logicalId: string,
+) {
+  const definition =
+    options.loadedManifest.ontologyDefinitions?.[logicalId];
+  if (!definition) {
+    throw new Error(
+      `Ontology definition snapshot is missing for '${logicalId}'.`,
     );
   }
   return definition;
@@ -6725,6 +6834,48 @@ function hasNotebookRecoveryProof(
     desiredDefinition,
     notebookIncludesPlatformPart(desiredDefinition),
   );
+  if (
+    live.managedMetadataMatches === true &&
+    live.stagedDefinitionHash === expectedDefinitionHash
+  ) {
+    return true;
+  }
+  if (
+    !intent ||
+    (intent.phase !== "metadata-submitting" &&
+      intent.phase !== "metadata-updated")
+  ) {
+    return false;
+  }
+  return (
+    live.managedMetadataMatches === true &&
+    live.stagedDefinitionHash === intent.stagedDefinitionHash
+  );
+}
+
+function hasOntologyRecoveryProof(
+  options: ApplyPlanOptions,
+  item: PlannedItem,
+  live: {
+    action: PlannedAction;
+    observedStateHash: string;
+    stagedDefinitionHash?: string;
+    managedMetadataMatches?: boolean;
+  },
+  intent?: ApplyCheckpoint["pendingUpdates"][string],
+): boolean {
+  if (item.type !== "Ontology") {
+    return false;
+  }
+  if (live.observedStateHash === item.observedStateHash) {
+    return true;
+  }
+  const desiredDefinition = requireOntologyDefinition(
+    options,
+    item.logicalId,
+  );
+  const expectedDefinitionHash =
+    hashOntologyDefinition(desiredDefinition);
   if (
     live.managedMetadataMatches === true &&
     live.stagedDefinitionHash === expectedDefinitionHash
