@@ -14,7 +14,8 @@ export type DeletableFabricItemType =
   | "DataPipeline"
   | "CopyJob"
   | "SemanticModel"
-  | "Eventstream";
+  | "Eventstream"
+  | "Ontology";
 
 export interface FabricWorkspaceItem {
   id: string;
@@ -185,7 +186,8 @@ export function isDeletableFabricItemType(
     itemType === "DataPipeline" ||
     itemType === "CopyJob" ||
     itemType === "SemanticModel" ||
-    itemType === "Eventstream"
+    itemType === "Eventstream" ||
+    itemType === "Ontology"
   );
 }
 
@@ -257,5 +259,7 @@ function displayType(itemType: DeletableFabricItemType): string {
       return "Semantic Model";
     case "Eventstream":
       return "Eventstream";
+    case "Ontology":
+      return "Ontology";
   }
 }

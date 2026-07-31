@@ -37,6 +37,7 @@ import type { DataAgentAdapter } from "./data-agent";
 import type { SparkCustomPoolAdapter } from "./spark-custom-pool";
 import type { SparkJobAdapter } from "./spark-job";
 import type { EventstreamAdapter } from "./eventstream";
+import type { OntologyAdapter } from "./ontology";
 import type { FabricTagAdapter } from "./tags";
 import {
   buildTagAssignmentHash,
@@ -81,6 +82,7 @@ export interface FabricPlanAdapters {
     Partial<Pick<ReportAdapter, "planUnresolvedReferences">>;
   eventstream?: Pick<EventstreamAdapter, "plan">;
   dataAgent?: Pick<DataAgentAdapter, "plan">;
+  ontology?: Pick<OntologyAdapter, "plan">;
   sparkCustomPool: Pick<SparkCustomPoolAdapter, "plan">;
   tags?: Pick<FabricTagAdapter, "plan" | "planItemAssignment">;
   lakehouseTables?: Pick<LakehouseTablesAdapter, "plan">;
@@ -295,6 +297,7 @@ export async function enrichPlanWithFabric(
       item.type !== "Report" &&
       item.type !== "Eventstream" &&
       item.type !== "DataAgent" &&
+      item.type !== "Ontology" &&
       item.type !== "FabricTag"
     ) {
       plannedItems.set(item.logicalId, {
@@ -637,6 +640,18 @@ export async function enrichPlanWithFabric(
                             item.logicalId,
                           ),
                         )
+                      : item.type === "Ontology"
+                        ? await requireOntologyAdapter(
+                            adapters,
+                            item.logicalId,
+                          ).plan(
+                            workspaceId,
+                            desired,
+                            requireOntologyDefinition(
+                              loadedManifest,
+                              item.logicalId,
+                            ),
+                          )
                       : item.type === "DataAgent"
                         ? await planDataAgent(
                             workspaceId,
@@ -836,6 +851,32 @@ export async function enrichPlanWithFabric(
       );
     }
     return adapters.eventstream;
+  }
+
+  function requireOntologyDefinition(
+    loadedManifest: LoadedManifest,
+    logicalId: string,
+  ) {
+    const definition =
+      loadedManifest.ontologyDefinitions?.[logicalId];
+    if (!definition) {
+      throw new Error(
+        `The resolved Ontology definition is missing for '${logicalId}'.`,
+      );
+    }
+    return definition;
+  }
+
+  function requireOntologyAdapter(
+    adapters: FabricPlanAdapters,
+    logicalId: string,
+  ): NonNullable<FabricPlanAdapters["ontology"]> {
+    if (!adapters.ontology) {
+      throw new Error(
+        `Ontology adapter is missing for '${logicalId}'.`,
+      );
+    }
+    return adapters.ontology;
   }
 
   const orderedItems = plan.items.map((item) => {

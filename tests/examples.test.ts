@@ -158,6 +158,14 @@ const examples: ExampleCase[] = [
     options: { workspaceIdOverride: WORKSPACE_ID },
     itemCount: 2,
   },
+  {
+    name: "Ontology",
+    manifestPath: "ontology/fabric/deployment.yaml",
+    options: {
+      variables: { FABRIC_WORKSPACE_ID: WORKSPACE_ID },
+    },
+    itemCount: 1,
+  },
 ];
 
 describe("maintained examples", () => {

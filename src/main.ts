@@ -38,6 +38,7 @@ import {
 } from "./fabric/managed-private-endpoints";
 import { NetworkProtectionAdapter } from "./fabric/network-protection";
 import { NotebookAdapter } from "./fabric/notebook";
+import { OntologyAdapter } from "./fabric/ontology";
 import { OneLakeArtifactStager } from "./fabric/onelake-artifacts";
 import { PipelineAdapter } from "./fabric/pipeline";
 import { PipelineJobAdapter } from "./fabric/pipeline-job";
@@ -407,6 +408,7 @@ export async function run(): Promise<void> {
     let environmentAdapter: EnvironmentAdapter | undefined;
     let itemDeletionAdapter: ItemDeletionAdapter | undefined;
     let notebookAdapter: NotebookAdapter | undefined;
+    let ontologyAdapter: OntologyAdapter | undefined;
     let sparkJobAdapter: SparkJobAdapter | undefined;
     let pipelineAdapter: PipelineAdapter | undefined;
     let copyJobAdapter: CopyJobAdapter | undefined;
@@ -461,6 +463,7 @@ export async function run(): Promise<void> {
       environmentAdapter = new EnvironmentAdapter(client);
       itemDeletionAdapter = new ItemDeletionAdapter(client);
       notebookAdapter = new NotebookAdapter(client);
+      ontologyAdapter = new OntologyAdapter(client);
       sparkJobAdapter = new SparkJobAdapter(client);
       pipelineAdapter = new PipelineAdapter(client);
       copyJobAdapter = new CopyJobAdapter(client);
@@ -617,6 +620,7 @@ export async function run(): Promise<void> {
         !warehouseAdapter ||
         !environmentAdapter ||
         !notebookAdapter ||
+        !ontologyAdapter ||
         !sparkJobAdapter ||
         !pipelineAdapter ||
         !copyJobAdapter ||
@@ -643,6 +647,7 @@ export async function run(): Promise<void> {
         warehouse: warehouseAdapter,
         environment: environmentAdapter,
         notebook: notebookAdapter,
+        ontology: ontologyAdapter,
         sparkJob: sparkJobAdapter,
         pipeline: pipelineAdapter,
         copyJob: copyJobAdapter,
@@ -824,6 +829,7 @@ export async function run(): Promise<void> {
         !environmentAdapter ||
         !itemDeletionAdapter ||
         !notebookAdapter ||
+        !ontologyAdapter ||
         !sparkJobAdapter ||
         !pipelineAdapter ||
         !copyJobAdapter ||
@@ -853,6 +859,7 @@ export async function run(): Promise<void> {
         environmentAdapter,
         itemDeletionAdapter,
         notebookAdapter,
+        ontologyAdapter,
         sparkJobAdapter,
         pipelineAdapter,
         copyJobAdapter,

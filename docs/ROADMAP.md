@@ -136,6 +136,19 @@ reference resolution.
 - [ ] Logical reference support for datasource.json artifactId bindings (Lakehouse / Warehouse / SemanticModel)
 - [ ] DataAgent deletion with definition-aware drift proof
 
+## Phase 11: Ontology
+
+- [x] Ontology item type, schema, manifest loading, and maintained example
+- [x] JSON definition validation for EntityTypes and RelationshipTypes
+- [x] Semantic JSON hashing with service-managed `.platform` normalization
+- [x] Authenticated create/update/no-op/blocked planning
+- [x] Guarded create/update apply, read-back verification, and checkpoint recovery
+- [x] Guarded generic soft deletion
+- [x] Sensitivity-label definition-read blocking
+- [x] Disposable live create/no-op/update/delete validation
+- [ ] Logical source binding materialization for Lakehouse and KQL data bindings
+- [ ] Folder placement when the preview create API formally supports `folderId`
+
 See [the Fabric platform expansion plan](PHASE5_PLAN.md) for the prioritized
 Real-Time Intelligence, warehouse/database, Data Factory, platform,
 application, additional Power BI, and service-principal-blocked item inventory.

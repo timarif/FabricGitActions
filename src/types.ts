@@ -22,6 +22,7 @@ export const FABRIC_ITEM_TYPES = [
   "Warehouse",
   "Eventstream",
   "DataAgent",
+  "Ontology",
 ] as const;
 
 export type FabricItemType = (typeof FABRIC_ITEM_TYPES)[number];
@@ -227,6 +228,7 @@ export interface LoadedManifest {
   reportDefinitions?: Record<string, FabricDefinition>;
   eventstreamDefinitions?: Record<string, FabricDefinition>;
   dataAgentDefinitions?: Record<string, FabricDefinition | undefined>;
+  ontologyDefinitions?: Record<string, FabricDefinition>;
   sparkCustomPoolDefinitions: Record<
     string,
     SparkCustomPoolDefinition
