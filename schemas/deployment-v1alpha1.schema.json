@@ -508,7 +508,8 @@
               "Warehouse",
               "Eventstream",
               "DataAgent",
-              "Ontology"
+              "Ontology",
+              "ApacheAirflowJob"
             ]
           },
           "path": {

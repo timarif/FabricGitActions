@@ -29,6 +29,7 @@ import {
 import { loadEventstreamDefinition } from "./fabric/eventstream-definition";
 import { loadDataAgentDefinition } from "./fabric/data-agent-definition";
 import { loadOntologyDefinition } from "./fabric/ontology-definition";
+import { loadApacheAirflowBundle } from "./fabric/apache-airflow-definition";
 import { loadLakehouseTablesDefinition } from "./fabric/lakehouse-tables-definition";
 import { loadSparkCustomPoolDefinition } from "./fabric/spark-custom-pool-definition";
 import { normalizeNetworkProtection } from "./fabric/network-protection";
@@ -416,6 +417,20 @@ export function loadManifest(
         ),
       ]),
   );
+  const apacheAirflowBundles = Object.fromEntries(
+    manifest.items
+      .filter(
+        (item) =>
+          item.type === "ApacheAirflowJob" &&
+          item.desiredState !== "absent",
+      )
+      .map((item) => [
+        item.logicalId,
+        loadApacheAirflowBundle(
+          itemContent.directories[item.logicalId] ?? "",
+        ),
+      ]),
+  );
   const lakehouseTablesDefinitions = Object.fromEntries(
     manifest.items
       .filter(
@@ -481,6 +496,11 @@ export function loadManifest(
     itemDefinitions,
     ontologyDefinitions,
   );
+  validateApacheAirflowPlatformMetadata(
+    manifest,
+    itemDefinitions,
+    apacheAirflowBundles,
+  );
   validateUniqueSemanticModelPlatformLogicalIds(
     manifest,
     semanticModelDefinitions,
@@ -541,6 +561,8 @@ export function loadManifest(
             dataAgentDefinitions[item.logicalId] ?? null,
           capturedOntologyDefinition:
             ontologyDefinitions[item.logicalId] ?? null,
+          capturedApacheAirflowBundle:
+            apacheAirflowBundles[item.logicalId] ?? null,
           capturedSparkCustomPoolDefinition:
             sparkCustomPoolDefinitions[item.logicalId] ?? null,
           capturedLakehouseTablesDefinition:
@@ -570,6 +592,7 @@ export function loadManifest(
     eventstreamDefinitions,
     dataAgentDefinitions,
     ontologyDefinitions,
+    apacheAirflowBundles,
     sparkCustomPoolDefinitions,
     lakehouseTablesDefinitions,
   };
@@ -770,6 +793,31 @@ function validateOntologyPlatformMetadata(
   }
 }
 
+function validateApacheAirflowPlatformMetadata(
+  manifest: DeploymentManifest,
+  definitions: LoadedManifest["itemDefinitions"],
+  bundles: NonNullable<LoadedManifest["apacheAirflowBundles"]>,
+): void {
+  for (const item of manifest.items) {
+    if (item.type !== "ApacheAirflowJob") {
+      continue;
+    }
+    const desired = definitions[item.logicalId];
+    const platformPart = bundles[item.logicalId]?.definition.parts.find(
+      (part) => part.path === ".platform",
+    );
+    if (!desired || !platformPart) {
+      continue;
+    }
+    validatePlatformMetadata(
+      item.logicalId,
+      "ApacheAirflowJob",
+      desired,
+      platformPart.payload,
+    );
+  }
+}
+
 function validateCopyJobPlatformMetadata(
   manifest: DeploymentManifest,
   definitions: LoadedManifest["itemDefinitions"],
@@ -913,7 +961,8 @@ function validatePlatformMetadata(
     | "SemanticModel"
     | "Report"
     | "Eventstream"
-    | "Ontology",
+    | "Ontology"
+    | "ApacheAirflowJob",
   desired: LoadedManifest["itemDefinitions"][string],
   payload: string,
 ): void {
@@ -1155,7 +1204,8 @@ function validateUniqueDesiredIdentities(
     | "Report"
     | "Eventstream"
     | "DataAgent"
-    | "Ontology",
+    | "Ontology"
+    | "ApacheAirflowJob",
     Map<string, string>
   >([
     ["Lakehouse", new Map()],
@@ -1173,6 +1223,7 @@ function validateUniqueDesiredIdentities(
     ["Eventstream", new Map()],
     ["DataAgent", new Map()],
     ["Ontology", new Map()],
+    ["ApacheAirflowJob", new Map()],
   ]);
   for (const item of manifest.items) {
     if (
@@ -1190,7 +1241,8 @@ function validateUniqueDesiredIdentities(
       item.type !== "Report" &&
       item.type !== "Eventstream" &&
       item.type !== "DataAgent" &&
-      item.type !== "Ontology"
+      item.type !== "Ontology" &&
+      item.type !== "ApacheAirflowJob"
     ) {
       continue;
     }

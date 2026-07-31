@@ -25,6 +25,10 @@ export interface FabricResponse<T> {
 
 export interface FabricRequestOptions {
   body?: unknown;
+  bodyType?: "json" | "raw";
+  responseType?: "json" | "text" | "bytes";
+  contentType?: string;
+  accept?: string;
   retryable?: boolean;
   retryMode?: "transient" | "throttling-only";
   acceptedStatuses?: number[];
@@ -182,17 +186,21 @@ export class FabricClient {
           headers: {
             ...requestOptions.headers,
             authorization: `Bearer ${token}`,
-            accept: "application/json",
+            accept: requestOptions.accept ?? "application/json",
             ...(requestOptions.body === undefined
               ? {}
-              : { "content-type": "application/json" }),
+              : {
+                  "content-type":
+                    requestOptions.contentType ??
+                    (requestOptions.bodyType === "raw"
+                      ? "application/octet-stream"
+                      : "application/json"),
+                }),
           },
-          body:
-            requestOptions.body === undefined
-              ? undefined
-              : JSON.stringify(requestOptions.body),
+          body: serializeRequestBody(requestOptions),
           signal: controller.signal,
         });
+        clearTimeout(timeout);
         if (
           !(
             retryable &&
@@ -200,8 +208,16 @@ export class FabricClient {
             attempt < this.options.maxRetries
           )
         ) {
+          const accepted =
+            requestOptions.acceptedStatuses?.includes(response.status) ??
+            response.ok;
           body = await withTimeout(
-            parseResponseBody(response),
+            parseResponseBody(
+              response,
+              accepted
+                ? (requestOptions.responseType ?? "json")
+                : "json",
+            ),
             remainingTime(
               requestDeadline,
               this.options.now(),
@@ -558,10 +574,44 @@ async function withTimeout<T>(
   }
 }
 
-async function parseResponseBody(response: Response): Promise<unknown> {
+function serializeRequestBody(
+  options: FabricRequestOptions,
+): BodyInit | undefined {
+  if (options.body === undefined) {
+    return undefined;
+  }
+  if (options.bodyType !== "raw") {
+    return JSON.stringify(options.body);
+  }
+  if (
+    typeof options.body === "string" ||
+    options.body instanceof Blob ||
+    options.body instanceof ArrayBuffer ||
+    ArrayBuffer.isView(options.body)
+  ) {
+    return options.body as BodyInit;
+  }
+  throw new Error(
+    "Fabric raw request bodies must be strings, blobs, array buffers, or typed arrays.",
+  );
+}
+
+async function parseResponseBody(
+  response: Response,
+  responseType: NonNullable<FabricRequestOptions["responseType"]>,
+): Promise<unknown> {
+  if (responseType === "bytes") {
+    const bytes = await response.arrayBuffer();
+    return bytes.byteLength === 0
+      ? undefined
+      : new Uint8Array(bytes);
+  }
   const text = await response.text();
   if (!text) {
     return undefined;
+  }
+  if (responseType === "text") {
+    return text;
   }
   try {
     return JSON.parse(text);
