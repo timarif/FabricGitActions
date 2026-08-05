@@ -847,6 +847,10 @@ describe("deployment workflow metadata", () => {
     expect(commands).not.toContain("targetCommitish");
     expect(commands).toContain('git rev-list -n 1 "$RELEASE_TAG"');
     expect(commands).toContain("latest_release");
+    expect(commands).toContain('stable_tags=("$RELEASE_TAG")');
+    expect(commands).toContain(
+      'git show "${major_tag}:package.json"',
+    );
     expect(commands).toContain(
       'git push origin "refs/tags/${major_tag}" --force',
     );
