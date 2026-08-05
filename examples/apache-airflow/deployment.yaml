@@ -1,0 +1,10 @@
+apiVersion: fabric.deploy/v1alpha1
+kind: FabricDeployment
+metadata:
+  deploymentId: apache-airflow-example
+workspace:
+  id: ${var.FABRIC_WORKSPACE_ID}
+items:
+  - logicalId: helloAirflow
+    type: ApacheAirflowJob
+    path: items/airflow

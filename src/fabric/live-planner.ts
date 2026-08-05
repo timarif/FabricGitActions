@@ -7,6 +7,7 @@ import {
 import type {
   DeploymentPlan,
   LoadedManifest,
+  PlannedApacheAirflowFiles,
   PlannedItem,
   PlannedNetworkProtection,
   PlannedVirtualNetworkGateway,
@@ -38,6 +39,7 @@ import type { SparkCustomPoolAdapter } from "./spark-custom-pool";
 import type { SparkJobAdapter } from "./spark-job";
 import type { EventstreamAdapter } from "./eventstream";
 import type { OntologyAdapter } from "./ontology";
+import type { ApacheAirflowAdapter } from "./apache-airflow";
 import type { FabricTagAdapter } from "./tags";
 import {
   buildTagAssignmentHash,
@@ -83,6 +85,7 @@ export interface FabricPlanAdapters {
   eventstream?: Pick<EventstreamAdapter, "plan">;
   dataAgent?: Pick<DataAgentAdapter, "plan">;
   ontology?: Pick<OntologyAdapter, "plan">;
+  apacheAirflow?: Pick<ApacheAirflowAdapter, "plan">;
   sparkCustomPool: Pick<SparkCustomPoolAdapter, "plan">;
   tags?: Pick<FabricTagAdapter, "plan" | "planItemAssignment">;
   lakehouseTables?: Pick<LakehouseTablesAdapter, "plan">;
@@ -298,6 +301,7 @@ export async function enrichPlanWithFabric(
       item.type !== "Eventstream" &&
       item.type !== "DataAgent" &&
       item.type !== "Ontology" &&
+      item.type !== "ApacheAirflowJob" &&
       item.type !== "FabricTag"
     ) {
       plannedItems.set(item.logicalId, {
@@ -652,6 +656,18 @@ export async function enrichPlanWithFabric(
                               item.logicalId,
                             ),
                           )
+                      : item.type === "ApacheAirflowJob"
+                        ? await requireApacheAirflowAdapter(
+                            adapters,
+                            item.logicalId,
+                          ).plan(
+                            workspaceId,
+                            desired,
+                            requireApacheAirflowBundle(
+                              loadedManifest,
+                              item.logicalId,
+                            ),
+                          )
                       : item.type === "DataAgent"
                         ? await planDataAgent(
                             workspaceId,
@@ -693,6 +709,14 @@ export async function enrichPlanWithFabric(
       ...("sparkJobArtifacts" in result &&
       result.sparkJobArtifacts !== undefined
         ? { sparkJobArtifacts: result.sparkJobArtifacts }
+        : {}),
+      ...("apacheAirflowFiles" in result &&
+      result.apacheAirflowFiles !== undefined &&
+      result.apacheAirflowFiles !== null
+        ? {
+            apacheAirflowFiles:
+              result.apacheAirflowFiles as PlannedApacheAirflowFiles,
+          }
         : {}),
     });
   }
@@ -877,6 +901,32 @@ export async function enrichPlanWithFabric(
       );
     }
     return adapters.ontology;
+  }
+
+  function requireApacheAirflowBundle(
+    loadedManifest: LoadedManifest,
+    logicalId: string,
+  ) {
+    const bundle =
+      loadedManifest.apacheAirflowBundles?.[logicalId];
+    if (!bundle) {
+      throw new Error(
+        `The resolved Apache Airflow Job bundle is missing for '${logicalId}'.`,
+      );
+    }
+    return bundle;
+  }
+
+  function requireApacheAirflowAdapter(
+    adapters: FabricPlanAdapters,
+    logicalId: string,
+  ): NonNullable<FabricPlanAdapters["apacheAirflow"]> {
+    if (!adapters.apacheAirflow) {
+      throw new Error(
+        `Apache Airflow Job adapter is missing for '${logicalId}'.`,
+      );
+    }
+    return adapters.apacheAirflow;
   }
 
   const orderedItems = plan.items.map((item) => {

@@ -149,6 +149,17 @@ reference resolution.
 - [ ] Logical source binding materialization for Lakehouse and KQL data bindings
 - [ ] Folder placement when the preview create API formally supports `folderId`
 
+## Phase 12: Apache Airflow Jobs
+
+- [x] Apache Airflow Job item type, schema, manifest loading, and maintained hello-world DAG
+- [x] Round-trippable `apacheairflowjob-content.json` definition validation and semantic hashing
+- [x] Raw beta Files API transport for DAG and plugin upload/download/delete
+- [x] Ownership-safe file planning with a reserved remote SHA-256 ledger
+- [x] Guarded create/update/no-op planning, apply, read-back verification, and checkpoint recovery
+- [x] Guarded generic soft deletion
+- [x] Disposable live create/no-op/update/delete validation
+- [ ] Hot requirements deployment and installed-library verification
+
 See [the Fabric platform expansion plan](PHASE5_PLAN.md) for the prioritized
 Real-Time Intelligence, warehouse/database, Data Factory, platform,
 application, additional Power BI, and service-principal-blocked item inventory.
