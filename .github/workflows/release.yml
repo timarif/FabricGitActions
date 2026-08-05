@@ -167,12 +167,23 @@ jobs:
                 | .tag_name
               '
           )
-          stable_tags=()
+          stable_tags=("$RELEASE_TAG")
           for candidate in "${published_tags[@]}"; do
             if [[ "$candidate" =~ ^${major_tag}\.[0-9]+\.[0-9]+$ ]]; then
               stable_tags+=("$candidate")
             fi
           done
+          if git rev-parse --verify --quiet \
+            "refs/tags/${major_tag}^{commit}" >/dev/null
+          then
+            major_version_tag="$(
+              git show "${major_tag}:package.json" \
+                | jq -r '"v" + .version'
+            )"
+            if [[ "$major_version_tag" =~ ^${major_tag}\.[0-9]+\.[0-9]+$ ]]; then
+              stable_tags+=("$major_version_tag")
+            fi
+          fi
           latest_release="$(
             printf '%s\n' "${stable_tags[@]}" \
               | sort --version-sort \
