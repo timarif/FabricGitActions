@@ -2,7 +2,7 @@
 
 A GitHub Marketplace action for declarative Microsoft Fabric deployments,
 covering core Data Engineering, Data Factory, Power BI, network protection,
-Data Warehouse, Real-Time Intelligence, and Ontology workloads.
+Data Warehouse, Real-Time Intelligence, Ontology, and Apache Airflow workloads.
 
 > [!IMPORTANT]
 > Fabric Deploy is an independent community project. It is not an official
@@ -31,7 +31,9 @@ Data Warehouse, Real-Time Intelligence, and Ontology workloads.
 > guarded Copy Job deployment, and explicit on-demand Data Pipeline execution
 > are also implemented. Preview Fabric Ontologies support deterministic
 > definition deployment, guarded lifecycle operations, and soft deletion;
-> disposable create/no-op/update/delete live validation is complete. See
+> disposable create/no-op/update/delete live validation is complete. Fabric
+> Apache Airflow Job deployment includes public definitions plus ownership-safe
+> DAG and plugin file reconciliation through the beta Files API. See
 > [the roadmap](docs/ROADMAP.md).
 
 For sequential environment deployment, see the
@@ -42,6 +44,8 @@ The [Fabric platform expansion plan](docs/PHASE5_PLAN.md) defines the network
 protection, Semantic Model, Power BI report, and remaining item roadmap.
 The [Ontology guide](docs/ONTOLOGY.md) documents the preview definition
 contract, permissions, and current source-binding limitations.
+The [Apache Airflow guide](docs/APACHE_AIRFLOW.md) documents DAG/plugin
+deployment, compute settings, ownership safety, permissions, and beta limits.
 For operational help and release verification, see
 [`SUPPORT.md`](SUPPORT.md), [`SECURITY.md`](SECURITY.md), and the
 [release guide](docs/RELEASING.md).
@@ -66,6 +70,7 @@ For operational help and release verification, see
 - Eventstream
 - Data Agent
 - Ontology
+- Apache Airflow Job
 
 ## Quickstart
 
@@ -590,7 +595,7 @@ management, Shortcut databases, and deletion are intentionally deferred. See
 ### Guarded item deletion
 
 Lakehouse, Environment, Notebook, Spark Job Definition, Data Pipeline, Copy
-Job, Semantic Model, Eventstream, and Ontology items can declare
+Job, Semantic Model, Eventstream, Ontology, and Apache Airflow Job items can declare
 `desiredState: absent`. Deletion intent must be explicit in both the deployment
 manifest and `item.yaml`:
 
@@ -696,6 +701,7 @@ deletion-only items use only `item.yaml` as described above.
 | Semantic Model | TMSL: `definition/model.bim` plus `definition/definition.pbism`; TMDL: `definition/definition.pbism` plus one or more `definition/definition/**/*.tmdl` files; optional `definition/diagramLayout.json`, `definition/.platform`, and `definition/Copilot/*.json` / `definition/Copilot/*.md` |
 | Report | PBIR: `definition/definition.pbir`, `definition/definition/report.json`, `definition/definition/version.json`, and supported pages/visuals/bookmarks; PBIR-Legacy: `definition/definition.pbir` plus root `definition/report.json`; optional `definition/StaticResources/**`, `definition/semanticModelDiagramLayout.json`, and `definition/.platform` |
 | Ontology | JSON definition with `definition/definition.json` containing `{}`, `definition/.platform`, and optional documented `EntityTypes/**` and `RelationshipTypes/**` parts |
+| Apache Airflow Job | `definition/apacheairflowjob-content.json`; optional `definition/.platform`; DAGs under `definition/dags/**`; plugins under `definition/plugins/**` |
 | Workspace custom Spark pool | `definition/pool.yaml` with node family, node size, autoscale, and dynamic executor allocation settings |
 
 ### Lakehouse table DDL
@@ -1084,6 +1090,39 @@ physical Fabric workspace and item IDs. See
 [`docs/ONTOLOGY.md`](docs/ONTOLOGY.md) and
 [`examples/ontology`](examples/ontology).
 
+### Apache Airflow Jobs
+
+Apache Airflow Jobs (`type: ApacheAirflowJob`) deploy the Fabric public
+definition together with raw DAG and plugin files:
+
+```yaml
+items:
+  - logicalId: helloAirflow
+    type: ApacheAirflowJob
+    path: items/airflow
+```
+
+`definition/apacheairflowjob-content.json` is the round-trippable definition
+shape returned by the live Fabric API. It configures the Airflow/Python
+runtime, inline requirements, and compute pool/size. Files under
+`definition/dags/` and `definition/plugins/` are reconciled through Fabric's
+beta Files API.
+
+Because that API has no ETag or content hash, Fabric Deploy maintains a
+reserved remote ownership ledger. It updates or removes only files proven to
+be managed by the last successful apply, adopts identical pre-existing files,
+and blocks different unowned or externally changed content instead of
+overwriting it. Each file is limited to 2 MB.
+
+Creation first checkpoints a Fabric shell item and then stages the definition,
+because live Fabric currently rejects create-with-definition. Create/update/
+no-op planning, LRO handling, raw file upload/download, read-back verification,
+interrupted file recovery, and guarded soft deletion are supported. Fabric
+currently requires a supported paid capacity and does not support private
+networks or VNets for Apache Airflow Jobs. See
+[`docs/APACHE_AIRFLOW.md`](docs/APACHE_AIRFLOW.md) and
+[`examples/apache-airflow`](examples/apache-airflow).
+
 Optional non-sensitive deployment variables can be passed explicitly:
 
 ```yaml
@@ -1154,6 +1193,7 @@ The action currently implements:
 - Semantic Model TMSL/TMDL mapping, create/update, and read-back verification
 - Report PBIR/PBIR-Legacy mapping, symbolic Semantic Model binding, create/update, and read-back verification
 - Ontology JSON definition mapping, create/update, guarded deletion, and read-back verification
+- Apache Airflow Job definition mapping, ownership-safe DAG/plugin reconciliation, guarded deletion, and read-back verification
 - Workspace custom Spark pool mapping, create/update, and read-back verification
 - Fabric tenant/domain tag creation and additive item tag assignment
 - Published Environment definition proof and target-version advancement checks
@@ -1161,7 +1201,7 @@ The action currently implements:
 - Authenticated create/update/no-op planning
 - Approved-plan integrity and source-commit binding
 - Pre-mutation drift and authorization checks
-- Lakehouse, Eventhouse, KQL Database, Warehouse, Environment, Notebook, Spark Job Definition, Data Pipeline, Copy Job, Semantic Model, Report, Eventstream, Ontology, workspace custom Spark pool, and Data Agent create/update/no-op apply
+- Lakehouse, Eventhouse, KQL Database, Warehouse, Environment, Notebook, Spark Job Definition, Data Pipeline, Copy Job, Semantic Model, Report, Eventstream, Ontology, Apache Airflow Job, workspace custom Spark pool, and Data Agent create/update/no-op apply
 - Data Agent shell-create with physicalId+shellDefinitionHash proof checkpoint; definition staging with checkpointed phases; strict desired-schema validation
 - Data Agent `desiredState: absent` intentionally deferred pending definition-aware drift proof
 - Checkpoint and result artifacts

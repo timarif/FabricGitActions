@@ -39,6 +39,7 @@ import {
 import { NetworkProtectionAdapter } from "./fabric/network-protection";
 import { NotebookAdapter } from "./fabric/notebook";
 import { OntologyAdapter } from "./fabric/ontology";
+import { ApacheAirflowAdapter } from "./fabric/apache-airflow";
 import { OneLakeArtifactStager } from "./fabric/onelake-artifacts";
 import { PipelineAdapter } from "./fabric/pipeline";
 import { PipelineJobAdapter } from "./fabric/pipeline-job";
@@ -409,6 +410,7 @@ export async function run(): Promise<void> {
     let itemDeletionAdapter: ItemDeletionAdapter | undefined;
     let notebookAdapter: NotebookAdapter | undefined;
     let ontologyAdapter: OntologyAdapter | undefined;
+    let apacheAirflowAdapter: ApacheAirflowAdapter | undefined;
     let sparkJobAdapter: SparkJobAdapter | undefined;
     let pipelineAdapter: PipelineAdapter | undefined;
     let copyJobAdapter: CopyJobAdapter | undefined;
@@ -464,6 +466,7 @@ export async function run(): Promise<void> {
       itemDeletionAdapter = new ItemDeletionAdapter(client);
       notebookAdapter = new NotebookAdapter(client);
       ontologyAdapter = new OntologyAdapter(client);
+      apacheAirflowAdapter = new ApacheAirflowAdapter(client);
       sparkJobAdapter = new SparkJobAdapter(client);
       pipelineAdapter = new PipelineAdapter(client);
       copyJobAdapter = new CopyJobAdapter(client);
@@ -621,6 +624,7 @@ export async function run(): Promise<void> {
         !environmentAdapter ||
         !notebookAdapter ||
         !ontologyAdapter ||
+        !apacheAirflowAdapter ||
         !sparkJobAdapter ||
         !pipelineAdapter ||
         !copyJobAdapter ||
@@ -648,6 +652,7 @@ export async function run(): Promise<void> {
         environment: environmentAdapter,
         notebook: notebookAdapter,
         ontology: ontologyAdapter,
+        apacheAirflow: apacheAirflowAdapter,
         sparkJob: sparkJobAdapter,
         pipeline: pipelineAdapter,
         copyJob: copyJobAdapter,
@@ -830,6 +835,7 @@ export async function run(): Promise<void> {
         !itemDeletionAdapter ||
         !notebookAdapter ||
         !ontologyAdapter ||
+        !apacheAirflowAdapter ||
         !sparkJobAdapter ||
         !pipelineAdapter ||
         !copyJobAdapter ||
@@ -860,6 +866,7 @@ export async function run(): Promise<void> {
         itemDeletionAdapter,
         notebookAdapter,
         ontologyAdapter,
+        apacheAirflowAdapter,
         sparkJobAdapter,
         pipelineAdapter,
         copyJobAdapter,

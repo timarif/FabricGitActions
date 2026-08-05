@@ -234,6 +234,51 @@ describe("Fabric API client", () => {
     expect(capturedHeaders?.get("content-type")).toBe("application/json");
   });
 
+  it("sends raw request bodies and reads binary responses", async () => {
+    const uploaded = Buffer.from("print('hello')\n", "utf8");
+    let capturedBody: Uint8Array | undefined;
+    let capturedHeaders: Headers | undefined;
+    const fetchImpl = vi.fn(
+      async (_input: string | URL, init?: RequestInit) => {
+        capturedHeaders = new Headers(init?.headers);
+        capturedBody = new Uint8Array(
+          await new Response(init?.body).arrayBuffer(),
+        );
+        return new Response(uploaded, {
+          status: 200,
+          headers: { "content-type": "application/octet-stream" },
+        });
+      },
+    );
+    const client = new FabricClient({
+      endpoint: "https://api.fabric.microsoft.com",
+      scope: "scope",
+      tokenProvider,
+      fetchImpl,
+    });
+
+    const response = await client.request<Uint8Array>(
+      "PUT",
+      "/v1/test",
+      {
+        body: uploaded,
+        bodyType: "raw",
+        responseType: "bytes",
+        contentType: "application/octet-stream",
+        accept: "application/octet-stream",
+      },
+    );
+
+    expect(Buffer.from(capturedBody ?? [])).toEqual(uploaded);
+    expect(capturedHeaders?.get("content-type")).toBe(
+      "application/octet-stream",
+    );
+    expect(capturedHeaders?.get("accept")).toBe(
+      "application/octet-stream",
+    );
+    expect(Buffer.from(response.body ?? [])).toEqual(uploaded);
+  });
+
   it("follows same-origin pagination", async () => {
     const fetchImpl = vi
       .fn()
@@ -459,6 +504,7 @@ describe("Fabric API client", () => {
         ),
       requestTimeoutMs: 5,
       maxRetries: 0,
+      now: () => 0,
     });
 
     await expect(client.request("GET", "/v1/test")).rejects.toThrow(
