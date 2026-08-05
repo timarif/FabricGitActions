@@ -57,6 +57,14 @@ import type {
 } from "./fabric/ontology";
 import { hashOntologyDefinition } from "./fabric/ontology-definition";
 import type {
+  ApacheAirflowAdapter,
+  ApacheAirflowOperationReference,
+} from "./fabric/apache-airflow";
+import {
+  apacheAirflowIncludesPlatformPart,
+  hashApacheAirflowDefinition,
+} from "./fabric/apache-airflow-definition";
+import type {
   PipelineAdapter,
   PipelineOperationReference,
 } from "./fabric/pipeline";
@@ -220,6 +228,10 @@ export interface ApplyPlanOptions {
   >;
   ontologyAdapter?: Pick<
     OntologyAdapter,
+    "create" | "update" | "verify" | "resumeCreate" | "plan"
+  >;
+  apacheAirflowAdapter?: Pick<
+    ApacheAirflowAdapter,
     "create" | "update" | "verify" | "resumeCreate" | "plan"
   >;
   sparkJobAdapter?: Pick<
@@ -1771,6 +1783,7 @@ function assertSupportedApplyItem(
     item.type !== "SparkCustomPool" &&
     item.type !== "Notebook" &&
     item.type !== "Ontology" &&
+    item.type !== "ApacheAirflowJob" &&
     item.type !== "SparkJobDefinition" &&
     item.type !== "DataPipeline" &&
     item.type !== "CopyJob" &&
@@ -1828,6 +1841,15 @@ function assertSupportedApplyItem(
   ) {
     throw new Error(
       `Ontology adapter was not initialized for item '${item.logicalId}'.`,
+    );
+  }
+  if (
+    item.desiredState !== "absent" &&
+    item.type === "ApacheAirflowJob" &&
+    !options.apacheAirflowAdapter
+  ) {
+    throw new Error(
+      `Apache Airflow Job adapter was not initialized for item '${item.logicalId}'.`,
     );
   }
   if (
@@ -2130,6 +2152,7 @@ async function resumePendingOperations(
           approvedItem.type !== "SparkCustomPool" &&
           approvedItem.type !== "Notebook" &&
           approvedItem.type !== "Ontology" &&
+          approvedItem.type !== "ApacheAirflowJob" &&
           approvedItem.type !== "SparkJobDefinition" &&
           approvedItem.type !== "DataPipeline" &&
           approvedItem.type !== "CopyJob" &&
@@ -2240,7 +2263,10 @@ async function resumePendingOperations(
         // DataAgent: never adopt a live no-op after create/resume failure.
         // Preserve checkpoint and rethrow — the correct proof-based resume
         // path must succeed or the operator must investigate.
-        if (approvedItem.type === "DataAgent") {
+        if (
+          approvedItem.type === "DataAgent" ||
+          approvedItem.type === "ApacheAirflowJob"
+        ) {
           throw operationError;
         }
         const verified = await verifyDesiredItem(
@@ -2307,6 +2333,7 @@ async function reconcilePendingCreates(
           approvedItem.type !== "SparkCustomPool" &&
           approvedItem.type !== "Notebook" &&
           approvedItem.type !== "Ontology" &&
+          approvedItem.type !== "ApacheAirflowJob" &&
           approvedItem.type !== "SparkJobDefinition" &&
           approvedItem.type !== "DataPipeline" &&
           approvedItem.type !== "CopyJob" &&
@@ -2365,6 +2392,11 @@ async function reconcilePendingCreates(
             `To recover: delete the ambiguous item manually and retry the deployment.`,
         );
       }
+      if (approvedItem.type === "ApacheAirflowJob") {
+        throw new Error(
+          `Apache Airflow Job create recovery for '${logicalId}' has no operation or physical-item proof. Refusing to adopt a same-name live item.`,
+        );
+      }
       if (live.action !== "no-op" || !live.physicalId) {
         throw new Error(
           `Create intent for '${logicalId}' has no resumable operation reference and current Fabric state is '${live.action}'. Wait for visibility or start a reviewed recovery before retrying.`,
@@ -2416,6 +2448,7 @@ async function reconcilePendingUpdates(
           approvedItem.type !== "SparkCustomPool" &&
           approvedItem.type !== "Notebook" &&
           approvedItem.type !== "Ontology" &&
+          approvedItem.type !== "ApacheAirflowJob" &&
           approvedItem.type !== "SparkJobDefinition" &&
           approvedItem.type !== "DataPipeline" &&
           approvedItem.type !== "CopyJob" &&
@@ -2455,6 +2488,13 @@ async function reconcilePendingUpdates(
             )) ||
           (approvedItem.type === "Ontology" &&
             hasOntologyRecoveryProof(
+              options,
+              approvedItem,
+              live,
+              intent,
+            )) ||
+          (approvedItem.type === "ApacheAirflowJob" &&
+            hasApacheAirflowRecoveryProof(
               options,
               approvedItem,
               live,
@@ -4700,6 +4740,7 @@ async function applyItem(
       | EnvironmentOperationReference
       | NotebookOperationReference
       | OntologyOperationReference
+      | ApacheAirflowOperationReference
       | SparkJobOperationReference
       | PipelineOperationReference
       | SemanticModelOperationReference
@@ -4724,6 +4765,7 @@ async function applyItem(
     item.type !== "SparkCustomPool" &&
     item.type !== "Notebook" &&
     item.type !== "Ontology" &&
+    item.type !== "ApacheAirflowJob" &&
     item.type !== "SparkJobDefinition" &&
     item.type !== "DataPipeline" &&
     item.type !== "CopyJob" &&
@@ -5023,6 +5065,7 @@ async function resumeCompletedItem(
     item.type !== "SparkCustomPool" &&
     item.type !== "Notebook" &&
     item.type !== "Ontology" &&
+    item.type !== "ApacheAirflowJob" &&
     item.type !== "SparkJobDefinition" &&
     item.type !== "DataPipeline" &&
     item.type !== "CopyJob" &&
@@ -5154,6 +5197,13 @@ async function planDesiredItem(
       requireOntologyDefinition(options, item.logicalId),
     );
   }
+  if (item.type === "ApacheAirflowJob") {
+    return requireApacheAirflowAdapter(options, item.logicalId).plan(
+      options.approvedPlan.workspaceId,
+      desired,
+      requireApacheAirflowBundle(options, item.logicalId),
+    );
+  }
   if (item.type === "SparkJobDefinition") {
     const materialized = requireSparkJobRuntimeDefinition(
       options,
@@ -5279,6 +5329,7 @@ async function createDesiredItem(
       | EnvironmentOperationReference
       | NotebookOperationReference
       | OntologyOperationReference
+      | ApacheAirflowOperationReference
       | SparkJobOperationReference
       | PipelineOperationReference
       | SemanticModelOperationReference
@@ -5392,6 +5443,20 @@ async function createDesiredItem(
       options.approvedPlan.workspaceId,
       desired,
       requireOntologyDefinition(options, item.logicalId),
+      onMutationAccepted,
+      onOperationAccepted,
+      onCreateSubmitting,
+      onCreateRejected,
+    );
+  }
+  if (item.type === "ApacheAirflowJob") {
+    return requireApacheAirflowAdapter(
+      options,
+      item.logicalId,
+    ).create(
+      options.approvedPlan.workspaceId,
+      desired,
+      requireApacheAirflowBundle(options, item.logicalId),
       onMutationAccepted,
       onOperationAccepted,
       onCreateSubmitting,
@@ -5580,6 +5645,18 @@ async function resumeCreateDesiredItem(
       options.approvedPlan.workspaceId,
       desired,
       requireOntologyDefinition(options, item.logicalId),
+      operation,
+      onMutationAccepted,
+    );
+  }
+  if (item.type === "ApacheAirflowJob") {
+    return requireApacheAirflowAdapter(
+      options,
+      item.logicalId,
+    ).resumeCreate(
+      options.approvedPlan.workspaceId,
+      desired,
+      requireApacheAirflowBundle(options, item.logicalId),
       operation,
       onMutationAccepted,
     );
@@ -5795,6 +5872,20 @@ async function updateDesiredItem(
       onUpdateRejected,
     );
   }
+  if (item.type === "ApacheAirflowJob") {
+    return requireApacheAirflowAdapter(
+      options,
+      item.logicalId,
+    ).update(
+      options.approvedPlan.workspaceId,
+      physicalId,
+      desired,
+      requireApacheAirflowBundle(options, item.logicalId),
+      onMutationAccepted,
+      onUpdateSubmitting,
+      onUpdateRejected,
+    );
+  }
   if (item.type === "SparkJobDefinition") {
     return requireSparkJobAdapter(options, item.logicalId).update(
       options.approvedPlan.workspaceId,
@@ -5958,6 +6049,17 @@ async function verifyDesiredItem(
       physicalId,
       desired,
       requireOntologyDefinition(options, item.logicalId),
+    );
+  }
+  if (item.type === "ApacheAirflowJob") {
+    return requireApacheAirflowAdapter(
+      options,
+      item.logicalId,
+    ).verify(
+      options.approvedPlan.workspaceId,
+      physicalId,
+      desired,
+      requireApacheAirflowBundle(options, item.logicalId),
     );
   }
   if (item.type === "SparkJobDefinition") {
@@ -6237,6 +6339,32 @@ function requireOntologyDefinition(
     );
   }
   return definition;
+}
+
+function requireApacheAirflowAdapter(
+  options: ApplyPlanOptions,
+  logicalId: string,
+): NonNullable<ApplyPlanOptions["apacheAirflowAdapter"]> {
+  if (!options.apacheAirflowAdapter) {
+    throw new Error(
+      `Apache Airflow Job adapter was not initialized for item '${logicalId}'.`,
+    );
+  }
+  return options.apacheAirflowAdapter;
+}
+
+function requireApacheAirflowBundle(
+  options: ApplyPlanOptions,
+  logicalId: string,
+) {
+  const bundle =
+    options.loadedManifest.apacheAirflowBundles?.[logicalId];
+  if (!bundle) {
+    throw new Error(
+      `Apache Airflow Job bundle snapshot is missing for '${logicalId}'.`,
+    );
+  }
+  return bundle;
 }
 
 function requireSparkJobAdapter(
@@ -7138,6 +7266,107 @@ function hasReportRecoveryProof(
     live.managedMetadataMatches === true &&
     live.stagedDefinitionHash === intent.stagedDefinitionHash
   );
+}
+
+function hasApacheAirflowRecoveryProof(
+  options: ApplyPlanOptions,
+  item: PlannedItem,
+  live: {
+    action: PlannedAction;
+    observedStateHash: string;
+    stagedDefinitionHash?: string;
+    managedMetadataMatches?: boolean;
+    apacheAirflowFiles?: PlannedItem["apacheAirflowFiles"];
+  },
+  intent?: ApplyCheckpoint["pendingUpdates"][string],
+): boolean {
+  if (item.type !== "ApacheAirflowJob") {
+    return false;
+  }
+  if (live.observedStateHash === item.observedStateHash) {
+    return true;
+  }
+  if (
+    !intent ||
+    live.managedMetadataMatches !== true ||
+    !item.apacheAirflowFiles ||
+    !live.apacheAirflowFiles
+  ) {
+    return false;
+  }
+  const bundle = requireApacheAirflowBundle(
+    options,
+    item.logicalId,
+  );
+  const desiredDefinitionHash = hashApacheAirflowDefinition(
+    bundle.definition,
+    apacheAirflowIncludesPlatformPart(bundle.definition),
+  );
+  if (
+    live.stagedDefinitionHash !== intent.stagedDefinitionHash &&
+    live.stagedDefinitionHash !== desiredDefinitionHash
+  ) {
+    return false;
+  }
+  return hasSafeApacheAirflowFileProgress(
+    item.apacheAirflowFiles.operations,
+    live.apacheAirflowFiles.operations,
+  );
+}
+
+function hasSafeApacheAirflowFileProgress(
+  approved: NonNullable<
+    PlannedItem["apacheAirflowFiles"]
+  >["operations"],
+  current: NonNullable<
+    PlannedItem["apacheAirflowFiles"]
+  >["operations"],
+): boolean {
+  const approvedByPath = new Map(
+    approved.map((operation) => [
+      operation.filePath,
+      operation,
+    ]),
+  );
+  const currentByPath = new Map(
+    current.map((operation) => [
+      operation.filePath,
+      operation,
+    ]),
+  );
+  if (
+    current.some(
+      (operation) => !approvedByPath.has(operation.filePath),
+    )
+  ) {
+    return false;
+  }
+  return approved.every((operation) => {
+    const observed =
+      currentByPath.get(operation.filePath)?.observedHash;
+    switch (operation.action) {
+      case "create":
+      case "adopt":
+        return (
+          observed === undefined ||
+          observed === operation.desiredHash
+        );
+      case "update":
+        return (
+          observed === operation.observedHash ||
+          observed === operation.desiredHash
+        );
+      case "delete":
+        return (
+          observed === undefined ||
+          observed === operation.observedHash
+        );
+      case "no-op":
+        return observed === operation.desiredHash;
+      case "blocked":
+        return false;
+    }
+  });
 }
 
 function hasEventstreamRecoveryProof(

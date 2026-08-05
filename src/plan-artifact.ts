@@ -10,6 +10,7 @@ import {
   hashCommunicationPolicy,
   hashInboundExternalDataSharesPolicy,
 } from "./fabric/network-protection";
+import { APACHE_AIRFLOW_OWNERSHIP_PATH } from "./fabric/apache-airflow-definition";
 import { compareCanonicalStrings, sha256, stableJson } from "./hash";
 import { rehashPlan } from "./planner";
 import {
@@ -1044,7 +1045,8 @@ function isPlannedItem(value: unknown): value is PlannedItem {
         item.action !== "update" &&
         item.tagAssignment === undefined &&
         item.lakehouseTables === undefined &&
-        item.sparkJobArtifacts === undefined
+        item.sparkJobArtifacts === undefined &&
+        item.apacheAirflowFiles === undefined
       : item.action !== "delete") &&
     (item.action !== "delete" ||
       (typeof item.physicalId === "string" &&
@@ -1064,12 +1066,74 @@ function isPlannedItem(value: unknown): value is PlannedItem {
       ? item.sparkJobArtifacts === undefined ||
         isPlannedSparkJobArtifacts(item.sparkJobArtifacts)
       : item.sparkJobArtifacts === undefined) &&
+    (item.type === "ApacheAirflowJob"
+      ? item.apacheAirflowFiles === undefined ||
+        isPlannedApacheAirflowFiles(item.apacheAirflowFiles)
+      : item.apacheAirflowFiles === undefined) &&
     (item.tagAssignment === undefined ||
       (item.type !== "FabricTag" &&
         item.type !== "LakehouseTables" &&
         item.type !== "SparkCustomPool" &&
         isPlannedItemTagAssignment(item.tagAssignment)))
   );
+}
+
+function isPlannedApacheAirflowFiles(value: unknown): boolean {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    return false;
+  }
+  const files = value as Record<string, unknown>;
+  if (
+    !isHash(files.desiredHash) ||
+    !isHash(files.observedStateHash) ||
+    !isHash(files.ownershipHash) ||
+    !Array.isArray(files.operations)
+  ) {
+    return false;
+  }
+  const paths = new Set<string>();
+  return files.operations.every((entry) => {
+    if (
+      entry === null ||
+      typeof entry !== "object" ||
+      Array.isArray(entry)
+    ) {
+      return false;
+    }
+    const operation = entry as Record<string, unknown>;
+    const filePath = operation.filePath;
+    if (
+      typeof filePath !== "string" ||
+      paths.has(filePath) ||
+      (!filePath.startsWith("dags/") &&
+        !filePath.startsWith("plugins/")) ||
+      filePath === APACHE_AIRFLOW_OWNERSHIP_PATH ||
+      ![
+        "create",
+        "update",
+        "delete",
+        "adopt",
+        "no-op",
+        "blocked",
+      ].includes(String(operation.action)) ||
+      (operation.desiredHash !== undefined &&
+        !isHash(operation.desiredHash)) ||
+      (operation.observedHash !== undefined &&
+        !isHash(operation.observedHash)) ||
+      (operation.ownedHash !== undefined &&
+        !isHash(operation.ownedHash)) ||
+      (operation.sizeBytes !== undefined &&
+        (typeof operation.sizeBytes !== "number" ||
+          !Number.isSafeInteger(operation.sizeBytes) ||
+          operation.sizeBytes < 0 ||
+          operation.sizeBytes > 2 * 1024 * 1024)) ||
+      typeof operation.reason !== "string"
+    ) {
+      return false;
+    }
+    paths.add(filePath);
+    return true;
+  });
 }
 
 function isPlannedItemTagAssignment(value: unknown): boolean {

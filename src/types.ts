@@ -1,4 +1,5 @@
 import type { FabricDefinition } from "./fabric/definition";
+import type { LoadedApacheAirflowBundle } from "./fabric/apache-airflow-definition";
 import type { LoadedLakehouseTablesDefinition } from "./fabric/lakehouse-tables-definition";
 import type { SparkJobArtifactSource } from "./fabric/spark-job-definition";
 import type { SparkCustomPoolDefinition } from "./fabric/spark-custom-pool-definition";
@@ -23,6 +24,7 @@ export const FABRIC_ITEM_TYPES = [
   "Eventstream",
   "DataAgent",
   "Ontology",
+  "ApacheAirflowJob",
 ] as const;
 
 export type FabricItemType = (typeof FABRIC_ITEM_TYPES)[number];
@@ -229,6 +231,7 @@ export interface LoadedManifest {
   eventstreamDefinitions?: Record<string, FabricDefinition>;
   dataAgentDefinitions?: Record<string, FabricDefinition | undefined>;
   ontologyDefinitions?: Record<string, FabricDefinition>;
+  apacheAirflowBundles?: Record<string, LoadedApacheAirflowBundle>;
   sparkCustomPoolDefinitions: Record<
     string,
     SparkCustomPoolDefinition
@@ -292,6 +295,31 @@ export interface PlannedSparkJobArtifacts {
   artifacts: PlannedOneLakeArtifact[];
 }
 
+export type PlannedApacheAirflowFileAction =
+  | "create"
+  | "update"
+  | "delete"
+  | "adopt"
+  | "no-op"
+  | "blocked";
+
+export interface PlannedApacheAirflowFileOperation {
+  filePath: string;
+  action: PlannedApacheAirflowFileAction;
+  desiredHash?: string;
+  observedHash?: string;
+  ownedHash?: string;
+  sizeBytes?: number;
+  reason: string;
+}
+
+export interface PlannedApacheAirflowFiles {
+  desiredHash: string;
+  observedStateHash: string;
+  ownershipHash: string;
+  operations: PlannedApacheAirflowFileOperation[];
+}
+
 export interface PlannedItem {
   logicalId: string;
   type: FabricItemType;
@@ -306,6 +334,7 @@ export interface PlannedItem {
   resolvedBindingsHash?: string;
   lakehouseTables?: PlannedLakehouseTables;
   sparkJobArtifacts?: PlannedSparkJobArtifacts;
+  apacheAirflowFiles?: PlannedApacheAirflowFiles;
   tagAssignment?: PlannedItemTagAssignment;
   action: PlannedAction;
   reason: string;

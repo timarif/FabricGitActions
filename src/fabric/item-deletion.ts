@@ -15,7 +15,8 @@ export type DeletableFabricItemType =
   | "CopyJob"
   | "SemanticModel"
   | "Eventstream"
-  | "Ontology";
+  | "Ontology"
+  | "ApacheAirflowJob";
 
 export interface FabricWorkspaceItem {
   id: string;
@@ -187,7 +188,8 @@ export function isDeletableFabricItemType(
     itemType === "CopyJob" ||
     itemType === "SemanticModel" ||
     itemType === "Eventstream" ||
-    itemType === "Ontology"
+    itemType === "Ontology" ||
+    itemType === "ApacheAirflowJob"
   );
 }
 
@@ -261,5 +263,7 @@ function displayType(itemType: DeletableFabricItemType): string {
       return "Eventstream";
     case "Ontology":
       return "Ontology";
+    case "ApacheAirflowJob":
+      return "Apache Airflow Job";
   }
 }

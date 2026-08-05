@@ -9,6 +9,7 @@ import Ajv, { type ErrorObject } from "ajv";
 import { parse } from "yaml";
 
 import { loadEnvironmentDefinition } from "./fabric/definition";
+import { loadApacheAirflowBundle } from "./fabric/apache-airflow-definition";
 import { loadEventstreamDefinition } from "./fabric/eventstream-definition";
 import { loadDataAgentDefinition } from "./fabric/data-agent-definition";
 import { loadOntologyDefinition } from "./fabric/ontology-definition";
@@ -205,6 +206,7 @@ function validateDeletionDefinition(
     case "SemanticModel":
     case "Eventstream":
     case "Ontology":
+    case "ApacheAirflowJob":
       return;
     case "DataAgent":
       throw new Error(
@@ -495,6 +497,18 @@ function validateTypeSpecificDefinition(
       }
       definitionDirectory(item, itemDirectory);
       loadOntologyDefinition(itemDirectory);
+      return;
+    case "ApacheAirflowJob":
+      if (
+        definition.references !== undefined ||
+        definition.bindings !== undefined
+      ) {
+        throw new Error(
+          `Item '${item.logicalId}' Apache Airflow Job logical references and bindings are not supported.`,
+        );
+      }
+      definitionDirectory(item, itemDirectory);
+      loadApacheAirflowBundle(itemDirectory);
       return;
     default:
       assertNever(item.type);
